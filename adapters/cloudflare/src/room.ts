@@ -1,7 +1,9 @@
 import {
+  HOST_ACTOR,
   HOST_TOKEN_TTL_MS,
   JOIN_TOKEN_TTL_MS,
   MAX_EVENTS,
+  MAX_PLAYER_ACTOR,
   ROOM_MESSAGES,
   actionForEvent,
   actorId,
@@ -37,6 +39,8 @@ export interface StoredEvent {
 }
 
 export interface RoomRecord {
+  /** Durable Object `meta.created_at`. This is the server clock, not the phone's. */
+  readonly serverCreatedAt: number;
   readonly base: MatchLog['base'];
   readonly events: readonly StoredEvent[];
   readonly invites: readonly InviteRow[];
@@ -52,21 +56,74 @@ function fail(code: RoomCode): RoomFailure {
   return { ok: false, code, message: ROOM_MESSAGES[code] };
 }
 
+/** Seed rows take the server clock and the host as the actor. Phone times are not kept. */
+export function stampSeed(log: MatchLog, now: number): MatchLog {
+  return {
+    schemaVersion: log.schemaVersion,
+    base: { ...log.base, createdAt: now, updatedAt: now },
+    events: log.events.map((event) => ({ ...event, at: now, by: HOST_ACTOR })),
+  };
+}
+
 export function createRoom(log: MatchLog, hostHash: string, now: number): {
   readonly record: RoomRecord;
   readonly expiresAt: number;
 } {
+  const stamped = stampSeed(log, now);
   const expiresAt = now + HOST_TOKEN_TTL_MS;
   return {
     expiresAt,
     record: {
-      base: log.base,
-      events: log.events.map((event, index) => ({ eventId: `seed-${index + 1}`, event })),
+      serverCreatedAt: now,
+      base: stamped.base,
+      events: stamped.events.map((event, index) => ({ eventId: `seed-${index + 1}`, event })),
       invites: [
         { tokenHash: hostHash, role: 'player', host: true, expiresAt, revokedAt: null },
       ],
     },
   };
+}
+
+/** One hour and one day both use this. Seed rows are not a clock. */
+export function serverLastChange(record: RoomRecord): number {
+  const live: number[] = [];
+  for (const item of record.events) {
+    if (item.eventId.startsWith('seed-')) continue;
+    if (Number.isInteger(item.event.at)) live.push(item.event.at);
+  }
+  return lastChangeAt(record.serverCreatedAt, live);
+}
+
+export interface ActorChoice {
+  readonly host: boolean;
+  readonly tokenHash: string;
+  readonly deviceId: string | null;
+  readonly joined: readonly { readonly tokenHash: string; readonly playerId: string; readonly deviceId: string | null }[];
+  readonly connected: readonly { readonly actor: string; readonly deviceId: string | null }[];
+}
+
+/**
+ * A joining phone keeps the id it already has. A new phone gets the lowest free `pN`.
+ * An id bound to a device, or held by a connected phone, is never given out again.
+ */
+export function chooseActor(input: ActorChoice): string | null {
+  if (input.host) return HOST_ACTOR;
+  if (input.deviceId) {
+    const existing = input.joined.find((row) => row.tokenHash === input.tokenHash && row.deviceId === input.deviceId);
+    if (existing && actorId(existing.playerId)) return existing.playerId;
+  }
+  const used = new Set<string>();
+  for (const row of input.joined) {
+    if (row.deviceId) used.add(row.playerId);
+  }
+  for (const socket of input.connected) {
+    if (socket.deviceId) used.add(socket.actor);
+  }
+  for (let n = 2; n <= MAX_PLAYER_ACTOR; n += 1) {
+    const id = `p${n}`;
+    if (!used.has(id)) return id;
+  }
+  return null;
 }
 
 function credentialFor(row: InviteRow): Credential {
@@ -181,8 +238,7 @@ export function applyLiveEvent(
     now,
   });
   if (blocked) return fail(blocked);
-  const last = lastChangeAt(record.base.createdAt, record.events.map((item) => item.event.at));
-  if (!roomAcceptsScore(last, now)) return fail('closed');
+  if (!roomAcceptsScore(serverLastChange(record), now)) return fail('closed');
   const parsed = parseStoredEvent(rawEvent);
   if (parsed?.type === 'match/resume') {
     const allowed = canReopen({

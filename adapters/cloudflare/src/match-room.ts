@@ -1,9 +1,9 @@
 import { DurableObject } from 'cloudflare:workers';
-import { connectionCloses, isJoinToken, isRole, isRoomCode, lastChangeAt, parseMatchLog, type Credential, type Role } from '@padel/core';
+import { connectionCloses, isJoinToken, isRole, isRoomCode, parseMatchLog, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
-import { CLIENT_IP_HEADER } from './match-index';
+import { CLIENT_IP_HEADER, touchMatchActivity, type D1Like } from './match-index';
 import { takeLiveMessage } from './rate';
-import { applyLiveEvent, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite } from './room';
+import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange } from './room';
 import { insertEvent, insertInvite, insertJoined, insertRoom, openRoomForCreate, readJoined, readRoom, revokePlayerInvites, type RoomSql } from './store';
 import { safeEqualHex, sha256Hex } from './tokens';
 
@@ -42,7 +42,11 @@ async function readBody(request: Request, max: number): Promise<unknown | null> 
   }
 }
 
-export class MatchRoom extends DurableObject {
+interface RoomEnv {
+  DB: D1Like;
+}
+
+export class MatchRoom extends DurableObject<RoomEnv> {
   private sql(): RoomSql {
     return this.ctx.storage.sql as unknown as RoomSql;
   }
@@ -163,6 +167,10 @@ export class MatchRoom extends DurableObject {
       return;
     }
     const actor = this.assignActor(result.credential.host, tokenHash, deviceId);
+    if (!actor) {
+      this.reject(ws, 'unavailable');
+      return;
+    }
     const next: AdmittedState = {
       admitted: true,
       credential: result.credential,
@@ -201,6 +209,7 @@ export class MatchRoom extends DurableObject {
     if (!result.duplicate) {
       try {
         insertEvent(this.sql(), result.event);
+        await touchMatchActivity(this.env.DB, room.base.matchId, result.event.event.at);
       } catch {
         this.reject(ws, 'unavailable');
         return;
@@ -229,7 +238,7 @@ export class MatchRoom extends DurableObject {
     if (!log || !isJoinToken(hostToken)) return json(400, { error: 'invalid_match' });
     const now = Date.now();
     const created = createRoom(log, await sha256Hex(hostToken), now);
-    insertRoom(this.sql(), created.record, now);
+    insertRoom(this.sql(), created.record);
     return json(201, { expiresAt: created.expiresAt });
   }
 
@@ -251,31 +260,37 @@ export class MatchRoom extends DurableObject {
       now,
     );
     if (!issued.ok) return json(issued.code === 'spectator_not_available' ? 403 : 401, { error: issued.code });
-    revokePlayerInvites(this.sql(), now);
     const created = issued.record.invites.find((row) => row.revokedAt === null && !row.host);
     if (!created) return json(500, { error: 'unavailable' });
-    insertInvite(this.sql(), created);
+    const sql = this.sql();
+    sql.exec('BEGIN');
+    try {
+      revokePlayerInvites(sql, now);
+      insertInvite(sql, created);
+      sql.exec('COMMIT');
+    } catch (error) {
+      try {
+        sql.exec('ROLLBACK');
+      } catch {
+        // The transaction is already closed.
+      }
+      throw error;
+    }
     return json(201, { role: 'player' satisfies Role, expiresAt: issued.expiresAt });
   }
 
-  private assignActor(host: boolean, tokenHash: string, deviceId: string | null): string {
-    if (host) {
-      if (deviceId) insertJoined(this.sql(), tokenHash, 'host', deviceId);
-      return 'host';
-    }
+  private assignActor(host: boolean, tokenHash: string, deviceId: string | null): string | null {
     const joined = readJoined(this.sql());
-    const existing = deviceId
-      ? joined.find((row) => row.tokenHash === tokenHash && row.deviceId === deviceId)
-      : undefined;
-    if (existing) return existing.playerId;
-    const used = new Set(joined.map((row) => row.playerId));
+    const connected: { actor: string; deviceId: string | null }[] = [];
     for (const socket of this.ctx.getWebSockets()) {
       const state = this.readState(socket);
-      if (state?.admitted) used.add(state.actor);
+      if (state?.admitted) connected.push({ actor: state.actor, deviceId: state.deviceId });
     }
-    const playerId = ['p2', 'p3', 'p4'].find((id) => !used.has(id)) ?? 'p4';
-    if (deviceId) insertJoined(this.sql(), tokenHash, playerId, deviceId);
-    return playerId;
+    const actor = chooseActor({ host, tokenHash, deviceId, joined, connected });
+    if (!actor || !deviceId) return actor;
+    const already = joined.some((row) => row.tokenHash === tokenHash && row.deviceId === deviceId);
+    if (!already) insertJoined(this.sql(), tokenHash, actor, deviceId);
+    return actor;
   }
 
   private async requireHost(hostToken: unknown): Promise<ReturnType<typeof readRoom>> {
@@ -296,7 +311,7 @@ export class MatchRoom extends DurableObject {
     if (!room) return json(401, { error: 'bad_token' });
     const joined = readJoined(this.sql());
     return json(200, {
-      lastChangeAt: lastChangeAt(room.base.createdAt, room.events.map((item) => item.event.at)),
+      lastChangeAt: serverLastChange(room),
       joinedHashes: [...new Set(joined.filter((row) => row.playerId !== 'host' && row.deviceId).map((row) => row.tokenHash))],
       invites: invitesForCarry(room.invites, joined),
     });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createMatch, matchReducer, MAX_PLAYERS, ROOM_CLOSE_MS, ROOM_MESSAGES } from '@padel/core';
-import { admit, applyLiveEvent, applyPlay, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, type InviteRow, type RoomRecord } from './room';
+import { createMatch, matchReducer, MAX_PLAYERS, MAX_PLAYER_ACTOR, ROOM_CLOSE_MS, ROOM_MESSAGES } from '@padel/core';
+import { admit, applyLiveEvent, applyPlay, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange, type InviteRow, type RoomRecord } from './room';
 
 const NOW = 1_700_000_000_000;
 const HOST = 'a'.repeat(64);
@@ -242,5 +242,105 @@ describe('event gate', () => {
     };
     expect(admit(record, INVITE, 0, NOW, 'dabcdef01').ok).toBe(true);
     expect(admit(record, INVITE, 0, NOW, 'd00000000').ok).toBe(false);
+  });
+});
+
+describe('server clock', () => {
+  const eventId = '00000000-0000-4000-8000-0000000000e1';
+  const raw = { type: 'game/increment', team: 'a', at: 1 };
+
+  function invite(): InviteRow {
+    return { tokenHash: INVITE, role: 'player', host: false, expiresAt: NOW + ROOM_CLOSE_MS, revokedAt: null };
+  }
+
+  it('replaces a future or old seed clock with server time and the host', () => {
+    const future = NOW + 10 * ROOM_CLOSE_MS;
+    const old = NOW - 3 * ROOM_CLOSE_MS;
+    for (const at of [future, old]) {
+      const created = createRoom(
+        {
+          schemaVersion: 2,
+          base: createMatch(at, '00000000-0000-4000-8000-0000000000aa'),
+          events: [{ type: 'game/increment', team: 'a', at, by: 'p4' }],
+        },
+        HOST,
+        NOW,
+      );
+      expect(created.record.serverCreatedAt).toBe(NOW);
+      expect(created.record.base.createdAt).toBe(NOW);
+      expect(created.record.base.updatedAt).toBe(NOW);
+      expect(created.record.events[0]?.event.at).toBe(NOW);
+      expect(created.record.events[0]?.event.by).toBe('host');
+      expect(serverLastChange(created.record)).toBe(NOW);
+      const issued = issueInvite(created.record, HOST, 'player', INVITE, NOW);
+      if (!issued.ok) throw new Error('invite');
+      const scored = applyLiveEvent(issued.record, invite(), 'p2', eventId, raw, NOW + 1000);
+      expect(scored.ok).toBe(true);
+    }
+  });
+
+  it('ignores a poisoned seed time and closes when the server clock is ahead or a day old', () => {
+    const record = started();
+    const seeded: RoomRecord = {
+      ...record,
+      events: [
+        ...record.events,
+        { eventId: 'seed-9', event: { type: 'game/increment', team: 'b', at: NOW + 9 * ROOM_CLOSE_MS } },
+      ],
+    };
+    expect(serverLastChange(seeded)).toBe(NOW);
+    const open = applyLiveEvent(seeded, invite(), 'p2', eventId, raw, NOW + 1000);
+    expect(open.ok).toBe(true);
+
+    const ahead: RoomRecord = { ...record, serverCreatedAt: NOW + 60_000 };
+    const future = applyLiveEvent(ahead, invite(), 'p2', eventId, raw, NOW);
+    expect(future.ok).toBe(false);
+    if (!future.ok) expect(future.code).toBe('closed');
+
+    const stale: RoomRecord = { ...record, serverCreatedAt: NOW - ROOM_CLOSE_MS };
+    const closed = applyLiveEvent(stale, invite(), 'p2', eventId, raw, NOW);
+    expect(closed.ok).toBe(false);
+    if (!closed.ok) expect(closed.code).toBe('closed');
+  });
+});
+
+describe('player ids', () => {
+  const token = 'c'.repeat(64);
+
+  it('never reuses p4 and rejects when every id is taken', () => {
+    const joined = ['p2', 'p3', 'p4'].map((playerId, index) => ({
+      tokenHash: token,
+      playerId,
+      deviceId: `d0000000${index + 2}`,
+    }));
+    expect(
+      chooseActor({ host: false, tokenHash: 'd'.repeat(64), deviceId: 'd99999999', joined, connected: [] }),
+    ).toBe('p5');
+    expect(
+      chooseActor({
+        host: false,
+        tokenHash: token,
+        deviceId: 'd00000004',
+        joined,
+        connected: [],
+      }),
+    ).toBe('p4');
+    const full = Array.from({ length: MAX_PLAYER_ACTOR - 1 }, (_, index) => ({
+      tokenHash: token,
+      playerId: `p${index + 2}`,
+      deviceId: `d${(index + 1).toString(16).padStart(8, '0')}`,
+    }));
+    expect(
+      chooseActor({ host: false, tokenHash: 'e'.repeat(64), deviceId: 'dffffffff', joined: full, connected: [] }),
+    ).toBeNull();
+    expect(
+      chooseActor({
+        host: false,
+        tokenHash: 'e'.repeat(64),
+        deviceId: 'd00000009',
+        joined: [],
+        connected: [{ actor: 'p2', deviceId: 'd00000008' }],
+      }),
+    ).toBe('p3');
   });
 });

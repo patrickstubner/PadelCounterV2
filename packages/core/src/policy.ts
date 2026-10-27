@@ -10,15 +10,29 @@ export const ROOM_CLOSE_MS = 24 * 60 * 60 * 1000;
 /** D1 keeps a finished match this long, then the scheduled job deletes it. Two years is 730 days. */
 export const HISTORY_RETAIN_MS = 730 * 24 * 60 * 60 * 1000;
 
-/** Unauthenticated creates allowed for one address on one UTC day. */
+/** Unauthenticated creates allowed for one device on one UTC day. */
 export const MATCHES_PER_DAY = 10;
+
+/** Abuse cap for one network address on one UTC day. Shared court Wi-Fi still has room. */
+export const MATCHES_PER_NETWORK_PER_DAY = 100;
+
+/** Create-quota rows older than this are deleted by the scheduled job. */
+export const QUOTA_RETAIN_MS = 2 * 24 * 60 * 60 * 1000;
+
+/** Highest `pN` id handed to a joining phone. Host is not in this range. */
+export const MAX_PLAYER_ACTOR = 32;
 
 export const HOST_ACTOR = 'host';
 
-const ACTOR_PATTERN = /^(?:host|device|p[2-4]|d[a-f0-9]{8})$/;
-
 export function actorId(value: unknown): string | undefined {
-  return typeof value === 'string' && ACTOR_PATTERN.test(value) ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  if (value === 'host' || value === 'device') return value;
+  if (/^d[a-f0-9]{8}$/.test(value)) return value;
+  const player = /^p([1-9]\d*)$/.exec(value);
+  if (!player) return undefined;
+  const n = Number(player[1]);
+  if (n >= 2 && n <= MAX_PLAYER_ACTOR) return value;
+  return undefined;
 }
 
 export function withActor(event: MatchEvent, by: unknown): MatchEvent {
@@ -30,9 +44,8 @@ export function whoLabel(by: string | undefined): string | null {
   if (!by) return null;
   if (by === HOST_ACTOR) return 'Host';
   if (by === 'device' || /^d[a-f0-9]{8}$/.test(by)) return 'This phone';
-  if (by === 'p2') return 'Player 2';
-  if (by === 'p3') return 'Player 3';
-  if (by === 'p4') return 'Player 4';
+  const player = /^p([1-9]\d*)$/.exec(by);
+  if (player && actorId(by)) return `Player ${player[1]}`;
   return null;
 }
 
@@ -94,7 +107,8 @@ export function credentialAllowsEvent(input: {
 
 export function roomAcceptsScore(lastAt: number, now: number): boolean {
   if (!Number.isInteger(lastAt) || !Number.isInteger(now)) return false;
-  if (now < lastAt) return true;
+  // A last-change time ahead of the server is not usable. The room stays closed.
+  if (now < lastAt) return false;
   return now - lastAt < ROOM_CLOSE_MS;
 }
 

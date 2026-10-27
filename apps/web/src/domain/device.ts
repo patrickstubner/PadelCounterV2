@@ -2,7 +2,7 @@ export const DEVICE_KEY = 'pcv2:device';
 
 const DEVICE_PATTERN = /^d[a-f0-9]{8}$/;
 
-/** Stable id for this browser. The server uses it only for a reconnect invite. */
+/** Stable id for this browser. Sent when sharing or joining a live match. */
 export function deviceId(storage: Pick<Storage, 'getItem' | 'setItem'>): string {
   try {
     const existing = storage.getItem(DEVICE_KEY);

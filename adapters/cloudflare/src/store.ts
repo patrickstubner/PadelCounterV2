@@ -71,7 +71,9 @@ export function loadRoom(sql: RoomSql): RoomRecord | null {
   const meta = sql.exec('SELECT base_json, created_at FROM meta WHERE id = 1').toArray();
   const row = meta[0];
   if (!row) return null;
+  const serverCreatedAt = integer(row.created_at);
   const baseJson = text(row.base_json);
+  if (serverCreatedAt === null) return null;
   if (!baseJson) return null;
   let base: MatchState;
   try {
@@ -116,11 +118,15 @@ export function loadRoom(sql: RoomSql): RoomRecord | null {
     events.push({ eventId, event: parsed });
   }
 
-  return { base, events, invites };
+  return { serverCreatedAt, base, events, invites };
 }
 
-export function insertRoom(sql: RoomSql, record: RoomRecord, now: number): void {
-  sql.exec('INSERT INTO meta (id, base_json, created_at) VALUES (1, ?, ?)', JSON.stringify(record.base), now);
+export function insertRoom(sql: RoomSql, record: RoomRecord): void {
+  sql.exec(
+    'INSERT INTO meta (id, base_json, created_at) VALUES (1, ?, ?)',
+    JSON.stringify(record.base),
+    record.serverCreatedAt,
+  );
   for (const invite of record.invites) insertInvite(sql, invite);
   for (const event of record.events) insertEvent(sql, event);
 }

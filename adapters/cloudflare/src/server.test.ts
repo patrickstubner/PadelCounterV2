@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
-import { createMatch } from '@padel/core';
+import { createMatch, quotaDay } from '@padel/core';
 import { describe, expect, it } from 'vitest';
 import { CLIENT_IP_HEADER, clientIpHeaders } from './match-index';
 import { handleFetch, type RoomNamespace, type ServerEnv } from './server';
+import { quotaMac } from './tokens';
 
 const CLIENT = '00000000-0000-4000-8000-0000000000aa';
 const PAGES = 'https://patrickstubner.github.io';
@@ -30,11 +31,19 @@ interface RoomInfo {
   invites: readonly { tokenHash: string; host: boolean; deviceId?: string | null }[];
 }
 
-function harness(options?: { failCreate?: boolean | 'throw'; conflictOnce?: boolean; roomInfo?: RoomInfo }): {
+function harness(options?: {
+  failCreate?: boolean | 'throw';
+  conflictOnce?: boolean;
+  roomInfo?: RoomInfo;
+  omitQuotaKey?: boolean;
+  failPlayerInsert?: boolean;
+}): {
   env: ServerEnv;
   found: Set<string>;
   calls: { id: string; body: string; ip: string | null }[];
   ops: string[];
+  creds: Map<string, CredRow>;
+  quota: Map<string, number>;
 } {
   const found = new Set<string>();
   const calls: { id: string; body: string; ip: string | null }[] = [];
@@ -43,6 +52,7 @@ function harness(options?: { failCreate?: boolean | 'throw'; conflictOnce?: bool
   const creds = new Map<string, CredRow>();
   const tickets = new Map<string, TicketRow>();
   let conflictsLeft = options?.conflictOnce ? 1 : 0;
+  let playerInserts = 0;
   const rooms: RoomNamespace = {
     idFromName(name) {
       return name;
@@ -134,20 +144,21 @@ function harness(options?: { failCreate?: boolean | 'throw'; conflictOnce?: bool
               ops.push('d1-delete');
             } else if (sql.startsWith('INSERT INTO create_quota')) {
               const key = `${values[0]}|${values[1]}`;
-              if (quota.has(key)) throw new Error('UNIQUE constraint failed');
-              quota.set(key, 1);
-            } else if (sql.includes('SET n = n + 1')) {
-              const key = `${values[0]}|${values[1]}`;
-              const limit = Number(values[2]);
+              const cap = Number(values[2]);
               const current = quota.get(key);
-              if (current !== undefined && current < limit) quota.set(key, current + 1);
-              else changes = 0;
+              if (current === undefined) quota.set(key, 1);
+              else if (current + 1 <= cap) quota.set(key, current + 1);
+              else throw new Error('CHECK constraint failed');
             } else if (sql.includes('SET n = n - 1')) {
               const key = `${values[0]}|${values[1]}`;
               const current = quota.get(key) ?? 0;
               if (current > 0) quota.set(key, current - 1);
               else changes = 0;
             } else if (sql.startsWith('INSERT INTO credentials')) {
+              if (Number(values[2]) === 0) {
+                playerInserts += 1;
+                if (options?.failPlayerInsert && playerInserts > 1) throw new Error('credential insert failed');
+              }
               const tokenHash = String(values[0]);
               creds.set(tokenHash, {
                 tokenHash,
@@ -166,8 +177,6 @@ function harness(options?: { failCreate?: boolean | 'throw'; conflictOnce?: bool
               }
             } else if (sql.startsWith('INSERT INTO tickets')) {
               tickets.set(String(values[0]), { matchId: String(values[1]), expiresAt: Number(values[2]) });
-            } else if (sql.startsWith('DELETE FROM tickets WHERE ticket_hash')) {
-              tickets.delete(String(values[0]));
             } else if (sql.startsWith('DELETE FROM tickets WHERE match_id')) {
               for (const [hash, row] of tickets) {
                 if (row.matchId === values[0]) tickets.delete(hash);
@@ -175,19 +184,48 @@ function harness(options?: { failCreate?: boolean | 'throw'; conflictOnce?: bool
             }
             return { success: true, meta: { changes } };
           },
+          async all() {
+            const sql = statement.query;
+            const values = statement.values;
+            if (sql.includes('RETURNING')) {
+              const hash = String(values[0]);
+              const row = tickets.get(hash);
+              tickets.delete(hash);
+              if (!row) return { results: [] };
+              return { results: [{ match_id: row.matchId, expires_at: row.expiresAt }] };
+            }
+            return { results: [] };
+          },
         };
         return statement;
       },
+      async batch(statements: readonly { run(): Promise<unknown> }[]) {
+        const quotaSnapshot = new Map(quota);
+        const credSnapshot = new Map([...creds].map(([key, row]) => [key, { ...row }]));
+        try {
+          const results = [];
+          for (const statement of statements) results.push(await statement.run());
+          ops.push('d1-batch');
+          return results;
+        } catch (error) {
+          quota.clear();
+          for (const [key, value] of quotaSnapshot) quota.set(key, value);
+          creds.clear();
+          for (const [key, value] of credSnapshot) creds.set(key, value);
+          throw error;
+        }
+      },
     },
+    ...(options?.omitQuotaKey ? {} : { QUOTA_HMAC_KEY: 'test-quota-hmac-key' }),
   };
-  return { env, found, calls, ops };
+  return { env, found, calls, ops, creds, quota };
 }
 
-function postMatch(ip: string, extra?: Record<string, unknown>): Request {
+function postMatch(ip: string, extra?: Record<string, unknown>, device = 'd00000001'): Request {
   return new Request('https://padel.example/matches', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip },
-    body: JSON.stringify({ log: courtLog(), ...extra }),
+    body: JSON.stringify({ log: courtLog(), device, ...extra }),
   });
 }
 
@@ -228,7 +266,7 @@ describe('match index gate', () => {
     const sent = JSON.parse(calls[0]?.body ?? '{}') as { log: { base: { matchId: string } } };
     expect(sent.log.base.matchId).toBe(body.matchId);
     expect(calls).toHaveLength(1);
-    expect(ops).toEqual(['d1-insert', 'do-create']);
+    expect(ops).toEqual(['d1-batch', 'd1-insert', 'do-create']);
 
     const unknown = '00000000-0000-4000-8000-0000000000ff';
     const socket = await handleFetch(
@@ -319,7 +357,7 @@ describe('match index gate', () => {
     const { env, found, calls, ops } = harness({ failCreate: true });
     const created = await handleFetch(postMatch('203.0.113.61'), env);
     expect(created.status).toBe(500);
-    expect(ops[0]).toBe('d1-insert');
+    expect(ops[0]).toBe('d1-batch');
     expect(ops.indexOf('d1-insert')).toBeLessThan(ops.indexOf('do-create'));
     expect(ops.indexOf('do-create')).toBeLessThan(ops.indexOf('d1-delete'));
     expect(ops.indexOf('do-create')).toBeLessThan(ops.indexOf('do-discard'));
@@ -332,7 +370,7 @@ describe('match index gate', () => {
     const { env, found, ops } = harness({ failCreate: 'throw' });
     const created = await handleFetch(postMatch('203.0.113.63'), env);
     expect(created.status).toBe(500);
-    expect(ops).toEqual(['d1-insert', 'do-create', 'd1-delete', 'do-discard']);
+    expect(ops).toEqual(['d1-batch', 'd1-insert', 'do-create', 'd1-delete', 'do-discard', 'd1-batch']);
     expect(found.size).toBe(0);
   });
 
@@ -350,19 +388,40 @@ describe('match index gate', () => {
     expect(ops).toHaveLength(0);
   });
 
-  it('allows ten creates a day for one address and an eleventh from another', async () => {
+  it('allows ten creates a day on one device and blocks the eleventh', async () => {
     const { env, ops } = harness();
     for (let i = 0; i < 10; i += 1) {
-      const response = await handleFetch(postMatch('203.0.113.71'), env);
+      const response = await handleFetch(postMatch('203.0.113.71', undefined, 'd00000071'), env);
       expect(response.status).toBe(201);
     }
-    const blocked = await handleFetch(postMatch('203.0.113.71'), env);
+    const blocked = await handleFetch(postMatch('203.0.113.71', undefined, 'd00000071'), env);
     expect(blocked.status).toBe(429);
-    expect(((await blocked.json()) as { error: string }).error).toBe('daily_limit');
+    expect(await blocked.json()).toEqual({
+      error: 'device_daily_limit',
+      message: "You've reached 10 new matches today on this device.",
+    });
     expect(ops.filter((op) => op === 'do-create')).toHaveLength(10);
-    const other = await handleFetch(postMatch('203.0.113.72'), env);
-    expect(other.status).toBe(201);
+    const sameDevice = await handleFetch(postMatch('203.0.113.72', undefined, 'd00000071'), env);
+    expect(sameDevice.status).toBe(429);
+    expect(((await sameDevice.json()) as { error: string }).error).toBe('device_daily_limit');
+    const otherDevice = await handleFetch(postMatch('203.0.113.71', undefined, 'd00000072'), env);
+    expect(otherDevice.status).toBe(201);
     expect(ops.filter((op) => op === 'do-create')).toHaveLength(11);
+  });
+
+  it('blocks a network that has already started 100 matches', async () => {
+    const { env, quota, ops } = harness();
+    const day = quotaDay(Date.now());
+    const ipHash = await quotaMac('test-quota-hmac-key', 'ip', '198.51.100.51', day);
+    quota.set(`${ipHash}|${day}`, 100);
+    const response = await handleFetch(postMatch('198.51.100.51', undefined, 'd00000051'), env);
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({
+      error: 'network_daily_limit',
+      message: 'Too many new matches from this network today.',
+    });
+    expect(ops).not.toContain('do-create');
+    expect(quota.get(`${ipHash}|${day}`)).toBe(100);
   });
 
   it('retries a unique id collision and still returns 201 once', async () => {
@@ -480,17 +539,92 @@ describe('match index gate', () => {
     expect(create.indexOf('.insert(')).toBeGreaterThan(-1);
     expect(create.indexOf('.insert(')).toBeLessThan(create.indexOf('/create'));
     expect(create).toContain('discardMatch');
-    expect(create).toContain('takeQuota');
+    expect(create).toContain('takeCreateQuota');
+    expect(create).toContain('quotaMac');
     const room = readFileSync(new URL('./match-room.ts', import.meta.url), 'utf8');
     expect(room).toContain("pathname === '/discard'");
     expect(room).toContain('deleteAll');
     expect(room).toContain("pathname === '/carry-invite'");
     expect(room).toContain("pathname === '/notify'");
+    expect(room).toContain('chooseActor');
+    expect(room).toContain('touchMatchActivity');
+    expect(room).toContain('serverLastChange');
     const headers = clientIpHeaders(
       new Request('https://padel.example/matches/x/ws', {
         headers: { 'cf-connecting-ip': '198.51.100.8', [CLIENT_IP_HEADER]: 'spoofed' },
       }),
     );
     expect(headers.get(CLIENT_IP_HEADER)).toBe('198.51.100.8');
+  });
+
+  it('refuses a create when the quota secret or the device id is missing', async () => {
+    const missingKey = harness({ omitQuotaKey: true });
+    const refused = await handleFetch(postMatch('198.51.100.41'), missingKey.env);
+    expect(refused.status).toBe(503);
+    expect(missingKey.ops).not.toContain('do-create');
+    const { env, ops } = harness();
+    const badDevice = await handleFetch(postMatch('198.51.100.42', { device: 'phone' }), env);
+    expect(badDevice.status).toBe(400);
+    expect(ops).not.toContain('do-create');
+  });
+
+  it('consumes a websocket ticket once with a single delete', async () => {
+    const { env, calls } = harness();
+    const created = await handleFetch(postMatch('198.51.100.21', undefined, 'd00000021'), env);
+    const body = (await created.json()) as { hostToken: string };
+    const joined = await handleFetch(joinRequest('198.51.100.22', body.hostToken), env);
+    expect(joined.status).toBe(201);
+    const ticket = ((await joined.json()) as { ticket: string }).ticket;
+    const opened = await handleFetch(
+      new Request(`https://padel.example/ws/${ticket}`, {
+        headers: { upgrade: 'websocket', origin: PAGES, 'cf-connecting-ip': '198.51.100.23' },
+      }),
+      env,
+    );
+    expect(opened.status).not.toBe(401);
+    expect(calls.some((call) => call.id.length > 0)).toBe(true);
+    const again = await handleFetch(
+      new Request(`https://padel.example/ws/${ticket}`, {
+        headers: { upgrade: 'websocket', origin: PAGES, 'cf-connecting-ip': '198.51.100.24' },
+      }),
+      env,
+    );
+    expect(again.status).toBe(401);
+  });
+
+  it('keeps one player credential when a second invite insert fails', async () => {
+    const { env, creds, ops } = harness({ failPlayerInsert: true });
+    const created = await handleFetch(postMatch('198.51.100.31', undefined, 'd00000031'), env);
+    const body = (await created.json()) as { matchId: string; hostToken: string };
+    const first = await handleFetch(
+      new Request(`https://padel.example/matches/${body.matchId}/invites`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${body.hostToken}`,
+          'content-type': 'application/json',
+          'cf-connecting-ip': '198.51.100.32',
+        },
+        body: JSON.stringify({ role: 'player' }),
+      }),
+      env,
+    );
+    expect(first.status).toBe(201);
+    const active = () => [...creds.values()].filter((row) => row.host === 0 && row.revokedAt === null);
+    expect(active()).toHaveLength(1);
+    const second = await handleFetch(
+      new Request(`https://padel.example/matches/${body.matchId}/invites`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${body.hostToken}`,
+          'content-type': 'application/json',
+          'cf-connecting-ip': '198.51.100.33',
+        },
+        body: JSON.stringify({ role: 'player' }),
+      }),
+      env,
+    );
+    expect(second.status).toBe(500);
+    expect(active()).toHaveLength(1);
+    expect(ops.filter((op) => op === 'd1-batch').length).toBeGreaterThanOrEqual(2);
   });
 });

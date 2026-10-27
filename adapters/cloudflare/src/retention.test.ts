@@ -8,6 +8,9 @@ function index(ids: readonly string[]): { store: MatchIndex; removed: string[] }
     async expiredMatchIds() {
       return ids;
     },
+    async purgeEphemeral() {
+      return undefined;
+    },
     async remove(id: string) {
       removed.push(id);
     },

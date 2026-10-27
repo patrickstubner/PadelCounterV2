@@ -59,12 +59,16 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ACCOUNT_FROM_VARS: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EDGE_RATE_LIMIT_RULE: ${{ vars.EDGE_RATE_LIMIT_RULE }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           account="${CLOUDFLARE_ACCOUNT_ID:-$ACCOUNT_FROM_VARS}"
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$account" ]; then
             echo "CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is missing. Skipping staging deploy."
             exit 0
           fi
+          export ENV_NAME=staging
+          node "$GITHUB_WORKSPACE/adapters/cloudflare/scripts/check-deploy-env.mjs"
           if [ "$EDGE_RATE_LIMIT_RULE" != "confirmed" ]; then
             echo "Set repository variable EDGE_RATE_LIMIT_RULE=confirmed after the edge rule is saved."
             exit 1
@@ -117,6 +121,8 @@ jobs:
           ACCOUNT_FROM_VARS: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EDGE_RATE_LIMIT_RULE: ${{ vars.EDGE_RATE_LIMIT_RULE }}
           EDGE_CONFIRMED: ${{ inputs.edge_rate_limit_confirmed }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           account="${CLOUDFLARE_ACCOUNT_ID:-$ACCOUNT_FROM_VARS}"
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$account" ]; then
@@ -124,6 +130,8 @@ jobs:
             echo "ship=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          export ENV_NAME=production
+          node "$GITHUB_WORKSPACE/adapters/cloudflare/scripts/check-deploy-env.mjs"
           if [ "$EDGE_CONFIRMED" != "true" ]; then
             echo "Run the workflow with edge_rate_limit_confirmed set."
             exit 1

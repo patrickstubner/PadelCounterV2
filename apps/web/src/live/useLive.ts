@@ -260,6 +260,7 @@ export function useLive(
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               log,
+              device: thisDevice(),
               ...(options?.previousHostToken
                 ? { previousHostToken: options.previousHostToken, carry: options.carry === true }
                 : {}),

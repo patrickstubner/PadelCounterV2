@@ -9,13 +9,14 @@ import {
   isRoomCode,
   offerReconnect,
   parseMatchLog,
+  quotaDay,
   type Role,
 } from '@padel/core';
 import { corsHeaders, isAllowedOrigin } from './cors';
 import { clientAddress, clientIpHeaders, d1MatchIndex, isIdConflict, type D1Like, type MatchIndex } from './match-index';
 import { takeMatchRoute } from './rate';
 import { classifyPath, limitsMatchRoute, matchIdFrom, ticketFrom } from './routes';
-import { randomToken, sha256Hex } from './tokens';
+import { quotaMac, randomToken, sha256Hex } from './tokens';
 
 export interface RoomNamespace {
   idFromName(name: string): unknown;
@@ -26,6 +27,8 @@ export interface ServerEnv {
   MATCH_ROOMS: RoomNamespace;
   ENVIRONMENT: string;
   DB: D1Like;
+  /** Wrangler secret. HMAC key for the daily create counters. */
+  QUOTA_HMAC_KEY?: string;
 }
 
 const routeBuckets = new Map<string, readonly number[]>();
@@ -105,24 +108,36 @@ export async function handleFetch(request: Request, env: ServerEnv): Promise<Res
 const CREATE_ATTEMPTS = 3;
 const TICKET_TTL_MS = 30_000;
 
+const DEVICE_ID = /^d[a-f0-9]{8}$/;
+
 async function createMatch(request: Request, env: ServerEnv): Promise<Response> {
   const body = await readJson(request, 96_000);
   if (!body || typeof body !== 'object') return Response.json({ error: 'invalid_match' }, { status: 400 });
-  const record = body as { log?: unknown; previousHostToken?: unknown; carry?: unknown };
+  const record = body as { log?: unknown; device?: unknown; previousHostToken?: unknown; carry?: unknown };
   const parsed = parseMatchLog(record.log);
   if (!parsed) return Response.json({ error: 'invalid_match' }, { status: 400 });
+  if (typeof record.device !== 'string' || !DEVICE_ID.test(record.device)) {
+    return Response.json({ error: 'invalid_match' }, { status: 400 });
+  }
+  const secret = env.QUOTA_HMAC_KEY;
+  if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
   const index = d1MatchIndex(env.DB);
   const now = Date.now();
-  const addressHash = await sha256Hex(clientAddress(request));
-  if (!(await index.takeQuota(addressHash, now))) {
-    return Response.json({ error: 'daily_limit', message: ROOM_MESSAGES.daily_limit }, { status: 429 });
+  const day = quotaDay(now);
+  const deviceHash = await quotaMac(secret, 'device', record.device, day);
+  const ipHash = await quotaMac(secret, 'ip', clientAddress(request), day);
+  const quota = await index.takeCreateQuota(deviceHash, ipHash, now);
+  if (!quota.ok) {
+    const code = quota.reason === 'network' ? 'network_daily_limit' : 'device_daily_limit';
+    return Response.json({ error: code, message: ROOM_MESSAGES[code] }, { status: 429 });
   }
+  const release = () => index.releaseCreateQuota(deviceHash, ipHash, now);
   let lastConflict = false;
   for (let attempt = 0; attempt < CREATE_ATTEMPTS; attempt += 1) {
     const matchId = createMatchId();
     const log = assignMatchId(parsed, matchId);
     if (!log) {
-      await index.releaseQuota(addressHash, now);
+      await release();
       return Response.json({ error: 'invalid_match' }, { status: 400 });
     }
     const hostToken = randomToken();
@@ -136,7 +151,7 @@ async function createMatch(request: Request, env: ServerEnv): Promise<Response> 
         lastConflict = true;
         continue;
       }
-      await index.releaseQuota(addressHash, now);
+      await release();
       throw error;
     }
     const stub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(matchId));
@@ -148,7 +163,7 @@ async function createMatch(request: Request, env: ServerEnv): Promise<Response> 
       });
       if (!stored.ok) {
         await discardMatch(index, stub, matchId);
-        await index.releaseQuota(addressHash, now);
+        await release();
         return pass(stored);
       }
       const payload = (await stored.json()) as { expiresAt?: number };
@@ -167,11 +182,11 @@ async function createMatch(request: Request, env: ServerEnv): Promise<Response> 
     } catch (error) {
       await discardMatch(index, stub, matchId);
       if (isIdConflict(error) && attempt < CREATE_ATTEMPTS - 1) continue;
-      await index.releaseQuota(addressHash, now);
+      await release();
       throw error;
     }
   }
-  await index.releaseQuota(addressHash, now);
+  await release();
   void lastConflict;
   return Response.json({ error: 'unavailable' }, { status: 500 });
 }
@@ -240,8 +255,7 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
   const payload = (await stored.json()) as { expiresAt?: number };
   const expiresAt = payload.expiresAt ?? Date.now() + JOIN_TOKEN_TTL_MS;
   const index = d1MatchIndex(env.DB);
-  await index.revokePlayerCredentials(matchId, Date.now());
-  await index.insertCredential({
+  await index.replacePlayerCredential(matchId, Date.now(), {
     tokenHash: await sha256Hex(inviteToken),
     matchId,
     host: false,

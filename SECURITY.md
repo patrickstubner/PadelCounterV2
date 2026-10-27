@@ -40,11 +40,13 @@ At most 4 admitted player sockets are allowed, including the creator. The Durabl
 - Body size is capped (about 96 KB for a match log, 8 KB for a socket message). SQL uses bound parameters. Parsed objects are copied onto a null-prototype object before fields are read. Team names are length-limited and rendered as React text.
 - Storage keys use the prefix `pcv2:` (`pcv2:log`, `pcv2:matches`, `pcv2:celebrated`, `pcv2:join`, `pcv2:device`, `pcv2:fanfare`). The app does not read or write v1 keys (`padel-counter.v1`, `padel-counter.matches`, `padel-counter.celebrated`). The service worker cache id stays `padel-counter-v2`. The pages base is `/PadelCounterV2/`. The installed name is Padel Counter V2.
 - A win plays one short fanfare from Web Audio oscillators. There is no audio file, so there is no extra licence and the CSP is unchanged (`media-src 'none'` stays). The menu toggle defaults to on and is stored at `pcv2:fanfare`. If the browser refuses playback, the app stays silent.
-- `POST /matches` allows 10 creates per UTC day for one `CF-Connecting-IP`, counted in D1 (`create_quota`) after hashing the address. The 11th create from that address is `429 daily_limit`. A different address can still create. Phones that share a court NAT share that budget. If create fails, the quota is released. A unique match-id collision is retried up to three times. The response is not 201 when every attempt fails.
-- The live room stops accepting scores one day after the last event (`closed`). D1 keeps the match as history for 730 days from `last_activity`, then a scheduled job discards the Durable Object and deletes the row. The one-day close does not delete the row. The cron is on production and staging only.
+- `POST /matches` allows 10 creates per UTC day for one device id, and 100 for one network address, counted in D1 (`create_quota`). The stored key is an HMAC of the worker secret `QUOTA_HMAC_KEY` with the UTC day, not a plain hash of the address. The 11th create on that device is `429 device_daily_limit`. The 101st create from that network is `429 network_daily_limit`. A failed create releases both counts. The two increments run in one D1 batch and roll back together. A unique match-id collision is retried up to three times. The response is not 201 when every attempt fails.
+- The live room stops accepting scores one day after the last server-stamped event (`closed`). Seed times from the phone are replaced with the server clock when the match is created, and `by` on those seed rows is `host`. `last_activity` in D1 is updated on each live event. History is 730 days from that column, then a scheduled job discards the Durable Object and deletes the row. The same job deletes create-quota rows older than two days and expired websocket tickets. The one-day close does not delete the row. A last-change time in the future does not keep the room open. The cron is on production and staging only.
+- Joining phones get `p2`, `p3`, and then higher ids. An id already bound to a device is not given to another phone. When no free id remains, the hello is rejected.
+- A new player code revokes older player codes and inserts the new hash in one D1 batch. A websocket ticket is consumed with one `DELETE ... RETURNING`.
 - A host who starts a new match while one is open must confirm. Finish & new sends `match/end` the same way End match does, so the match stays in history and the creator can reopen it. Inside one hour, and only when the host confirms, previously connected devices are offered `Join new match?`. The invite is bound to those device ids, is host-initiated, and token expiry and revocation are checked on every event. Anyone who does not confirm stays out. After one hour there is no reconnect offer. A non-host who starts a new match leaves the shared match on that phone only and does not send `match/end`.
 - End match is allowed at any score. Reopen is `match/resume`, not a general undo. The creator can always reopen. The person who ended it can reopen too, unless the creator was the one who ended it. The server checks this. Minus can correct a finished set (6:0 back to 5:1). The event log is append-only and keeps `by`.
-- `.dev.vars`, `.env`, and `.env.*` are gitignored. `.dev.vars.example` contains `ENVIRONMENT=development` and no secret. Wrangler database ids in the repo are placeholders, not live databases. `env.dev` is named `padel-counter-dev`, so a local deploy cannot overwrite the production worker name.
+- `.dev.vars`, `.env`, and `.env.*` are gitignored. `.dev.vars.example` names `QUOTA_HMAC_KEY` and does not contain a value. Wrangler database ids in the repo are placeholders, not live databases. `env.dev` is named `padel-counter-dev`, so a local deploy cannot overwrite the production worker name.
 - CI runs lint, typecheck, unit tests, the production web build, a wrangler dry-run, and `pnpm audit --audit-level=moderate`. Deploy jobs do nothing until Cloudflare credentials exist, and Pages does not run until the repository variable `DEPLOY_PAGES` is `true`.
 
 ## Findings
@@ -63,9 +65,9 @@ At most 4 admitted player sockets are allowed, including the creator. The Durabl
 | Info | No login, no shared delete | `POST /auth/*` is a stub. Deleting a match in the UI removes it from this browser only. Only the creator and Patrick may delete a shared match later. Others may only hide it. There is still no server delete route. | Login stays out of this pull request. |
 | Info | P1-02 Retention | Resolved. Scoring stops one day after the last event. D1 history is deleted after two years by the scheduled job. UI delete is still this device only. | Keep both periods on the Privacy page. |
 | Info | P1-03 New match while one is open | Resolved. The host confirms Finish & new. Reconnect is optional, host-only, device-bound, and only within one hour. A non-host leaves locally. | Do not end a match silently. |
-| Info | P1-04 Create without login | Resolved. Ten creates per address per UTC day, enforced in D1. Login is still later. `POST /auth/*` returns 501. | Keep the isolate limit as a second line. |
+| Info | P1-04 Create without login | Resolved, then tightened by P3-06. Ten creates per device per UTC day, plus 100 per network, in one D1 batch. The key is an HMAC. | Keep the isolate limit as a second line. |
 | Info | P1-06 Custom domain | Resolved. No custom domain. The app stays at `https://patrickstubner.github.io/PadelCounterV2/` beside v1. CORS allows that origin only. | The path is not a CORS boundary. |
-| Info | P1-10 Deploy approval | Resolved in the workflow shape. Production uses the `production` environment, checks out `github.sha`, and ships the worker and Pages together. | Required reviewers are a GitHub environment setting. Turn that on before the first real deploy. YAML cannot force the reviewer. |
+| Info | P1-10 Deploy approval | Resolved. Production uses the `production` environment, checks out `github.sha`, and ships the worker and Pages together. The job fails if that environment has no required reviewer. | Create `production` with a required reviewer, and `staging`, before the first deploy. |
 | Info | Code scanning is not in CI | Adding CodeQL while the repository has code scanning turned off fails the workflow. | Enable code scanning, then add a pinned CodeQL workflow. |
 | Info | Dependencies | Direct pins include React 19.3.0, `lottie-web` 5.13.0, `qrcode` 1.5.4, TypeScript 6.0.3, Vitest 5.0.4, ESLint 10.12.0, Wrangler 4.153.0, `@cloudflare/workers-types` 5.20261027.1, Rsbuild 2.2.13, and `happy-dom` 21.0.4 (tests only). TypeScript 7 and a newer ESLint exist upstream; this tree stays on the v1 TypeScript and ESLint pins on purpose. `happy-dom` 20.14.6 was the v1 pin and is inside GHSA-834v-8h66-3h79, so the test runner is on 21.0.4. `glob` 11.1.0 is a deprecated transitive of the existing Workbox pin. | Keep `pnpm audit` at moderate or higher in CI. Review Dependabot PRs. Do not bump TypeScript or the lottie player without re-running the court tests and the lottie source check. |
 
@@ -85,7 +87,7 @@ A new QR still revokes the previous join token. Phones that are already connecte
 
 ### P1-04 Create without login
 
-`POST /matches` needs no account. One address may create 10 matches per UTC day. The counter is the SHA-256 of `CF-Connecting-IP` in D1, not a client device id and not the per-isolate map. The 11th create is `429 daily_limit`. A different address is allowed. A shared court NAT shares the 10. A failed create releases the count. Login with Google, Facebook, GitHub, and passkeys is out of this version. `POST /auth/*` returns 501 `{ error: 'not_available' }`.
+`POST /matches` needs no account. One device may create 10 matches per UTC day, and one network may create 100. The counter is an HMAC of `QUOTA_HMAC_KEY`, not a plain hash of the address. See P3-06. Login with Google, Facebook, GitHub, and passkeys is out of this version. `POST /auth/*` returns 501 `{ error: 'not_available' }`.
 
 ### P1-06 Custom domain
 
@@ -93,7 +95,7 @@ There is no custom domain. v2 is served at `https://patrickstubner.github.io/Pad
 
 ### P1-10 Deploy approval
 
-Production deploy is `workflow_dispatch` on `main` and uses the GitHub environment `production`. The job checks out `github.sha` and fails if `HEAD` is anything else. The worker and GitHub Pages of that same commit ship together. Pages runs only after that job. Required reviewers cannot be forced from YAML. Patrick has to turn on a required reviewer for the `production` environment before a real deploy. Until the Cloudflare secrets exist, the job skips and stays green, and Pages does not run.
+Production deploy is `workflow_dispatch` on `main` and uses the GitHub environment `production`. The job checks out `github.sha` and fails if `HEAD` is anything else. The worker and GitHub Pages of that same commit ship together. Pages runs only after that job. Before the first deploy, `production` must exist and must have a required reviewer, and `staging` must exist. The workflow asks GitHub and fails the deploy if the production reviewer rule is missing. Until the Cloudflare secrets exist, the job skips and stays green, and Pages does not run.
 
 ### P1-17, P1-18, and P1-19
 
@@ -114,7 +116,22 @@ Create the rule in the Cloudflare dashboard (Security → WAF → Rate limiting 
 - Action: Block.
 - Threshold: 60 requests per minute per IP. That is higher than the isolate limit so four phones behind one court NAT can connect, rotate a code, and reconnect.
 
-There is no custom domain. If the dashboard can attach the rule only to a zone, and not to `*.workers.dev`, do not send real clients to the worker until the rule can be saved. A configured deploy fails unless `EDGE_RATE_LIMIT_RULE` is `confirmed` and, for production, the workflow input `edge_rate_limit_confirmed` is true. Add yourself as a required reviewer on the GitHub environment `production`. The workflow cannot do that for you.
+There is no custom domain. If the dashboard can attach the rule only to a zone, and not to `*.workers.dev`, do not send real clients to the worker until the rule can be saved. A configured deploy fails unless `EDGE_RATE_LIMIT_RULE` is `confirmed` and, for production, the workflow input `edge_rate_limit_confirmed` is true. Create the GitHub environments `staging` and `production` first. `production` needs a required reviewer. The deploy job fails if that rule is missing. Set the Wrangler secret `QUOTA_HMAC_KEY` on both workers before the first create.
+
+## Review 3, 2026-10-27
+
+A review of pull request 1 at `45dff86` asked for the following. They are in the tree this note now describes. The later README commit is unchanged by these fixes.
+
+- P3-01. On create, every seed `at` and `createdAt` is replaced with the server time. The one-day close and the one-hour reconnect use `meta.created_at` and live events only. A last-change time in the future does not keep the room open and does not offer a reconnect.
+- P3-02. A joining phone never receives an id that is already bound to a device or held by a connected phone. Ids continue `p5`, `p6`, and so on. When none remain, hello is rejected.
+- P3-03. Create counters are an HMAC of the Wrangler secret `QUOTA_HMAC_KEY` with the UTC day in the message. The scheduled job deletes `create_quota` rows older than two days and expired tickets.
+- P3-04. A deploy that has Cloudflare credentials fails if the `production` environment has no required reviewer. `staging` and `production` have to exist before that deploy.
+- P3-05. The Privacy page names the device id (`pcv2:device` and the joined table), the keyed network hash and its two-day retention, and the token hashes with their lifetimes.
+- P3-06. The 10-a-day limit is per device id. One network address may create 100. The device message is “You've reached 10 new matches today on this device.” The network message is “Too many new matches from this network today.” Both counters move in one batch or not at all.
+- P3-07. Seed events are stored with `by` set to `host` and `at` set to the server time.
+- P3-08. A ticket is taken with `DELETE ... RETURNING`, one statement.
+- P3-09. Each live event updates `matches.last_activity`. The two-year delete counts from that column.
+- P3-10. Revoking the previous player credential and inserting the new one run in one D1 batch.
 
 ## Review follow-up, 2026-10-27
 

@@ -1,11 +1,12 @@
 import type { MatchIndex } from './match-index';
 
-/** Deletes D1 history older than two years and asks the room to drop its storage. */
+/** Deletes quota rows older than two days and expired tickets, then history older than two years. */
 export async function purgeExpiredHistory(
   index: MatchIndex,
   now: number,
   discard: (id: string) => Promise<void>,
 ): Promise<number> {
+  await index.purgeEphemeral(now);
   const ids = await index.expiredMatchIds(now);
   for (const id of ids) {
     try {

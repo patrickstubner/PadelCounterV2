@@ -4,8 +4,12 @@ import {
   HISTORY_RETAIN_MS,
   HOST_ACTOR,
   MATCHES_PER_DAY,
+  MATCHES_PER_NETWORK_PER_DAY,
+  MAX_PLAYER_ACTOR,
+  QUOTA_RETAIN_MS,
   RECONNECT_WINDOW_MS,
   ROOM_CLOSE_MS,
+  actorId,
   canReopen,
   carryTokenHashes,
   credentialAllowsEvent,
@@ -14,6 +18,7 @@ import {
   offerReconnect,
   planNewMatch,
   roomAcceptsScore,
+  whoLabel,
 } from './policy';
 
 const NOW = 1_700_000_000_000;
@@ -128,6 +133,13 @@ describe('end and reopen', () => {
     expect(canReopen({ events: byPlayer, actorId: HOST_ACTOR, actorIsHost: true })).toBe(true);
     expect(canReopen({ events: byPlayer, actorId: 'p3', actorIsHost: false })).toBe(false);
     expect(canReopen({ events: [], actorId: HOST_ACTOR, actorIsHost: true })).toBe(false);
+    expect(canReopen({ events: byPlayer, actorId: 'p5', actorIsHost: false })).toBe(false);
+    expect(actorId('p5')).toBe('p5');
+    expect(actorId('p32')).toBe('p32');
+    expect(actorId('p33')).toBeUndefined();
+    expect(actorId('p4')).toBe('p4');
+    expect(whoLabel('p5')).toBe('Player 5');
+    expect(whoLabel('p4')).toBe('Player 4');
   });
 });
 
@@ -135,8 +147,13 @@ describe('retention and daily creates', () => {
   it('closes scoring one day after the last event and keeps history for two years', () => {
     expect(roomAcceptsScore(NOW, NOW + ROOM_CLOSE_MS - 1)).toBe(true);
     expect(roomAcceptsScore(NOW, NOW + ROOM_CLOSE_MS)).toBe(false);
+    expect(roomAcceptsScore(NOW + 60_000, NOW)).toBe(false);
+    expect(offerReconnect(NOW + 60_000, NOW)).toBe(false);
     expect(historyExpired(NOW, NOW + HISTORY_RETAIN_MS - 1)).toBe(false);
     expect(historyExpired(NOW, NOW + HISTORY_RETAIN_MS)).toBe(true);
     expect(MATCHES_PER_DAY).toBe(10);
+    expect(MATCHES_PER_NETWORK_PER_DAY).toBe(100);
+    expect(MAX_PLAYER_ACTOR).toBe(32);
+    expect(QUOTA_RETAIN_MS).toBe(2 * 24 * 60 * 60 * 1000);
   });
 });
