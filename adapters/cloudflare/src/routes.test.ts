@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isAllowedOrigin } from './cors';
-import { allowRate, takeLiveMessage, takeMatchRoute } from './rate';
+import { JOIN_FAILURE_LIMIT, allowRate, takeJoinFailure, takeLiveMessage, takeMatchRoute } from './rate';
 import { classifyPath, limitsMatchRoute, matchIdFrom } from './routes';
 
 const ID = '00000000-0000-4000-8000-0000000000aa';
@@ -86,5 +86,17 @@ describe('rate limit', () => {
     expect(takeMatchRoute(buckets, '203.0.113.9', 10_020)).toBe(false);
     expect(takeMatchRoute(buckets, '203.0.113.10', 10_020)).toBe(true);
     expect(takeMatchRoute(buckets, '203.0.113.9', 80_000)).toBe(true);
+  });
+
+  it('throttles failed joins inside one isolate before the shared route budget is full', () => {
+    const buckets = new Map<string, readonly number[]>();
+    expect(JOIN_FAILURE_LIMIT).toBe(5);
+    expect(JOIN_FAILURE_LIMIT).toBeLessThan(20);
+    for (let i = 0; i < JOIN_FAILURE_LIMIT; i += 1) {
+      expect(takeJoinFailure(buckets, '198.51.100.80', 10_000 + i)).toBe(true);
+    }
+    expect(takeJoinFailure(buckets, '198.51.100.80', 10_010)).toBe(false);
+    expect(takeJoinFailure(buckets, '198.51.100.81', 10_010)).toBe(true);
+    expect(takeMatchRoute(new Map(), '198.51.100.80', 10_010)).toBe(true);
   });
 });

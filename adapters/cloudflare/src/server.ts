@@ -15,7 +15,7 @@ import {
 } from '@padel/core';
 import { corsHeaders, isAllowedOrigin } from './cors';
 import { clientAddress, clientIpHeaders, d1MatchIndex, isIdConflict, type D1Like, type MatchIndex } from './match-index';
-import { takeMatchRoute } from './rate';
+import { takeJoinFailure, takeMatchRoute } from './rate';
 import { classifyPath, limitsMatchRoute, matchIdFrom, ticketFrom } from './routes';
 import { quotaMac, randomToken, sha256Hex } from './tokens';
 
@@ -40,6 +40,7 @@ export interface ServerEnv {
 }
 
 const routeBuckets = new Map<string, readonly number[]>();
+const joinFailureBuckets = new Map<string, readonly number[]>();
 
 function withCors(response: Response, origin: string | null, environment: string): Response {
   const headers = new Headers(response.headers);
@@ -343,18 +344,14 @@ async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
   const index = d1MatchIndex(env.DB);
   const now = Date.now();
   const window = joinWindow(now);
-  const deviceHash = await quotaMac(secret, 'join-device', device, String(window));
-  const deviceQuota = await index.takeJoinDevice(deviceHash, now);
-  if (!deviceQuota.ok) {
-    return Response.json(
-      { error: 'join_device_limit', message: ROOM_MESSAGES.join_device_limit },
-      { status: 429 },
-    );
-  }
   const token = bearer(request);
   const credential = token ? await index.findCredential(await sha256Hex(token)) : null;
-  const admitted = Boolean(credential && credential.revokedAt === null && now < credential.expiresAt && (await index.find(credential.matchId)));
-  if (!admitted || !credential) {
+  const credentialOk = Boolean(credential && credential.revokedAt === null && now < credential.expiresAt);
+  const matchOk = credentialOk && credential ? await index.find(credential.matchId) : false;
+  if (!credentialOk || !matchOk || !credential) {
+    if (!takeJoinFailure(joinFailureBuckets, clientAddress(request), now)) {
+      return Response.json({ error: 'slow_down', message: ROOM_MESSAGES.slow_down }, { status: 429 });
+    }
     const ipHash = await quotaMac(secret, 'join-ip', clientAddress(request), String(window));
     const networkQuota = await index.noteJoinFailure(ipHash, now);
     if (!networkQuota.ok) {
@@ -367,6 +364,14 @@ async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
       return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
     }
     return Response.json({ error: 'not_found' }, { status: 404 });
+  }
+  const deviceHash = await quotaMac(secret, 'join-device', device, String(window));
+  const deviceQuota = await index.takeJoinDevice(deviceHash, now);
+  if (!deviceQuota.ok) {
+    return Response.json(
+      { error: 'join_device_limit', message: ROOM_MESSAGES.join_device_limit },
+      { status: 429 },
+    );
   }
   const ticket = randomToken();
   await index.putTicket(await sha256Hex(ticket), credential.matchId, now + TICKET_TTL_MS);

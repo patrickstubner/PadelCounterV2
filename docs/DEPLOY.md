@@ -137,8 +137,11 @@ A WAF rate-limiting rule cannot target `*.workers.dev`. Those rules belong to a 
 What limits traffic on the workers.dev host, in this order:
 
 - A Workers Rate Limiting binding, `REQUEST_LIMIT`, from `[[ratelimits]]` in `wrangler.toml`. It allows 30 requests per 60 seconds for one HMAC of the client address. The check runs before the D1 counters, on `POST /matches`, `POST /matches/:id/invites`, `POST /matches/:id/carry`, `POST /join`, and `GET /ws/*`. Over the limit the worker returns 429. The count is per Cloudflare location and is approximate: a burst can pass. Staging uses namespace `1002` and dev uses `1003`, so they do not share the production namespace `1001`. Source: [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) (last updated 21 October 2026). The key is an HMAC of `QUOTA_HMAC_KEY`, not the raw address. The same page advises against a raw IP key because many people share one address; this project still keys on the address, because there is no account, and stores only the HMAC.
-- `POST /join` writes D1 table `join_quota`. One device may try 20 times per minute. One network may record 60 failed attempts per minute (missing, invalid, expired, or revoked token, or a match that is not in D1). A successful join does not increment the network row, so several phones on one court Wi-Fi or one CGNAT address are not locked out by playing. The stored key is an HMAC, not the device id or the address. Migration `0004_join_quota.sql` is applied by step 4.
-- Those same routes also share 20 requests per minute per address inside one isolate. That counter is not global.
+- One isolate allows 20 of those requests per minute per address. That counter dies with the isolate.
+- A failed `POST /join` is tighter than that: 5 failures per minute per address inside the same isolate. The worker reads the credential first. While those 5 remain, the only D1 write is the network failure row. The next failure returns 429 and does not write. A successful join does not use this budget.
+- `POST /join` writes D1 table `join_quota` only after that read. The device id is sent by the client (`d` and 8 hex digits) and is not checked against the phone, so the device cap does not stop an attacker who changes the id. It counts 20 successful joins per minute for one id. It does not count a failed token. One network may record 60 failed attempts per minute. A successful join does not increment the network row, so several phones on one court Wi-Fi or one CGNAT address are not locked out by playing. The stored key is an HMAC, not the device id or the address. Migration `0004_join_quota.sql` is applied by step 4.
+
+The binding’s 30 and the network failure cap of 60 are both above the isolate cap of 20. One isolate never reaches them. They apply only when more than one isolate, or more than one Cloudflare location, sees the same key. `SECURITY.md` states this.
 
 Do not create `EDGE_RATE_LIMIT_RULE`. Do not pass `edge_rate_limit_confirmed`. The deploy workflow does not read either. A custom domain would make a zone WAF rule possible, and this project does not add one.
 
@@ -176,15 +179,24 @@ On `main`, run the Deploy workflow with “Run workflow”. `production` asks `p
 
 ## 14. Usage and billing notifications
 
-**Owner must do (browser/account).** Patrick does this in the Cloudflare dashboard after the account in step 1 exists. It can wait until after the first staging deploy. It does not change the worker.
+**Free: no notification needed.** This account stays on the Workers Free plan. Do not add a usage notification or a budget alert for it. Those notifications are for a paid account only.
 
-The free Workers plan includes 10 million requests and 30 million CPU milliseconds. Past that, Workers bills requests and CPU time. D1 bills rows read and rows written. Notifications do not stop usage and do not cap a bill. The monthly invoice is the source of truth.
+Checked against the Cloudflare docs on 2026-10-27.
 
-Checked against the Cloudflare docs on 2026-10-27:
+Workers Free, from [Pricing](https://developers.cloudflare.com/workers/platform/pricing/) (last updated 2 October 2026) and [Limits](https://developers.cloudflare.com/workers/platform/limits/) (last updated 12 October 2026):
 
-- [Usage-based billing](https://developers.cloudflare.com/billing/understand/usage-based-billing/) (last updated 29 May 2026). Workers billable metrics are requests and CPU time. Per-product email notifications are described for a Professional plan or higher: open the account, go to Notifications, and add a Billable Usage notification. The same page says those emails are informational.
-- [Platform Notifications](https://developers.cloudflare.com/notifications/notification-available/) (last updated 21 October 2026). The catalog entry is Usage Based Billing, under Billing. The dashboard path on that page is Alerts, then Platform Notifications, then Create a Notification. It is included with Professional plans or higher, and the note says usage-based billing notifications are for Pay-as-you-go accounts only.
-- [D1 billing](https://developers.cloudflare.com/d1/observability/billing/) (last updated 21 April 2026). D1 notifications cover Rows Read and Rows Written. The same page shows current usage under Billing, then Billable Usage. History there is kept for 30 days.
-- [Budget alerts](https://developers.cloudflare.com/billing/manage/budget-alerts/) (last updated 29 May 2026). An account-wide dollar threshold is Billing, then Billable Usage, then Create budget alert. Pay-as-you-go only. The alert resets each billing period and does not pause usage.
+- 100,000 requests per day.
+- 10 milliseconds of CPU time per request.
 
-Open both screens. If the dashboard shows Workers, set a notification for requests and for CPU time. If it shows D1, set one for Rows Read and one for Rows Written. If a budget alert is offered, add one low dollar threshold as well. If those controls are missing, that matches a free plan that is not Professional and not Pay-as-you-go. Do not buy a plan only to obtain the alert. The accepted residual risk in `SECURITY.md` covers cost and availability while the worker stays on `workers.dev` without a zone.
+The daily request limit resets at 00:00 UTC. Past it, Cloudflare returns Error 1027. That is an outage until the reset, not an invoice. A zone route can be fail open (the Worker is skipped) or fail closed (the 1027 page). This project has no zone route. CPU time over 10 milliseconds on one request is Error 1102, from the same Limits page. That is also not a bill.
+
+D1 on Workers Free, from [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/) (last updated 21 April 2026):
+
+- 5 million rows read per day.
+- 100,000 rows written per day.
+
+Those limits reset at 00:00 UTC. Past either one, D1 queries return errors until then. Stored rows stay. The Free plan does not invoice the overage. The Workers Paid plan is what removes the daily cap and starts a bill.
+
+[D1 enforces free tier daily query limits](https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/) (1 September 2026) says Cloudflare emails when that D1 daily limit is reached. The query error tells the account to wait until midnight UTC. Patrick does not configure that email.
+
+Paid only, if this account is later Workers Paid: [Usage-based billing](https://developers.cloudflare.com/billing/understand/usage-based-billing/) (last updated 29 May 2026) describes a Billable Usage notification for a Professional plan or higher, and says the email does not replace the invoice. [Platform Notifications](https://developers.cloudflare.com/notifications/notification-available/) (last updated 21 October 2026) lists Usage Based Billing for Professional plans or higher, with a note that those notifications are for Pay-as-you-go accounts. [Budget alerts](https://developers.cloudflare.com/billing/manage/budget-alerts/) (last updated 29 May 2026) are an account-wide dollar threshold under Billing, then Billable Usage, and they are Pay-as-you-go only. They do not pause usage. Leave all of these unset while the plan is Free.

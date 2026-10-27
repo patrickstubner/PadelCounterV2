@@ -42,7 +42,8 @@ export function PrivacyPage({ onBack }: PrivacyPageProps) {
           Starting a live match is limited for each phone and for each network. Opening the live connection is
           limited for each phone, and failed attempts are also limited for each network, for one minute. The
           server stores a keyed hash of the device id and a keyed hash of the network address for those counts.
-          The hash is not the address itself. Those rows are deleted after two days.
+          The hash is not the address itself. To limit abuse, Cloudflare receives a stable, non-reversible
+          pseudonymous key (an HMAC) of the IP address. Those rows are deleted after two days.
         </p>
         <p>
           Join codes are stored only as hashes. A player code hash stops working after 2 hours. The phone that

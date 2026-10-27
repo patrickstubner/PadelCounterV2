@@ -8,6 +8,7 @@ describe('privacy page', () => {
     expect(html).toContain('pcv2:device');
     expect(html).toContain('joined list');
     expect(html).toContain('keyed hash of the network address');
+    expect(html).toContain('stable, non-reversible pseudonymous key (an HMAC) of the IP address');
     expect(html).toContain('deleted after two days');
     expect(html).toContain('2 hours');
     expect(html).toContain('12 hours');

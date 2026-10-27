@@ -2,6 +2,12 @@
 export const MATCH_ROUTE_LIMIT = 20;
 export const MATCH_ROUTE_WINDOW_MS = 60_000;
 
+/**
+ * Failed POST /join attempts per address inside one isolate. Lower than MATCH_ROUTE_LIMIT so a bad
+ * token stops writing D1 before the shared route budget is full. A successful join does not use it.
+ */
+export const JOIN_FAILURE_LIMIT = 5;
+
 /** Best-effort limiter. The isolate map resets when the isolate dies; the match cap does not. */
 export function allowRate(
   stamps: readonly number[],
@@ -19,8 +25,26 @@ export function takeMatchRoute(
   ip: string,
   now: number,
 ): boolean {
+  return takeBucket(buckets, ip, now, MATCH_ROUTE_LIMIT);
+}
+
+/** Counts a rejected POST /join. When this returns false the caller must not write D1. */
+export function takeJoinFailure(
+  buckets: Map<string, readonly number[]>,
+  ip: string,
+  now: number,
+): boolean {
+  return takeBucket(buckets, ip, now, JOIN_FAILURE_LIMIT);
+}
+
+function takeBucket(
+  buckets: Map<string, readonly number[]>,
+  ip: string,
+  now: number,
+  limit: number,
+): boolean {
   if (buckets.size > 1000) buckets.clear();
-  const next = allowRate(buckets.get(ip) ?? [], now, MATCH_ROUTE_LIMIT, MATCH_ROUTE_WINDOW_MS);
+  const next = allowRate(buckets.get(ip) ?? [], now, limit, MATCH_ROUTE_WINDOW_MS);
   buckets.set(ip, next.stamps);
   return next.ok;
 }
