@@ -41,7 +41,8 @@ At most 4 admitted player sockets are allowed, including the creator. The Durabl
 - Storage keys use the prefix `pcv2:` (`pcv2:log`, `pcv2:matches`, `pcv2:celebrated`, `pcv2:join`, `pcv2:device`, `pcv2:fanfare`). The app does not read or write v1 keys (`padel-counter.v1`, `padel-counter.matches`, `padel-counter.celebrated`). The service worker cache id stays `padel-counter-v2`. The pages base is `/PadelCounterV2/`. The installed name is Padel Counter V2.
 - A win plays one short fanfare from Web Audio oscillators. There is no audio file, so there is no extra licence and the CSP is unchanged (`media-src 'none'` stays). The menu toggle defaults to on and is stored at `pcv2:fanfare`. If the browser refuses playback, the app stays silent.
 - `POST /matches` allows 10 creates per UTC day for one device id, and 100 for one network address, counted in D1 (`create_quota`). The stored key is an HMAC of the worker secret `QUOTA_HMAC_KEY` with the UTC day, not a plain hash of the address. The 11th create on that device is `429 device_daily_limit`. The 101st create from that network is `429 network_daily_limit`. A failed create releases both counts. The two increments run in one D1 batch and roll back together. A unique match-id collision is retried up to three times. The response is not 201 when every attempt fails.
-- The live room stops accepting scores one day after the last server-stamped event (`closed`). Seed times from the phone are replaced with the server clock when the match is created, and `by` on those seed rows is `host`. `last_activity` in D1 moves at most once a minute while the match is played. History is 730 days from that column, then a scheduled job discards the Durable Object and deletes the row. The same job deletes create-quota rows older than two days and expired websocket tickets. The one-day close does not delete the row. A last-change time in the future does not keep the room open. The cron is on production and staging only.
+- The live room stops accepting scores one day after the last server-stamped event (`closed`). Seed times from the phone are replaced with the server clock when the match is created, and `by` on those seed rows is `host`. `last_activity` in D1 moves at most once a minute while the match is played. History is 730 days from that column, then a scheduled job discards the Durable Object and deletes the row. The same job deletes create-quota rows and join-quota rows older than two days, and expired websocket tickets. The one-day close does not delete the row. A last-change time in the future does not keep the room open. The cron is on production and staging only.
+- `POST /join` is limited in D1, not in one isolate: 20 attempts per minute for one device and 60 per minute for one network address. Both counters are an HMAC of `QUOTA_HMAC_KEY` with the minute in the message, and they move in one batch. The 21st attempt on that device is `429 join_device_limit`. The 61st attempt from that network is `429 join_network_limit`. A new index over the same database still sees the count. The isolate limit of 20 per minute per address remains a second line for `/matches*`, `/join`, and `/ws/*`.
 - Joining phones get `p2`, `p3`, and then higher ids. An id already bound to a device is not given to another phone. When no free id remains, the hello is rejected.
 - A new player code revokes older player codes and inserts the new hash in one D1 batch. A websocket ticket is consumed with one `DELETE ... RETURNING`.
 - A host who starts a new match while one is open must confirm. Finish & new sends `match/end` the same way End match does, so the match stays in history and the creator can reopen it. Inside one hour, and only when the host confirms, previously connected devices are offered `Join new match?`. The invite is bound to those device ids, is host-initiated, and token expiry and revocation are checked on every event. Anyone who does not confirm stays out. After one hour there is no reconnect offer. A non-host who starts a new match leaves the shared match on that phone only and does not send `match/end`.
@@ -56,7 +57,7 @@ At most 4 admitted player sockets are allowed, including the creator. The Durabl
 | Medium | Open match creation | `POST /matches` needs no login. A client that can reach the worker can still create Durable Objects up to the limit below. Unknown websocket ids no longer create storage: the worker checks D1 first. | Require a signed-in creator when login exists. |
 | Medium | QR token is the whole permission | Anyone who sees the code can score, until it expires, is rotated, or the room already has 4 players. The token is not bound to a device. | This is the product for this version. Later: a shorter TTL, a read-only spectator code (the role check is already there), and login. Tell players not to photograph the code for people who should not score. The privacy page says this. |
 | Low | Sockets that never say hello | Fixed. One address may hold 8 un-helloed sockets, so four players on one Wi-Fi can each reconnect once. The room also refuses a 17th un-helloed socket, from any address. A Durable Object alarm closes them after 5 seconds. Admitted sockets do not use either budget. | Keep both caps. The edge rule below is separate and still required. |
-| Low | Rate limits are per isolate | Create, invite, and websocket upgrades share 20 requests per minute per address, and pings share the per-socket event budget. The maps still live in one isolate. Many clients can exceed that in total, and the counter resets when the isolate stops. | This is not a substitute for the edge. Before the first worker deploy, add the Cloudflare rate limiting rule in “Required before the first deploy”. |
+| Low | Rate limits are per isolate | Create, invite, carry, `POST /join`, and websocket upgrades still share 20 requests per minute per address inside one isolate, and pings share the per-socket event budget. That map resets when the isolate stops. `POST /join` also has a D1 limit: 20 per minute per device and 60 per minute per network, keyed by HMAC. | Keep the isolate map as a second line. Do not require a zone WAF rule for `*.workers.dev`. See “Required before the first deploy”. |
 | Low | Fifth-player test does not boot a Durable Object | The cap, the exact sentence, the spectator refusal, and `canPerform` are unit-tested. The socket count passed into those functions is not exercised inside `workerd`. | Add a Miniflare or `wrangler dev` test that opens five WebSockets and expects the fifth close with `match_full`. |
 | Low | Join token in `sessionStorage` | A script running on the page origin could read the token. The CSP and the HTML-injection lint rule are what prevent that script. | Keep the CSP. Do not add a tag manager, a CDN script, or inline script. Do not put the token back into the query string or `localStorage`. |
 | Low | Host token dies with the tab | The creating phone cannot mint a new code after refresh, because the host token is memory-only. That avoids a long-lived secret on disk. Someone who can read the tab’s JS heap during the session can still read it. | Keep it out of `localStorage`. When login exists, mint codes from the session instead of a 12-hour bearer token. |
@@ -103,20 +104,38 @@ P1-17. The join link does not contain the match id. `POST /join` returns a 30-se
 
 P1-18. A unique id collision on create retries with a new id, up to three times. A failed attempt does not return 201. D1 is still written before the Durable Object. On failure the row is removed and `/discard` runs `storage.deleteAll()`.
 
-P1-19. A real deploy requires the edge rate-limit rule. The production workflow input `edge_rate_limit_confirmed` must be true, and the repository variable `EDGE_RATE_LIMIT_RULE` must be `confirmed`, once Cloudflare credentials exist. Staging uses that variable the same way. The isolate limit of 20 per minute is not a substitute. If the secrets are missing, the job still skips successfully so an unconfigured repository stays green.
+P1-19. A zone WAF rate-limiting rule cannot be attached to `*.workers.dev`, so the deploy does not wait for one. `POST /join` is limited in D1 instead. The isolate limit of 20 per minute per address remains, and it also covers `/matches*`, `/join`, and `/ws/*`. If the Cloudflare secrets are missing, the job still skips successfully so an unconfigured repository stays green. Pages still waits for the repository variable `DEPLOY_PAGES`.
 
 ## Required before the first deploy
 
-Do not run the production or staging worker deploy until a Cloudflare edge rate limiting rule exists. The free plan includes this. It does not need a credit card. The worker’s own limit of 20 requests per minute per address is a second line inside one isolate. It is not a substitute: it is not shared across the edge, and it resets when the isolate stops.
+The ordered checklist is `docs/DEPLOY.md`. This section is the rate-limit decision. Checked against the Cloudflare docs on 2026-10-27.
 
-Create the rule in the Cloudflare dashboard (Security → WAF → Rate limiting rules) on the hostname that will serve the worker, before that hostname receives real clients.
+A WAF rate-limiting rule cannot apply to a `*.workers.dev` hostname. Rate limiting rules are zone rules: the dashboard and the API create them for a zone, in the `http_ratelimit` phase, and the API path includes the zone id (`/zones/$ZONE_ID/rulesets/...`). Account-level rate limiting rulesets exist for some Enterprise customers and are still deployed to zones. Sources, with the “Last updated” date on each page:
 
-- Expression: `starts_with(http.request.uri.path, "/matches")` or a rule that also covers `POST /join` and `GET /ws/`. The `/matches` prefix covers create, invite, and carry. The join ticket and the websocket are separate paths, so add the same IP block, 60 per minute, for `/join` and `/ws` if the dashboard needs one expression per rule. The old `/matches/:id/ws` route is gone.
-- Characteristic: IP.
-- Action: Block.
-- Threshold: 60 requests per minute per IP. That is higher than the isolate limit so four phones behind one court NAT can connect, rotate a code, and reconnect.
+- [Rate limiting rules](https://developers.cloudflare.com/waf/rate-limiting-rules/) (25 August 2026). Rules are a WAF product. Account-level rulesets deploy to Enterprise zones.
+- [Create a rate limiting rule via API for a zone](https://developers.cloudflare.com/waf/rate-limiting-rules/create-api/) (16 April 2026). “Use the Rulesets API to create a rate limiting rule via API at the zone level.” The caller must have a zone id.
+- [workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/) (22 September 2026). `workers.dev` is the account subdomain Cloudflare assigns. The page describes turning that route on or off. It is not a zone the account adds, and it has no place to attach a WAF rule.
+- [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (29 September 2026). A custom domain requires an active Cloudflare zone the account owns. That is how a Worker is placed on a hostname where zone WAF rules run.
 
-There is no custom domain. If the dashboard can attach the rule only to a zone, and not to `*.workers.dev`, do not send real clients to the worker until the rule can be saved. A configured deploy fails unless `EDGE_RATE_LIMIT_RULE` is `confirmed` and, for production, the workflow input `edge_rate_limit_confirmed` is true. Create the GitHub environments `staging` and `production` first. `production` needs a required reviewer. The deploy job fails if that rule is missing. Set the Wrangler secret `QUOTA_HMAC_KEY` on both workers before the first create.
+This project does not use a custom domain, so there is no zone on which to save the rule. The deploy workflow does not ask for `EDGE_RATE_LIMIT_RULE` or `edge_rate_limit_confirmed`.
+
+If a zone existed, one rule would not be enough for every path on the Free plan, because a Free rate limiting rule’s expression can match a path and the counting characteristic is IP only ([Availability](https://developers.cloudflare.com/waf/rate-limiting-rules/), same page). The paths to cover would be:
+
+- `starts_with(http.request.uri.path, "/matches")` for create, invite, and carry.
+- `http.request.uri.path eq "/join"` for the ticket.
+- `starts_with(http.request.uri.path, "/ws/")` for the websocket upgrade.
+
+Characteristic IP, action Block, 60 requests per minute. `/matches/:id/ws` is not a route. That rule is documentation only. It is not a deploy step.
+
+Alternatives that were considered:
+
+- Workers Rate Limiting binding (`[[ratelimits]]` in Wrangler). It runs inside the Worker, so it does not need a zone. It is approximate and counted separately in each Cloudflare location, so it is not one global limit. A strict cross-location limit is a Durable Object, per [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) (21 October 2026). The older `[[unsafe.bindings]]` type `ratelimit` is the pre-GA form of the same binding.
+- A custom domain on a free zone would make the WAF rule possible. This project does not add one.
+- D1 counters are already on the free plan, are shared by every isolate, and do not reset when an isolate stops.
+
+Recommendation: keep the D1 limit. `POST /join` writes `join_quota` (migration `0004_join_quota.sql`): 20 attempts per minute for one device and 60 per minute for one network address. The key is an HMAC of `QUOTA_HMAC_KEY` with the minute in the message. Both increments are one batch. The scheduled job deletes rows older than two days. Create, invite, carry, `POST /join`, and `GET /ws/*` still share the isolate limit of 20 requests per minute per address. That isolate limit is not the join limit.
+
+The checklist for the account, the token, D1, secrets, Pages, and the first deploy is `docs/DEPLOY.md`. `production` still needs its required reviewer. Set `QUOTA_HMAC_KEY` on both workers before the first create.
 
 ## Review 3, 2026-10-27
 
@@ -141,6 +160,10 @@ A review of pull request 1 at `81f0236` asked for the following. They are in the
 - P3-02 follow-up. A connected socket occupies its player id even when that socket has no device id.
 - P3-09 follow-up. The room remembers the last D1 activity write and skips another write until a minute has passed. Creating the match counts as the first write.
 
+## Review 5, 2026-10-27
+
+- P5-01. `POST /join` is rate limited in D1 per HMAC of the device id and per HMAC of the network address, 20 and 60 per minute. The count is not stored in an isolate map. A zone WAF rule is not required for `*.workers.dev`. The documented path list for a zone rule, if one ever existed, includes `/matches*`, `/join`, and `/ws/*`.
+
 ## Review follow-up, 2026-10-27
 
 A review of pull request 1 at `ea24348` asked for the following. They are in the tree this note now describes.
@@ -158,7 +181,7 @@ A re-review of `3cfe79a` asked for the following. They are in the tree this note
 - P1-13. Pending sockets are capped at 8 per client address and 16 per room. Admitted sockets count toward neither. The 5-second alarm is unchanged. Four players on one Wi-Fi can each hold a handshake and one reconnect. A seventeenth silent socket is refused from any address.
 - P1-14. P1-02, P1-03, P1-04, P1-06, and P1-10 are resolved in “Resolved product decisions”.
 - P1-15. Create inserts the match id into D1 before it writes the Durable Object. If that write fails or throws, the worker deletes the D1 row and `POST`s `/discard`, which runs `storage.deleteAll()`. `/discard` is not a public route. The response is not 201.
-- P1-16. The edge rate limiting rule on `/matches*` is required before the first worker deploy. It is documented in this file and in the README. It is not a setting this repository can apply by itself.
+- P1-16. A re-review asked for an edge rate limiting rule on `/matches*` before the first worker deploy. Review 5 found that a zone WAF rule cannot target `*.workers.dev`, so the deploy does not require one. `POST /join` is limited in D1. The path list for a zone rule, if a zone is added later, also includes `/join` and `/ws/*`.
 
 ## Out of scope
 

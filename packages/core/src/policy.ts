@@ -19,6 +19,19 @@ export const MATCHES_PER_NETWORK_PER_DAY = 100;
 /** Create-quota rows older than this are deleted by the scheduled job. */
 export const QUOTA_RETAIN_MS = 2 * 24 * 60 * 60 * 1000;
 
+/** POST /join attempts for one device inside one minute. */
+export const JOINS_PER_DEVICE = 20;
+
+/** POST /join attempts for one network address inside one minute. */
+export const JOINS_PER_NETWORK = 60;
+
+export const JOIN_WINDOW_MS = 60_000;
+
+export function joinWindow(now: number): number {
+  if (!Number.isInteger(now)) return 0;
+  return Math.floor(now / JOIN_WINDOW_MS);
+}
+
 /** Highest `pN` id handed to a joining phone. Host is not in this range. */
 export const MAX_PLAYER_ACTOR = 32;
 

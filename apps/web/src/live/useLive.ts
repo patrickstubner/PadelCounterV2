@@ -104,7 +104,8 @@ export function useLive(
       try {
         const response = await fetch(`${api}/join`, {
           method: 'POST',
-          headers: { authorization: `Bearer ${token}` },
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ device: thisDevice() }),
         });
         if (generation.current !== mine) return;
         if (!response.ok) {

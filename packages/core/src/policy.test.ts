@@ -3,6 +3,9 @@ import { createMatch, matchReducer } from './reducer';
 import {
   HISTORY_RETAIN_MS,
   HOST_ACTOR,
+  JOINS_PER_DEVICE,
+  JOINS_PER_NETWORK,
+  JOIN_WINDOW_MS,
   MATCHES_PER_DAY,
   MATCHES_PER_NETWORK_PER_DAY,
   MAX_PLAYER_ACTOR,
@@ -15,6 +18,7 @@ import {
   credentialAllowsEvent,
   historyExpired,
   isOpenMatch,
+  joinWindow,
   offerReconnect,
   planNewMatch,
   roomAcceptsScore,
@@ -153,6 +157,10 @@ describe('retention and daily creates', () => {
     expect(historyExpired(NOW, NOW + HISTORY_RETAIN_MS)).toBe(true);
     expect(MATCHES_PER_DAY).toBe(10);
     expect(MATCHES_PER_NETWORK_PER_DAY).toBe(100);
+    expect(JOINS_PER_DEVICE).toBe(20);
+    expect(JOINS_PER_NETWORK).toBe(60);
+    expect(joinWindow(NOW)).toBe(Math.floor(NOW / JOIN_WINDOW_MS));
+    expect(joinWindow(NOW + JOIN_WINDOW_MS)).toBe(joinWindow(NOW) + 1);
     expect(MAX_PLAYER_ACTOR).toBe(32);
     expect(QUOTA_RETAIN_MS).toBe(2 * 24 * 60 * 60 * 1000);
   });

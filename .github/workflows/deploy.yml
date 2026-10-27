@@ -4,12 +4,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      edge_rate_limit_confirmed:
-        description: Edge rate-limit rule is saved (IP, block, 60 per minute, path starts with /matches)
-        type: boolean
-        required: true
-        default: false
+
+# A WAF rate-limiting rule belongs to a zone. *.workers.dev is not a zone this
+# account can edit, so deploy does not wait for a zone rule. POST /join is limited in D1.
 
 permissions:
   contents: read
@@ -58,7 +55,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ACCOUNT_FROM_VARS: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          EDGE_RATE_LIMIT_RULE: ${{ vars.EDGE_RATE_LIMIT_RULE }}
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
@@ -69,10 +65,6 @@ jobs:
           fi
           export ENV_NAME=staging
           node "$GITHUB_WORKSPACE/adapters/cloudflare/scripts/check-deploy-env.mjs"
-          if [ "$EDGE_RATE_LIMIT_RULE" != "confirmed" ]; then
-            echo "Set repository variable EDGE_RATE_LIMIT_RULE=confirmed after the edge rule is saved."
-            exit 1
-          fi
           export CLOUDFLARE_ACCOUNT_ID="$account"
           pnpm exec wrangler d1 migrations apply DB --env staging --remote
           pnpm exec wrangler deploy --env staging
@@ -119,8 +111,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ACCOUNT_FROM_VARS: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          EDGE_RATE_LIMIT_RULE: ${{ vars.EDGE_RATE_LIMIT_RULE }}
-          EDGE_CONFIRMED: ${{ inputs.edge_rate_limit_confirmed }}
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
@@ -132,14 +122,6 @@ jobs:
           fi
           export ENV_NAME=production
           node "$GITHUB_WORKSPACE/adapters/cloudflare/scripts/check-deploy-env.mjs"
-          if [ "$EDGE_CONFIRMED" != "true" ]; then
-            echo "Run the workflow with edge_rate_limit_confirmed set."
-            exit 1
-          fi
-          if [ "$EDGE_RATE_LIMIT_RULE" != "confirmed" ]; then
-            echo "Set repository variable EDGE_RATE_LIMIT_RULE=confirmed after the edge rule is saved."
-            exit 1
-          fi
           export CLOUDFLARE_ACCOUNT_ID="$account"
           pnpm exec wrangler d1 migrations apply DB --env production --remote
           pnpm exec wrangler deploy --env production
@@ -148,7 +130,7 @@ jobs:
   pages:
     name: GitHub Pages
     needs: production
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.production.outputs.ship == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.production.outputs.ship == 'true' && vars.DEPLOY_PAGES == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
