@@ -43,7 +43,7 @@ The court is the earlier game counter, plus a live match that phones share with 
 
 Live scoring is stored in the Durable Object. D1 stores the match id, the daily create counters, hashed credentials, and short-lived websocket tickets. A socket is opened only with a one-use ticket from `POST /join`, so a match id on its own does not create storage. The worker chooses the match id and retries if that id is already taken. The dev worker name is `padel-counter-dev`. One device can create 10 live matches per UTC day. One network can create 100. The counters are an HMAC of a worker secret named `QUOTA_HMAC_KEY`, and the UTC day is part of the hash, so it changes every day. The scheduled job deletes those rows after two days.
 
-A live match stops taking scores one day after the last live score. That clock is the server time stored when the match is created and when a score is saved. A time sent by the phone is not used. The server keeps the match as history for two years after the last score, then the scheduled job deletes it. The Privacy page says both.
+A live match stops taking scores one day after the last live score. That clock is the server time stored when the match is created and when a score is saved. A time sent by the phone is not used. The server keeps the match as history for two years after the last score, then the scheduled job deletes it. That history clock moves at most once a minute. The Privacy page says both.
 
 There is no custom domain. The court and the earlier app share `https://patrickstubner.github.io`. CORS allows that origin and cannot see the path, so the join token is what protects a match. On-device storage keys start with `pcv2:`.
 

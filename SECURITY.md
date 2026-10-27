@@ -41,7 +41,7 @@ At most 4 admitted player sockets are allowed, including the creator. The Durabl
 - Storage keys use the prefix `pcv2:` (`pcv2:log`, `pcv2:matches`, `pcv2:celebrated`, `pcv2:join`, `pcv2:device`, `pcv2:fanfare`). The app does not read or write v1 keys (`padel-counter.v1`, `padel-counter.matches`, `padel-counter.celebrated`). The service worker cache id stays `padel-counter-v2`. The pages base is `/PadelCounterV2/`. The installed name is Padel Counter V2.
 - A win plays one short fanfare from Web Audio oscillators. There is no audio file, so there is no extra licence and the CSP is unchanged (`media-src 'none'` stays). The menu toggle defaults to on and is stored at `pcv2:fanfare`. If the browser refuses playback, the app stays silent.
 - `POST /matches` allows 10 creates per UTC day for one device id, and 100 for one network address, counted in D1 (`create_quota`). The stored key is an HMAC of the worker secret `QUOTA_HMAC_KEY` with the UTC day, not a plain hash of the address. The 11th create on that device is `429 device_daily_limit`. The 101st create from that network is `429 network_daily_limit`. A failed create releases both counts. The two increments run in one D1 batch and roll back together. A unique match-id collision is retried up to three times. The response is not 201 when every attempt fails.
-- The live room stops accepting scores one day after the last server-stamped event (`closed`). Seed times from the phone are replaced with the server clock when the match is created, and `by` on those seed rows is `host`. `last_activity` in D1 is updated on each live event. History is 730 days from that column, then a scheduled job discards the Durable Object and deletes the row. The same job deletes create-quota rows older than two days and expired websocket tickets. The one-day close does not delete the row. A last-change time in the future does not keep the room open. The cron is on production and staging only.
+- The live room stops accepting scores one day after the last server-stamped event (`closed`). Seed times from the phone are replaced with the server clock when the match is created, and `by` on those seed rows is `host`. `last_activity` in D1 moves at most once a minute while the match is played. History is 730 days from that column, then a scheduled job discards the Durable Object and deletes the row. The same job deletes create-quota rows older than two days and expired websocket tickets. The one-day close does not delete the row. A last-change time in the future does not keep the room open. The cron is on production and staging only.
 - Joining phones get `p2`, `p3`, and then higher ids. An id already bound to a device is not given to another phone. When no free id remains, the hello is rejected.
 - A new player code revokes older player codes and inserts the new hash in one D1 batch. A websocket ticket is consumed with one `DELETE ... RETURNING`.
 - A host who starts a new match while one is open must confirm. Finish & new sends `match/end` the same way End match does, so the match stays in history and the creator can reopen it. Inside one hour, and only when the host confirms, previously connected devices are offered `Join new match?`. The invite is bound to those device ids, is host-initiated, and token expiry and revocation are checked on every event. Anyone who does not confirm stays out. After one hour there is no reconnect offer. A non-host who starts a new match leaves the shared match on that phone only and does not send `match/end`.
@@ -130,8 +130,16 @@ A review of pull request 1 at `45dff86` asked for the following. They are in the
 - P3-06. The 10-a-day limit is per device id. One network address may create 100. The device message is “You've reached 10 new matches today on this device.” The network message is “Too many new matches from this network today.” Both counters move in one batch or not at all.
 - P3-07. Seed events are stored with `by` set to `host` and `at` set to the server time.
 - P3-08. A ticket is taken with `DELETE ... RETURNING`, one statement.
-- P3-09. Each live event updates `matches.last_activity`. The two-year delete counts from that column.
+- P3-09. Live play updates `matches.last_activity`, and the two-year delete counts from that column. A later pass limits that write to once a minute per match.
 - P3-10. Revoking the previous player credential and inserting the new one run in one D1 batch.
+
+## Review 4, 2026-10-27
+
+A review of pull request 1 at `81f0236` asked for the following. They are in the tree this note now describes.
+
+- P4-01. Revoking the previous player invite and storing the new one run inside `ctx.storage.transactionSync`. Durable Object SQL is not given `BEGIN`, `COMMIT`, or `ROLLBACK`. The workerd test creates a match, invites a player, joins with the ticket, carries that player into a new match, and ends and reopens.
+- P3-02 follow-up. A connected socket occupies its player id even when that socket has no device id.
+- P3-09 follow-up. The room remembers the last D1 activity write and skips another write until a minute has passed. Creating the match counts as the first write.
 
 ## Review follow-up, 2026-10-27
 

@@ -1,10 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
 import { connectionCloses, isJoinToken, isRole, isRoomCode, parseMatchLog, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
-import { CLIENT_IP_HEADER, touchMatchActivity, type D1Like } from './match-index';
+import { CLIENT_IP_HEADER, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { takeLiveMessage } from './rate';
 import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange } from './room';
-import { insertEvent, insertInvite, insertJoined, insertRoom, openRoomForCreate, readJoined, readRoom, revokePlayerInvites, type RoomSql } from './store';
+import { ensureActivityColumn, insertEvent, insertInvite, insertJoined, insertRoom, markActivityTouch, openRoomForCreate, readActivityTouch, readJoined, readRoom, revokePlayerInvites, type RoomSql } from './store';
 import { safeEqualHex, sha256Hex } from './tokens';
 
 interface PendingState {
@@ -208,8 +208,20 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
     if (!result.duplicate) {
       try {
-        insertEvent(this.sql(), result.event);
-        await touchMatchActivity(this.env.DB, room.base.matchId, result.event.event.at);
+        const sql = this.sql();
+        insertEvent(sql, result.event);
+        const at = result.event.event.at;
+        ensureActivityColumn(sql);
+        const last = readActivityTouch(sql);
+        if (last !== null && shouldTouchActivity(last, at)) {
+          markActivityTouch(sql, at);
+          try {
+            await touchMatchActivity(this.env.DB, room.base.matchId, at);
+          } catch (error) {
+            markActivityTouch(sql, last);
+            throw error;
+          }
+        }
       } catch {
         this.reject(ws, 'unavailable');
         return;
@@ -262,20 +274,11 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     if (!issued.ok) return json(issued.code === 'spectator_not_available' ? 403 : 401, { error: issued.code });
     const created = issued.record.invites.find((row) => row.revokedAt === null && !row.host);
     if (!created) return json(500, { error: 'unavailable' });
-    const sql = this.sql();
-    sql.exec('BEGIN');
-    try {
+    this.ctx.storage.transactionSync(() => {
+      const sql = this.sql();
       revokePlayerInvites(sql, now);
       insertInvite(sql, created);
-      sql.exec('COMMIT');
-    } catch (error) {
-      try {
-        sql.exec('ROLLBACK');
-      } catch {
-        // The transaction is already closed.
-      }
-      throw error;
-    }
+    });
     return json(201, { role: 'player' satisfies Role, expiresAt: issued.expiresAt });
   }
 

@@ -1,6 +1,6 @@
 import { HISTORY_RETAIN_MS, quotaDay } from '@padel/core';
 import { describe, expect, it } from 'vitest';
-import { d1MatchIndex, type CredentialRow, type D1Like, type D1Statement } from './match-index';
+import { d1MatchIndex, shouldTouchActivity, type CredentialRow, type D1Like, type D1Statement } from './match-index';
 import { quotaMac, sha256Hex } from './tokens';
 
 const NOW = Date.UTC(2026, 9, 27, 12, 0, 0);
@@ -277,6 +277,16 @@ describe('create quota', () => {
     expect(await index.takeTicket('once', NOW)).toBeNull();
     await index.putTicket('stale', 'match-9', NOW);
     expect(await index.takeTicket('stale', NOW)).toBeNull();
+  });
+
+  it('touches D1 activity at most once a minute', () => {
+    const last = NOW;
+    expect(shouldTouchActivity(last, last)).toBe(false);
+    expect(shouldTouchActivity(last, last + 59_999)).toBe(false);
+    expect(shouldTouchActivity(last, last + 60_000)).toBe(true);
+    expect(shouldTouchActivity(last + 1, last)).toBe(false);
+    expect(shouldTouchActivity(1.5, last)).toBe(false);
+    expect(shouldTouchActivity(last, Number.NaN)).toBe(false);
   });
 
   it('moves the two-year clock from the last score', async () => {

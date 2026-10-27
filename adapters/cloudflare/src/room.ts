@@ -104,7 +104,8 @@ export interface ActorChoice {
 
 /**
  * A joining phone keeps the id it already has. A new phone gets the lowest free `pN`.
- * An id bound to a device, or held by a connected phone, is never given out again.
+ * An id bound to a device, or held by any connected socket, is never given out again.
+ * A socket counts even when the phone has not sent a device id.
  */
 export function chooseActor(input: ActorChoice): string | null {
   if (input.host) return HOST_ACTOR;
@@ -117,7 +118,7 @@ export function chooseActor(input: ActorChoice): string | null {
     if (row.deviceId) used.add(row.playerId);
   }
   for (const socket of input.connected) {
-    if (socket.deviceId) used.add(socket.actor);
+    used.add(socket.actor);
   }
   for (let n = 2; n <= MAX_PLAYER_ACTOR; n += 1) {
     const id = `p${n}`;

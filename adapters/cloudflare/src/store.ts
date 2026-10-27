@@ -13,7 +13,8 @@ export interface RoomSql {
 const CREATE_META = `CREATE TABLE IF NOT EXISTS meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   base_json TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  activity_touch INTEGER NOT NULL DEFAULT 0
 )`;
 
 const CREATE_INVITES = `CREATE TABLE IF NOT EXISTS invites (
@@ -43,6 +44,15 @@ export function migrate(sql: RoomSql): void {
   sql.exec(CREATE_INVITES);
   sql.exec(CREATE_EVENTS);
   sql.exec(CREATE_JOINED);
+  ensureActivityColumn(sql);
+}
+
+/** Older rooms predate the activity column. Create already includes it. */
+export function ensureActivityColumn(sql: RoomSql): void {
+  const names = sql.exec('PRAGMA table_info(meta)').toArray().map((row) => row.name);
+  if (!names.includes('activity_touch')) {
+    sql.exec('ALTER TABLE meta ADD COLUMN activity_touch INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 /** Tables are created on match create, not when a socket wakes the object. */
@@ -123,8 +133,9 @@ export function loadRoom(sql: RoomSql): RoomRecord | null {
 
 export function insertRoom(sql: RoomSql, record: RoomRecord): void {
   sql.exec(
-    'INSERT INTO meta (id, base_json, created_at) VALUES (1, ?, ?)',
+    'INSERT INTO meta (id, base_json, created_at, activity_touch) VALUES (1, ?, ?, ?)',
     JSON.stringify(record.base),
+    record.serverCreatedAt,
     record.serverCreatedAt,
   );
   for (const invite of record.invites) insertInvite(sql, invite);
@@ -166,6 +177,20 @@ export function readJoined(sql: RoomSql): { tokenHash: string; playerId: string;
   } catch {
     return [];
   }
+}
+
+export function readActivityTouch(sql: RoomSql): number | null {
+  try {
+    const row = sql.exec('SELECT activity_touch FROM meta WHERE id = 1').toArray()[0];
+    const value = row?.activity_touch;
+    return typeof value === 'number' && Number.isInteger(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function markActivityTouch(sql: RoomSql, now: number): void {
+  sql.exec('UPDATE meta SET activity_touch = ? WHERE id = 1', now);
 }
 
 export function revokePlayerInvites(sql: RoomSql, now: number): void {

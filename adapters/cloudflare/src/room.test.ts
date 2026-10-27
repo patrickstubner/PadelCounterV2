@@ -342,5 +342,14 @@ describe('player ids', () => {
         connected: [{ actor: 'p2', deviceId: 'd00000008' }],
       }),
     ).toBe('p3');
+    expect(
+      chooseActor({
+        host: false,
+        tokenHash: 'e'.repeat(64),
+        deviceId: 'd00000009',
+        joined: [],
+        connected: [{ actor: 'p2', deviceId: null }],
+      }),
+    ).toBe('p3');
   });
 });

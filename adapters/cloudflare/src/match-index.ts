@@ -29,6 +29,16 @@ const DELETE_TICKET = 'DELETE FROM tickets WHERE ticket_hash = ? RETURNING match
 const DELETE_TICKETS = 'DELETE FROM tickets WHERE match_id = ?';
 const DELETE_EXPIRED_TICKETS = 'DELETE FROM tickets WHERE expires_at <= ?';
 const TOUCH_MATCH = 'UPDATE matches SET last_activity = ? WHERE id = ?';
+
+/** D1 history clock. The room writes this at most once per match per minute. */
+export const ACTIVITY_TOUCH_MS = 60_000;
+
+export function shouldTouchActivity(last: number, now: number): boolean {
+  if (!Number.isInteger(last) || !Number.isInteger(now)) return false;
+  if (now < last) return false;
+  return now - last >= ACTIVITY_TOUCH_MS;
+}
+
 const EXPIRED_MATCHES = 'SELECT id FROM matches WHERE last_activity < ?';
 
 export interface D1Statement {

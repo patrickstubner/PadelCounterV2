@@ -548,6 +548,10 @@ describe('match index gate', () => {
     expect(room).toContain("pathname === '/notify'");
     expect(room).toContain('chooseActor');
     expect(room).toContain('touchMatchActivity');
+    expect(room).toContain('transactionSync');
+    expect(room).not.toContain("exec('BEGIN')");
+    expect(room).not.toContain("exec('COMMIT')");
+    expect(room).not.toContain("exec('ROLLBACK')");
     expect(room).toContain('serverLastChange');
     const headers = clientIpHeaders(
       new Request('https://padel.example/matches/x/ws', {
