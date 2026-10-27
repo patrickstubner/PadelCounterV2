@@ -63,12 +63,12 @@ That applies `migrations/0001_init.sql`, `migrations/0002_quota_credentials.sql`
 
 **can be scripted with wrangler/gh once a token exists.**
 
-Put the ids from step 4 into `adapters/cloudflare/wrangler.toml` and commit them:
+The ids from step 4 are committed in `adapters/cloudflare/wrangler.toml` (checked 2026-10-27):
 
-- `11111111-1111-4111-8111-111111111111` on the top-level database and on `env.production` (database name `padel-counter`)
-- `33333333-3333-4333-8333-333333333333` on `env.staging` (database name `padel-counter-staging`)
+- `f7d1464e-628a-4959-83bd-9ac0739a0078` on the top-level database and on `env.production` (database name `padel-counter`)
+- `b3420f8a-7ee5-41ba-bdb5-9ee06290e541` on `env.staging` (database name `padel-counter-staging`)
 
-Leave the `env.dev` id as the local placeholder unless step 4 created a dev database. The checked-in placeholders are not live databases. A deploy that still has them fails at migration time.
+A D1 database id is an identifier, not a credential. Leave the `env.dev` id as the local placeholder `22222222-2222-4222-8222-222222222222` unless step 4 creates a dev database. That placeholder is not a live database. If the databases are ever recreated, replace the two ids above and nothing else.
 
 ## 6. QUOTA_HMAC_KEY
 
@@ -181,7 +181,7 @@ On `main`, run the Deploy workflow with “Run workflow”. `production` asks `p
 
 **Free: no notification needed.** This account stays on the Workers Free plan. Do not add a usage notification or a budget alert for it. Those notifications are for a paid account only.
 
-Checked against the Cloudflare docs on 2026-10-27.
+Checked against the Cloudflare docs on 2026-10-27. The Durable Object figures below were added in review 8 (P8-02).
 
 Workers Free, from [Pricing](https://developers.cloudflare.com/workers/platform/pricing/) (last updated 2 October 2026) and [Limits](https://developers.cloudflare.com/workers/platform/limits/) (last updated 12 October 2026):
 
@@ -198,5 +198,13 @@ D1 on Workers Free, from [D1 pricing](https://developers.cloudflare.com/d1/platf
 Those limits reset at 00:00 UTC. Past either one, D1 queries return errors until then. Stored rows stay. The Free plan does not invoice the overage. The Workers Paid plan is what removes the daily cap and starts a bill.
 
 [D1 enforces free tier daily query limits](https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/) (1 September 2026) says Cloudflare emails when that D1 daily limit is reached. The query error tells the account to wait until midnight UTC. Patrick does not configure that email.
+
+Durable Objects on Workers Free, from [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) (last updated 18 October 2026) and [Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/) (last updated 1 June 2026), both read on 2026-10-27. `MatchRoom` is a SQLite-backed Durable Object (`new_sqlite_classes`), which is the only kind the Free plan can use:
+
+- 100,000 Durable Object requests per day. A request is an HTTP request, an RPC session, an alarm invocation, or a WebSocket message. For billing, the docs count incoming WebSocket messages at a 20 to 1 ratio, and opening the socket is one request. The page states that ratio for billing and does not say whether the Free daily counter applies it, so plan for the plain count.
+- 13,000 GB-s of duration per day. Duration is wall-clock time while an object is active or cannot hibernate, billed as 128 MB. The room uses the WebSocket Hibernation API (`acceptWebSocket`), so an idle room with open sockets is not billed for duration once its handlers finish.
+- 100,000 SQLite rows written per day, 5 million rows read per day, and 5 GB of SQL stored data in total for the account. Every accepted live event is inserted into the room table, and deletes, `setAlarm()` and key-value `put()` calls each count as rows written. This is the same budget size as D1, but it is a separate counter, and the room writes on every point. Heavy use reaches the Durable Object write cap before the D1 cap.
+- Daily Free limits reset at 00:00 UTC. Past a cap, further operations of that type fail with an error. This is an outage until the reset, not an invoice.
+- Per object: one object is single-threaded with a soft limit of 1,000 requests per second, and the Limits page lists a 2 MB cap for a row, string or blob and 10 GB of storage per object. Its text about a full object mentions 1 GB on the Free plan, which the table does not show. The Free account total of 5 GB is the number to rely on. CPU per request is 30 seconds by default for a Durable Object, but the Workers Free plan still has 10 milliseconds per request (Limits page above).
 
 Paid only, if this account is later Workers Paid: [Usage-based billing](https://developers.cloudflare.com/billing/understand/usage-based-billing/) (last updated 29 May 2026) describes a Billable Usage notification for a Professional plan or higher, and says the email does not replace the invoice. [Platform Notifications](https://developers.cloudflare.com/notifications/notification-available/) (last updated 21 October 2026) lists Usage Based Billing for Professional plans or higher, with a note that those notifications are for Pay-as-you-go accounts. [Budget alerts](https://developers.cloudflare.com/billing/manage/budget-alerts/) (last updated 29 May 2026) are an account-wide dollar threshold under Billing, then Billable Usage, and they are Pay-as-you-go only. They do not pause usage. Leave all of these unset while the plan is Free.
