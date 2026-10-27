@@ -49,12 +49,14 @@ function harness(options?: {
   quota: Map<string, number>;
   joins: Map<string, number>;
   edge: { calls: number; keys: string[] };
+  queries: string[];
 } {
   const found = new Set<string>();
   const calls: { id: string; body: string; ip: string | null }[] = [];
   const ops: string[] = [];
   const quota = new Map<string, number>();
   const joins = new Map<string, number>();
+  const queries: string[] = [];
   const edge = { calls: 0, keys: [] as string[] };
   const creds = new Map<string, CredRow>();
   const tickets = new Map<string, TicketRow>();
@@ -108,6 +110,7 @@ function harness(options?: {
           },
           async first() {
             const sql = statement.query;
+            queries.push(sql);
             const values = statement.values;
             if (sql.includes('FROM matches WHERE id')) {
               const id = values[0];
@@ -140,6 +143,7 @@ function harness(options?: {
           },
           async run() {
             const sql = statement.query;
+            queries.push(sql);
             const values = statement.values;
             let changes = 1;
             if (sql.startsWith('INSERT INTO matches')) {
@@ -204,6 +208,7 @@ function harness(options?: {
           },
           async all() {
             const sql = statement.query;
+            queries.push(sql);
             const values = statement.values;
             if (sql.includes('RETURNING')) {
               const hash = String(values[0]);
@@ -253,7 +258,7 @@ function harness(options?: {
           },
         }),
   };
-  return { env, found, calls, ops, creds, quota, joins, edge };
+  return { env, found, calls, ops, creds, quota, joins, edge, queries };
 }
 
 function postMatch(ip: string, extra?: Record<string, unknown>, device = 'd00000001'): Request {
@@ -449,7 +454,7 @@ describe('match index gate', () => {
     expect(bad.status).toBe(401);
     expect(((await bad.json()) as { error: string }).error).toBe('bad_token');
     expect(joins.get(`${network}|${window}`)).toBe(1);
-    expect(joins.get(`${device}|${window}`)).toBe(2);
+    expect(joins.get(`${device}|${window}`)).toBe(1);
 
     const invalid = await handleFetch(joinRequest('192.0.2.62', body.hostToken, 'not-a-device'), env);
     expect(invalid.status).toBe(400);
@@ -471,6 +476,55 @@ describe('match index gate', () => {
       message: 'Too many failed connection attempts from this network. Wait a minute.',
     });
     expect(joins.get(`${full}|${window}`)).toBe(60);
+  });
+
+  it('reads a rejected join before the one network write and then stops further writes', async () => {
+    const { env, joins, queries } = harness();
+    const created = await handleFetch(postMatch('198.51.100.60', undefined, 'd00000061'), env);
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as { hostToken: string };
+    const window = joinWindow(Date.now());
+    const network = await quotaMac('test-quota-hmac-key', 'join-ip', '198.51.100.61', String(window));
+    const device = await quotaMac('test-quota-hmac-key', 'join-device', 'd00000061', String(window));
+    const writes = (from: number) => queries.slice(from).filter((sql) => /^(INSERT|UPDATE|DELETE)\b/.test(sql));
+
+    for (let i = 0; i < 5; i += 1) {
+      const mark = queries.length;
+      const bad = await handleFetch(joinRequest('198.51.100.61', 'e'.repeat(22), 'd00000061'), env);
+      expect(bad.status).toBe(401);
+      const added = writes(mark);
+      expect(added).toEqual([
+        'INSERT INTO join_quota (subject_hash, window, n, cap) VALUES (?, ?, 1, ?) ON CONFLICT(subject_hash, window) DO UPDATE SET n = n + 1',
+      ]);
+      const readAt = queries.slice(mark).findIndex((sql) => sql.includes('FROM credentials'));
+      const writeAt = queries.slice(mark).findIndex((sql) => sql.startsWith('INSERT INTO join_quota'));
+      expect(readAt).toBeGreaterThan(-1);
+      expect(readAt).toBeLessThan(writeAt);
+    }
+    expect(joins.get(`${network}|${window}`)).toBe(5);
+    expect(joins.has(`${device}|${window}`)).toBe(false);
+
+    const mark = queries.length;
+    const stopped = await handleFetch(joinRequest('198.51.100.61', 'e'.repeat(22), 'd00000061'), env);
+    expect(stopped.status).toBe(429);
+    expect(((await stopped.json()) as { error: string }).error).toBe('slow_down');
+    expect(writes(mark)).toEqual([]);
+    expect(queries.slice(mark).some((sql) => sql.includes('FROM credentials'))).toBe(true);
+    expect(joins.get(`${network}|${window}`)).toBe(5);
+
+    const okMark = queries.length;
+    const ok = await handleFetch(joinRequest('198.51.100.61', body.hostToken, 'd00000061'), env);
+    expect(ok.status).toBe(201);
+    expect(joins.get(`${device}|${window}`)).toBe(1);
+    expect(joins.get(`${network}|${window}`)).toBe(5);
+    const okQueries = queries.slice(okMark);
+    const credentialAt = okQueries.findIndex((sql) => sql.includes('FROM credentials'));
+    const matchAt = okQueries.findIndex((sql) => sql.includes('FROM matches WHERE id'));
+    const deviceWriteAt = okQueries.findIndex((sql) => sql.startsWith('INSERT INTO join_quota'));
+    expect(credentialAt).toBeGreaterThan(-1);
+    expect(credentialAt).toBeLessThan(matchAt);
+    expect(matchAt).toBeLessThan(deviceWriteAt);
+    expect(writes(okMark).filter((sql) => sql.startsWith('INSERT INTO join_quota'))).toHaveLength(1);
   });
 
   it('stops a match route at the Workers rate limit before D1 and before the isolate map', async () => {
@@ -727,8 +781,10 @@ describe('match index gate', () => {
     expect(fetchFn.indexOf('enforceMatchRouteLimit')).toBeGreaterThan(-1);
     expect(fetchFn.indexOf('enforceMatchRouteLimit')).toBeLessThan(fetchFn.indexOf('mintTicket'));
     const ticket = source.slice(source.indexOf('async function mintTicket'), source.indexOf('async function openSocket'));
-    expect(ticket.indexOf('takeJoinDevice')).toBeLessThan(ticket.indexOf('findCredential'));
-    expect(ticket.indexOf('noteJoinFailure')).toBeGreaterThan(ticket.indexOf('findCredential'));
+    expect(ticket.indexOf('findCredential')).toBeLessThan(ticket.indexOf('noteJoinFailure'));
+    expect(ticket.indexOf('findCredential')).toBeLessThan(ticket.indexOf('takeJoinDevice'));
+    expect(ticket.indexOf('index.find(')).toBeLessThan(ticket.indexOf('noteJoinFailure'));
+    expect(ticket.indexOf('takeJoinFailure')).toBeLessThan(ticket.indexOf('noteJoinFailure'));
     expect(ticket).toContain('invalid_device');
     expect(toml).toContain('[[ratelimits]]');
     expect(toml).toContain('name = "REQUEST_LIMIT"');

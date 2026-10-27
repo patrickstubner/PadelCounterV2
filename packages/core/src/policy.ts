@@ -19,7 +19,7 @@ export const MATCHES_PER_NETWORK_PER_DAY = 100;
 /** Create-quota rows older than this are deleted by the scheduled job. */
 export const QUOTA_RETAIN_MS = 2 * 24 * 60 * 60 * 1000;
 
-/** POST /join attempts for one device inside one minute. */
+/** Successful POST /join for one device inside one minute. A failed token does not count. The id is chosen by the client. */
 export const JOINS_PER_DEVICE = 20;
 
 /** Failed POST /join attempts for one network address inside one minute. A successful join does not count. */
