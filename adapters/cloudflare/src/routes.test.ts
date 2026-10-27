@@ -16,7 +16,9 @@ describe('public routes', () => {
 
   it('does not route internal or delete paths', () => {
     expect(classifyPath('POST', '/create')).toBe('none');
+    expect(classifyPath('POST', '/discard')).toBe('none');
     expect(classifyPath('POST', '/internal/create')).toBe('none');
+    expect(classifyPath('POST', '/internal/discard')).toBe('none');
     expect(classifyPath('DELETE', `/matches/${ID}`)).toBe('none');
     expect(classifyPath('GET', '/matches/not-a-uuid/ws')).toBe('none');
     expect(matchIdFrom(`/matches/${ID}/ws`)).toBe(ID);

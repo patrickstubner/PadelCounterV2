@@ -2,6 +2,7 @@ export const CLIENT_IP_HEADER = 'x-padel-client-ip';
 
 const FIND_MATCH = 'SELECT id FROM matches WHERE id = ?';
 const INSERT_MATCH = 'INSERT INTO matches (id, created_at, last_activity) VALUES (?, ?, ?)';
+const DELETE_MATCH = 'DELETE FROM matches WHERE id = ?';
 
 export interface D1Statement {
   bind(...values: unknown[]): D1Statement;
@@ -16,6 +17,7 @@ export interface D1Like {
 export interface MatchIndex {
   find(id: string): Promise<boolean>;
   insert(id: string, now: number): Promise<void>;
+  remove(id: string): Promise<void>;
 }
 
 export function d1MatchIndex(db: D1Like): MatchIndex {
@@ -26,6 +28,9 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
     },
     async insert(id, now) {
       await db.prepare(INSERT_MATCH).bind(id, now, now).run();
+    },
+    async remove(id) {
+      await db.prepare(DELETE_MATCH).bind(id).run();
     },
   };
 }

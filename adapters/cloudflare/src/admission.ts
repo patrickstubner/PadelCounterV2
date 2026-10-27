@@ -1,8 +1,15 @@
 /** A socket that never sends hello is closed after this long. */
 export const HELLO_TIMEOUT_MS = 5_000;
 
-/** Un-helloed sockets from one address. Other addresses keep their own budget. */
-export const MAX_PENDING_PER_IP = 4;
+/**
+ * Un-helloed sockets from one address.
+ * Four players on one court Wi-Fi can each hold a handshake and one reconnect.
+ * Admitted sockets do not count.
+ */
+export const MAX_PENDING_PER_IP = 8;
+
+/** Un-helloed sockets in one room, across every address. */
+export const MAX_PENDING_ROOM = 16;
 
 export interface SocketView {
   readonly ip: string;
@@ -11,8 +18,9 @@ export interface SocketView {
 }
 
 export function allowPending(sockets: readonly SocketView[], ip: string): boolean {
-  const pending = sockets.filter((socket) => !socket.admitted && socket.ip === ip).length;
-  return pending < MAX_PENDING_PER_IP;
+  const pending = sockets.filter((socket) => !socket.admitted);
+  if (pending.length >= MAX_PENDING_ROOM) return false;
+  return pending.filter((socket) => socket.ip === ip).length < MAX_PENDING_PER_IP;
 }
 
 export function expiredHello(sockets: readonly SocketView[], now: number): readonly SocketView[] {

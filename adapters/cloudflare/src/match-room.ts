@@ -48,6 +48,10 @@ export class MatchRoom extends DurableObject {
     const url = new URL(request.url);
     try {
       if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') return this.openSocket(request);
+      if (request.method === 'POST' && url.pathname === '/discard') {
+        await this.ctx.storage.deleteAll();
+        return json(200, { ok: true });
+      }
       if (request.method === 'POST' && url.pathname === '/create') return this.create(request);
       if (request.method === 'POST' && url.pathname === '/invite') return this.invite(request);
       return json(404, { error: 'not_found' });

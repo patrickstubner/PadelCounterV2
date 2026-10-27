@@ -1,6 +1,6 @@
 import { assignMatchId, createMatchId, isRoomCode, parseMatchLog, ROOM_MESSAGES, type Role } from '@padel/core';
 import { corsHeaders, isAllowedOrigin } from './cors';
-import { clientAddress, clientIpHeaders, d1MatchIndex, type D1Like } from './match-index';
+import { clientAddress, clientIpHeaders, d1MatchIndex, type D1Like, type MatchIndex } from './match-index';
 import { takeMatchRoute } from './rate';
 import { classifyPath, limitsMatchRoute, matchIdFrom } from './routes';
 import { randomToken } from './tokens';
@@ -96,18 +96,48 @@ async function createMatch(request: Request, env: ServerEnv): Promise<Response> 
   const log = parsed ? assignMatchId(parsed, matchId) : null;
   if (!log) return Response.json({ error: 'invalid_match' }, { status: 400 });
   const hostToken = randomToken();
+  const index = d1MatchIndex(env.DB);
+  await index.insert(matchId, Date.now());
   const stub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(matchId));
-  const stored = await stub.fetch('https://match.internal/create', {
-    method: 'POST',
-    body: JSON.stringify({ log, hostToken }),
-  });
-  if (!stored.ok) return pass(stored);
+  let stored: Response;
+  try {
+    stored = await stub.fetch('https://match.internal/create', {
+      method: 'POST',
+      body: JSON.stringify({ log, hostToken }),
+    });
+  } catch (error) {
+    await discardMatch(index, stub, matchId);
+    throw error;
+  }
+  if (!stored.ok) {
+    await discardMatch(index, stub, matchId);
+    return pass(stored);
+  }
   const payload = (await stored.json()) as { expiresAt?: number };
-  await d1MatchIndex(env.DB).insert(matchId, Date.now());
   return Response.json(
     { matchId, hostToken, expiresAt: payload.expiresAt ?? null, protocol: 1 },
     { status: 201, headers: { 'cache-control': 'no-store' } },
   );
+}
+
+async function discardMatch(
+  index: MatchIndex,
+  stub: { fetch(input: Request | string, init?: RequestInit): Promise<Response> },
+  matchId: string,
+): Promise<void> {
+  let failure: unknown;
+  try {
+    await index.remove(matchId);
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    const cleared = await stub.fetch('https://match.internal/discard', { method: 'POST' });
+    if (!cleared.ok && failure === undefined) failure = new Error('discard failed');
+  } catch (error) {
+    if (failure === undefined) failure = error;
+  }
+  if (failure !== undefined) throw failure;
 }
 
 async function createInvite(request: Request, env: ServerEnv, pathname: string): Promise<Response> {

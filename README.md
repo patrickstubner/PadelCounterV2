@@ -45,22 +45,27 @@ To point a local court at a local worker, start the worker and run the court wit
 
 ## What Patrick has to create before a real deploy
 
-Nothing here requires a paid Cloudflare plan or a credit card. Do these in order. Until the Cloudflare secrets exist, the deploy workflow skips the worker and exits successfully. GitHub Pages stays off until `DEPLOY_PAGES` is set, so a private repository is not asked to use a paid Pages plan.
+Nothing here requires a paid Cloudflare plan or a credit card. Do these in order. Until the Cloudflare secrets exist, the deploy workflow skips the worker and exits successfully. GitHub Pages stays off until `DEPLOY_PAGES` is set, so a private repository is not asked to use a paid Pages plan. Do not run the staging or production worker deploy until step 4, the edge rate-limit rule, is saved.
 
 1. Create a Cloudflare account on the free plan and choose the workers.dev subdomain. Copy the account id from the dashboard (Workers & Pages, then the account). The public host will be `https://padel-counter.<that-subdomain>.workers.dev`. It is not knowable before the account exists.
 2. Create an API token. Use a custom token, not the Global API Key. Permissions: Account, Workers Scripts, Edit; Account, D1, Edit. Restrict the token to this account. Do not grant account-wide admin.
 3. Create two D1 databases, named `padel-counter` (production) and `padel-counter-staging` (staging). Copy each database id. In `adapters/cloudflare/wrangler.toml`, replace the placeholders:
    - `11111111-1111-4111-8111-111111111111` on the top-level database and on `env.production` (database `padel-counter`)
    - `33333333-3333-4333-8333-333333333333` on `env.staging` (database `padel-counter-staging`)
-   - Leave `22222222-2222-4222-8222-222222222222` for local `env.dev`, or replace it if you create a `padel-counter-dev` database. Live scoring does not query D1.
-4. In the GitHub repository settings, create environments named `staging` and `production`. On `production`, add yourself as a required reviewer if the plan allows protection rules.
-5. On each of those environments, add:
+   - Leave `22222222-2222-4222-8222-222222222222` for local `env.dev`, or replace it if you create a `padel-counter-dev` database. The worker reads D1 before it forwards a websocket or an invite, so the first deploy applies `migrations/0001_init.sql` (the workflow does this when the secrets exist). Live scores stay in the Durable Object. D1 stores the match id only.
+4. Before any worker deploy, add a Cloudflare rate limiting rule. The free plan includes it. No credit card. In the dashboard open Security → WAF → Rate limiting rules, on the hostname that will serve the worker.
+   - Expression: `starts_with(http.request.uri.path, "/matches")`. That covers create, invite, and `/matches/:id/ws`.
+   - Characteristic: IP. Action: Block.
+   - Threshold: 60 requests per minute per IP. That leaves room for four phones on one court Wi-Fi to connect, rotate a code, and reconnect.
+   The worker also limits those routes to 20 per minute per address inside one isolate. That isolate limit is a second line. It is not a substitute: it is not shared across the edge, and it resets when the isolate stops. Do not run the staging or production deploy until this rule is saved. If the dashboard can attach the rule only to a zone, and not to `*.workers.dev`, see the open custom-domain note in `SECURITY.md` (P1-06). The rule still has to exist before the first deploy that real clients use.
+5. In the GitHub repository settings, create environments named `staging` and `production`. On `production`, add yourself as a required reviewer if the plan allows protection rules. The workflow file does not require that reviewer. Whether to add one is an open decision (P1-10 in `SECURITY.md`).
+6. On each of those environments, add:
    - Secret `CLOUDFLARE_API_TOKEN` (the token from step 2)
    - Secret or variable `CLOUDFLARE_ACCOUNT_ID` (the account id from step 1). The workflow accepts either. It is not highly sensitive, and it is not a token.
-6. Repository settings, Pages: set the source to GitHub Actions before turning pages on. Then add a repository variable `DEPLOY_PAGES` with the value `true`. Until that variable is exactly `true`, the pages job does not run.
-7. After the first worker deploy, add a repository variable `PUBLIC_API_URL` set to the origin only, for example `https://padel-counter.<subdomain>.workers.dev`, with no path and no trailing slash. The pages build copies that origin into `connect-src`. Leave it unset for the CI build. CI refuses an `index.html` that contains any http(s) URL. A pages build may contain only that workers.dev origin.
-8. Turn on secret scanning, push protection, and Dependabot security updates. `dependabot.yml` is already in the repo. Code scanning (CodeQL) is recommended and is not wired in this workflow, so a repository without code scanning stays green.
-9. Do not create these yet. They belong to a later login change: Google client id, Facebook app secret, GitHub OAuth client secret, a passkey relying-party id of `patrickstubner.github.io`, a JWT signing key, and `ADMIN_USER_IDS` after your user id exists. No Apple Developer account, no X API, and no email domain.
+7. Repository settings, Pages: set the source to GitHub Actions before turning pages on. Then add a repository variable `DEPLOY_PAGES` with the value `true`. Until that variable is exactly `true`, the pages job does not run.
+8. After the first worker deploy, add a repository variable `PUBLIC_API_URL` set to the origin only, for example `https://padel-counter.<subdomain>.workers.dev`, with no path and no trailing slash. The pages build copies that origin into `connect-src`. Leave it unset for the CI build. CI refuses an `index.html` that contains any http(s) URL. A pages build may contain only that workers.dev origin.
+9. Turn on secret scanning, push protection, and Dependabot security updates. `dependabot.yml` is already in the repo. Code scanning (CodeQL) is recommended and is not wired in this workflow, so a repository without code scanning stays green.
+10. Do not create these yet. They belong to a later login change: Google client id, Facebook app secret, GitHub OAuth client secret, a passkey relying-party id of `patrickstubner.github.io`, a JWT signing key, and `ADMIN_USER_IDS` after your user id exists. No Apple Developer account, no X API, and no email domain.
 
 Staging deploys on every push to `main` when the Cloudflare secret and account id are present. Production deploys only from Actions, “Deploy”, “Run workflow”, on `main`. Both skip cleanly when the secrets are absent. Pages deploys from `main` only when `DEPLOY_PAGES` is `true`.
 

@@ -11,9 +11,15 @@ function courtLog(): unknown {
   return { schemaVersion: 2, base: createMatch(1_700_000_000_000, CLIENT), events: [] };
 }
 
-function harness(): { env: ServerEnv; found: Set<string>; calls: { id: string; body: string; ip: string | null }[] } {
+function harness(options?: { failCreate?: boolean | 'throw' }): {
+  env: ServerEnv;
+  found: Set<string>;
+  calls: { id: string; body: string; ip: string | null }[];
+  ops: string[];
+} {
   const found = new Set<string>();
   const calls: { id: string; body: string; ip: string | null }[] = [];
+  const ops: string[] = [];
   const rooms: RoomNamespace = {
     idFromName(name) {
       return name;
@@ -27,6 +33,14 @@ function harness(): { env: ServerEnv; found: Set<string>; calls: { id: string; b
             body: request.method === 'GET' ? '' : await request.text(),
             ip: request.headers.get(CLIENT_IP_HEADER),
           });
+          if (request.url.endsWith('/create')) {
+            ops.push('do-create');
+            if (options?.failCreate === 'throw') throw new Error('create failed');
+            if (options?.failCreate) return Response.json({ error: 'unavailable' }, { status: 500 });
+          } else if (request.url.endsWith('/discard')) {
+            ops.push('do-discard');
+            return Response.json({ ok: true });
+          }
           return Response.json({ expiresAt: 1_700_000_000_000 }, { status: 201 });
         },
       };
@@ -36,8 +50,9 @@ function harness(): { env: ServerEnv; found: Set<string>; calls: { id: string; b
     ENVIRONMENT: 'production',
     MATCH_ROOMS: rooms,
     DB: {
-      prepare() {
+      prepare(query: string) {
         const statement = {
+          query,
           values: [] as unknown[],
           bind(...values: unknown[]) {
             statement.values = values;
@@ -49,7 +64,14 @@ function harness(): { env: ServerEnv; found: Set<string>; calls: { id: string; b
           },
           async run() {
             const id = statement.values[0];
-            if (typeof id === 'string') found.add(id);
+            const sql = statement.query.trim().toUpperCase();
+            if (sql.startsWith('INSERT') && typeof id === 'string') {
+              found.add(id);
+              ops.push('d1-insert');
+            } else if (sql.startsWith('DELETE') && typeof id === 'string') {
+              found.delete(id);
+              ops.push('d1-delete');
+            }
             return { success: true };
           },
         };
@@ -57,7 +79,7 @@ function harness(): { env: ServerEnv; found: Set<string>; calls: { id: string; b
       },
     },
   };
-  return { env, found, calls };
+  return { env, found, calls, ops };
 }
 
 function postMatch(ip: string): Request {
@@ -70,7 +92,7 @@ function postMatch(ip: string): Request {
 
 describe('match index gate', () => {
   it('mints the match id and does not open a socket for an unknown id', async () => {
-    const { env, found, calls } = harness();
+    const { env, found, calls, ops } = harness();
     const created = await handleFetch(postMatch('203.0.113.21'), env);
     expect(created.status).toBe(201);
     const body = (await created.json()) as { matchId: string };
@@ -79,6 +101,7 @@ describe('match index gate', () => {
     const sent = JSON.parse(calls[0]?.body ?? '{}') as { log: { base: { matchId: string } } };
     expect(sent.log.base.matchId).toBe(body.matchId);
     expect(calls).toHaveLength(1);
+    expect(ops).toEqual(['d1-insert', 'do-create']);
 
     const unknown = '00000000-0000-4000-8000-0000000000ff';
     const socket = await handleFetch(
@@ -138,6 +161,41 @@ describe('match index gate', () => {
     expect(calls).toHaveLength(20);
   });
 
+  it('writes the index first and drops the row and the room when create fails', async () => {
+    const { env, found, calls, ops } = harness({ failCreate: true });
+    const created = await handleFetch(postMatch('203.0.113.61'), env);
+    expect(created.status).toBe(500);
+    expect(ops[0]).toBe('d1-insert');
+    expect(ops.indexOf('d1-insert')).toBeLessThan(ops.indexOf('do-create'));
+    expect(ops.indexOf('do-create')).toBeLessThan(ops.indexOf('d1-delete'));
+    expect(ops.indexOf('do-create')).toBeLessThan(ops.indexOf('do-discard'));
+    expect(found.size).toBe(0);
+    expect(calls[0]?.id).toBe(calls[1]?.id);
+    expect(calls[1]?.body).toBe('');
+  });
+
+  it('drops the index and the room when the room write throws', async () => {
+    const { env, found, ops } = harness({ failCreate: 'throw' });
+    const created = await handleFetch(postMatch('203.0.113.63'), env);
+    expect(created.status).toBe(500);
+    expect(ops).toEqual(['d1-insert', 'do-create', 'd1-delete', 'do-discard']);
+    expect(found.size).toBe(0);
+  });
+
+  it('does not expose discard on the public worker', async () => {
+    const { env, calls, ops } = harness();
+    const response = await handleFetch(
+      new Request('https://padel.example/discard', {
+        method: 'POST',
+        headers: { 'cf-connecting-ip': '203.0.113.62' },
+      }),
+      env,
+    );
+    expect(response.status).toBe(404);
+    expect(calls).toHaveLength(0);
+    expect(ops).toHaveLength(0);
+  });
+
   it('names the dev worker apart from production and looks up the index before get', () => {
     const toml = readFileSync(new URL('../wrangler.toml', import.meta.url), 'utf8');
     expect(toml).toMatch(/\[env\.dev\]\s+name = "padel-counter-dev"/);
@@ -145,6 +203,13 @@ describe('match index gate', () => {
     const socket = source.slice(source.indexOf('async function openSocket'));
     expect(socket.indexOf('.find(')).toBeGreaterThan(-1);
     expect(socket.indexOf('.find(')).toBeLessThan(socket.indexOf('idFromName'));
+    const create = source.slice(source.indexOf('async function createMatch'), source.indexOf('async function createInvite'));
+    expect(create.indexOf('.insert(')).toBeGreaterThan(-1);
+    expect(create.indexOf('.insert(')).toBeLessThan(create.indexOf('/create'));
+    expect(create).toContain('discardMatch');
+    const room = readFileSync(new URL('./match-room.ts', import.meta.url), 'utf8');
+    expect(room).toContain("pathname === '/discard'");
+    expect(room).toContain('deleteAll');
     const headers = clientIpHeaders(
       new Request('https://padel.example/matches/x/ws', {
         headers: { 'cf-connecting-ip': '198.51.100.8', [CLIENT_IP_HEADER]: 'spoofed' },
