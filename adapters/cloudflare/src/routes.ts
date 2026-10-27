@@ -11,6 +11,11 @@ export function classifyPath(method: string, pathname: string): RouteKind {
   return 'none';
 }
 
+/** Create, invite, and the websocket upgrade. Health and auth are not included. */
+export function limitsMatchRoute(kind: RouteKind): boolean {
+  return kind === 'create' || kind === 'invite' || kind === 'socket';
+}
+
 export function matchIdFrom(pathname: string): string | null {
   const match = new RegExp(`^/matches/(${UUID})/`, 'i').exec(pathname);
   return match?.[1]?.toLowerCase() ?? null;

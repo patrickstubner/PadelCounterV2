@@ -25,14 +25,44 @@ describe('join links', () => {
       code: 'match_full',
       message: '<img src=x onerror=alert(1)>',
     });
-    expect(notice).toEqual({ kind: 'error', message: ROOM_MESSAGES.match_full });
+    expect(notice).toEqual({ kind: 'error', message: ROOM_MESSAGES.match_full, close: true });
     expect(interpretMessage({ type: 'error', code: 'spectator_not_available' })).toEqual({
       kind: 'error',
       message: 'View-only links are not available yet.',
+      close: true,
     });
     expect(interpretMessage({ type: 'error', code: 'nope', message: 'secret internals' })).toEqual({
       kind: 'error',
       message: 'The live match did not accept that.',
+      close: false,
     });
+  });
+
+  it('keeps the socket open for a rejected score and applies an event without the log', () => {
+    expect(interpretMessage({ type: 'error', code: 'not_applied', message: 'raw' })).toEqual({
+      kind: 'error',
+      message: 'That change was not applied.',
+      close: false,
+    });
+    expect(interpretMessage({ type: 'error', code: 'bad_token' }).kind === 'error' && interpretMessage({ type: 'error', code: 'bad_token' })).toMatchObject({
+      close: true,
+    });
+    const eventId = '00000000-0000-4000-8000-0000000000cc';
+    const notice = interpretMessage({
+      type: 'event',
+      eventId,
+      duplicate: false,
+      players: 2,
+      log: { schemaVersion: 2, base: { matchId: ID }, events: [{ type: 'game/increment', team: 'b', at: 1 }] },
+      event: { type: 'game/increment', team: 'a', at: 1_700_000_000_000 },
+    });
+    expect(notice).toEqual({
+      kind: 'delta',
+      eventId,
+      duplicate: false,
+      players: 2,
+      event: { type: 'game/increment', team: 'a', at: 1_700_000_000_000 },
+    });
+    expect(notice).not.toHaveProperty('log');
   });
 });

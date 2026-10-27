@@ -52,7 +52,7 @@ function useUpdateReady(): boolean {
 
 export function App() {
   const match = useMatch();
-  const room = useLive(match.liveRef, match.replaceLog);
+  const room = useLive(match.liveRef, match.replaceLog, match.applyLive);
   const install = useInstallOffer();
   useWakeLock();
   const updateReady = useUpdateReady();

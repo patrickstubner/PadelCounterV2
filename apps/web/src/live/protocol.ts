@@ -1,4 +1,14 @@
-import { isJoinToken, isRoomCode, isUuid, parseMatchLog, ROOM_MESSAGES, type MatchLog } from '@padel/core';
+import {
+  connectionCloses,
+  isJoinToken,
+  isRoomCode,
+  isUuid,
+  parseMatchLog,
+  parseStoredEvent,
+  ROOM_MESSAGES,
+  type MatchEvent,
+  type MatchLog,
+} from '@padel/core';
 
 export const JOIN_KEY = 'padel-counter-v2.join';
 
@@ -44,26 +54,44 @@ export function captureJoinHash(locationLike: Location, historyLike: History, st
 
 export type LiveNotice =
   | { readonly kind: 'log'; readonly log: MatchLog; readonly players: number }
+  | { readonly kind: 'delta'; readonly eventId: string; readonly event: MatchEvent; readonly duplicate: boolean; readonly players: number }
   | { readonly kind: 'presence'; readonly players: number }
-  | { readonly kind: 'error'; readonly message: string }
+  | { readonly kind: 'error'; readonly message: string; readonly close: boolean }
   | { readonly kind: 'ignore' };
+
+function playerCount(value: unknown): number {
+  return typeof value === 'number' && value >= 0 && value <= 4 ? value : 0;
+}
 
 export function interpretMessage(data: unknown): LiveNotice {
   if (typeof data !== 'object' || data === null) return { kind: 'ignore' };
   const record = data as Record<string, unknown>;
   if (record.type === 'error') {
-    const message = isRoomCode(record.code) ? ROOM_MESSAGES[record.code] : 'The live match did not accept that.';
-    return { kind: 'error', message };
+    if (!isRoomCode(record.code)) {
+      return { kind: 'error', message: 'The live match did not accept that.', close: false };
+    }
+    return { kind: 'error', message: ROOM_MESSAGES[record.code], close: connectionCloses(record.code) };
   }
   if (record.type === 'presence' && typeof record.players === 'number' && record.players >= 0 && record.players <= 4) {
     return { kind: 'presence', players: record.players };
   }
-  if ((record.type === 'snapshot' || record.type === 'event') && record.log) {
+  if (record.type === 'event') {
+    const event = parseStoredEvent(record.event);
+    if (!event || !isUuid(record.eventId)) {
+      return { kind: 'error', message: 'The live match did not accept that.', close: false };
+    }
+    return {
+      kind: 'delta',
+      eventId: record.eventId.toLowerCase(),
+      event,
+      duplicate: record.duplicate === true,
+      players: playerCount(record.players),
+    };
+  }
+  if (record.type === 'snapshot' && record.log) {
     const log = parseMatchLog(record.log);
-    if (!log) return { kind: 'error', message: 'The live match did not accept that.' };
-    const players =
-      typeof record.players === 'number' && record.players >= 0 && record.players <= 4 ? record.players : 0;
-    return { kind: 'log', log, players };
+    if (!log) return { kind: 'error', message: 'The live match did not accept that.', close: false };
+    return { kind: 'log', log, players: playerCount(record.players) };
   }
   return { kind: 'ignore' };
 }

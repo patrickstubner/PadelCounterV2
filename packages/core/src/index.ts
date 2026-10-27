@@ -50,7 +50,7 @@ export {
   setWinner,
   tiebreakHint,
 } from './rules';
-export { createMatch, matchReducer, replayScore } from './reducer';
+export { assignMatchId, createMatch, matchReducer, replayScore } from './reducer';
 export { MAX_EVENTS, MAX_RAW_LENGTH, parseMatchLog, parseStoredEvent } from './parse';
 export type { MatchLog } from './parse';
 export { actionForEvent, canPerform, isRole } from './access';
@@ -65,5 +65,5 @@ export {
   isJoinToken,
 } from './join';
 export type { JoinDecision } from './join';
-export { ROOM_MESSAGES, isRoomCode } from './messages';
+export { ROOM_MESSAGES, connectionCloses, isRoomCode } from './messages';
 export type { RoomCode } from './messages';

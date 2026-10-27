@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isAllowedOrigin } from './cors';
-import { allowRate } from './rate';
-import { classifyPath, matchIdFrom } from './routes';
+import { allowRate, takeLiveMessage, takeMatchRoute } from './rate';
+import { classifyPath, limitsMatchRoute, matchIdFrom } from './routes';
 
 const ID = '00000000-0000-4000-8000-0000000000aa';
 
@@ -21,6 +21,15 @@ describe('public routes', () => {
     expect(classifyPath('GET', '/matches/not-a-uuid/ws')).toBe('none');
     expect(matchIdFrom(`/matches/${ID}/ws`)).toBe(ID);
     expect(matchIdFrom('/matches')).toBeNull();
+  });
+
+  it('rate-limits every /matches route and not health', () => {
+    expect(limitsMatchRoute('create')).toBe(true);
+    expect(limitsMatchRoute('invite')).toBe(true);
+    expect(limitsMatchRoute('socket')).toBe(true);
+    expect(limitsMatchRoute('health')).toBe(false);
+    expect(limitsMatchRoute('auth')).toBe(false);
+    expect(limitsMatchRoute('none')).toBe(false);
   });
 });
 
@@ -46,5 +55,28 @@ describe('rate limit', () => {
     }
     expect(allowRate(stamps, 1_009).ok).toBe(false);
     expect(allowRate(stamps, 2_100).ok).toBe(true);
+  });
+
+  it('counts pings in the same per-socket budget as events', () => {
+    let stamps: readonly number[] = [];
+    for (let i = 0; i < 9; i += 1) {
+      const ping = takeLiveMessage(stamps, 'ping', 5_000 + i);
+      expect(ping.ok).toBe(true);
+      if (ping.ok) stamps = ping.stamps;
+    }
+    const played = takeLiveMessage(stamps, 'event', 5_009);
+    expect(played.ok).toBe(true);
+    if (played.ok) stamps = played.stamps;
+    const blocked = takeLiveMessage(stamps, 'ping', 5_010);
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.code).toBe('slow_down');
+  });
+
+  it('shares one budget across /matches routes for one address', () => {
+    const buckets = new Map<string, readonly number[]>();
+    for (let i = 0; i < 20; i += 1) expect(takeMatchRoute(buckets, '203.0.113.9', 10_000 + i)).toBe(true);
+    expect(takeMatchRoute(buckets, '203.0.113.9', 10_020)).toBe(false);
+    expect(takeMatchRoute(buckets, '203.0.113.10', 10_020)).toBe(true);
+    expect(takeMatchRoute(buckets, '203.0.113.9', 80_000)).toBe(true);
   });
 });

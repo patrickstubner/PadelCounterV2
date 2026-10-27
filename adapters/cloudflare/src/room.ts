@@ -184,6 +184,28 @@ export function applyPlay(
   return { ok: true, duplicate: false, event, record: { ...record, events: [...record.events, event] } };
 }
 
+/** One applied event. The full log stays on the snapshot that opened the socket. */
+export function eventDelta(input: {
+  readonly eventId: string;
+  readonly event: MatchEvent;
+  readonly duplicate: boolean;
+  readonly players: number;
+}): {
+  readonly type: 'event';
+  readonly eventId: string;
+  readonly event: MatchEvent;
+  readonly duplicate: boolean;
+  readonly players: number;
+} {
+  return {
+    type: 'event',
+    eventId: input.eventId,
+    event: input.event,
+    duplicate: input.duplicate,
+    players: input.players,
+  };
+}
+
 export function toLog(record: RoomRecord): MatchLog {
   return {
     schemaVersion: 2,

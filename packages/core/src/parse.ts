@@ -1,5 +1,5 @@
 import { isUuid } from './id';
-import { codePointLength, isValidStoredName } from './names';
+import { isValidStoredName, sanitizeTeamName } from './names';
 import { isPlausibleSetScore } from './rules';
 import {
   SCHEMA_VERSION,
@@ -17,7 +17,6 @@ import {
 export const MAX_EVENTS = 500;
 export const MAX_RAW_LENGTH = 96_000;
 const MAX_REVISION = 10_000_000;
-const MAX_RENAME_CODE_POINTS = 80;
 
 export interface MatchLog {
   readonly schemaVersion: typeof SCHEMA_VERSION;
@@ -123,8 +122,7 @@ export function parseStoredEvent(value: unknown): MatchEvent | null {
       return { type: 'set/select', index: record.index, at: record.at };
     case 'team/rename':
       if (!isTeamId(record.team) || typeof record.name !== 'string') return null;
-      if (codePointLength(record.name) > MAX_RENAME_CODE_POINTS) return null;
-      return { type: 'team/rename', team: record.team, name: record.name, at: record.at };
+      return { type: 'team/rename', team: record.team, name: sanitizeTeamName(record.name, record.team), at: record.at };
     case 'match/reset':
     case 'match/new':
       if (typeof record.matchId !== 'string' || !isUuid(record.matchId)) return null;

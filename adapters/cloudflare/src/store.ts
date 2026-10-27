@@ -36,6 +36,20 @@ export function migrate(sql: RoomSql): void {
   sql.exec(CREATE_EVENTS);
 }
 
+/** Tables are created on match create, not when a socket wakes the object. */
+export function openRoomForCreate(sql: RoomSql): RoomRecord | null {
+  migrate(sql);
+  return loadRoom(sql);
+}
+
+export function readRoom(sql: RoomSql): RoomRecord | null {
+  try {
+    return loadRoom(sql);
+  } catch {
+    return null;
+  }
+}
+
 function text(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }

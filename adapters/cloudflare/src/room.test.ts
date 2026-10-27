@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMatch, matchReducer } from '@padel/core';
 import { MAX_PLAYERS, ROOM_MESSAGES } from '@padel/core';
-import { admit, applyPlay, createRoom, helloPayload, issueInvite, type RoomRecord } from './room';
+import { admit, applyPlay, createRoom, eventDelta, helloPayload, issueInvite, type RoomRecord } from './room';
 
 const NOW = 1_700_000_000_000;
 const HOST = 'a'.repeat(64);
@@ -134,5 +134,27 @@ describe('role checks', () => {
     let state = second.record.base;
     for (const item of second.record.events) state = matchReducer(state, item.event);
     expect(state.sets[0]).toEqual({ a: 1, b: 1 });
+  });
+
+  it('stores a sanitized name of at most 20 characters and broadcasts a delta', () => {
+    const played = applyPlay(
+      started(),
+      { role: 'player', host: true },
+      '00000000-0000-4000-8000-0000000000d3',
+      { type: 'team/rename', team: 'a', name: '  Lobos\u0007 extra characters beyond twenty', at: 1 },
+      NOW,
+    );
+    expect(played.ok).toBe(true);
+    if (!played.ok || played.event.event.type !== 'team/rename') return;
+    expect(played.event.event.name).toBe('Lobos extra characte');
+    expect([...played.event.event.name].length).toBeLessThanOrEqual(20);
+    const delta = eventDelta({
+      eventId: played.event.eventId,
+      event: played.event.event,
+      duplicate: false,
+      players: 2,
+    });
+    expect(Object.keys(delta)).not.toContain('log');
+    expect(JSON.stringify(delta)).not.toContain('"log"');
   });
 });

@@ -30,6 +30,7 @@ async function errorText(response: Response): Promise<string> {
 export function useLive(
   liveRef: MutableRefObject<LiveSend | null>,
   replaceLog: (log: MatchLog) => void,
+  applyLive: (event: MatchEvent) => void,
 ): LiveController {
   const api = String(import.meta.env.PUBLIC_API_URL ?? '').replace(/\/$/, '');
   const [status, setStatus] = useState<'off' | 'connecting' | 'live'>('off');
@@ -39,10 +40,14 @@ export function useLive(
   const socketRef = useRef<WebSocket | null>(null);
   const hostRef = useRef<{ matchId: string; token: string } | null>(null);
   const replaceRef = useRef(replaceLog);
+  const applyRef = useRef(applyLive);
+  const readyRef = useRef(false);
   replaceRef.current = replaceLog;
+  applyRef.current = applyLive;
 
   const disconnect = () => {
     liveRef.current = null;
+    readyRef.current = false;
     socketRef.current?.close();
     socketRef.current = null;
     hostRef.current = null;
@@ -57,6 +62,7 @@ export function useLive(
       return;
     }
     replaceRef.current = replaceLog;
+    readyRef.current = false;
     socketRef.current?.close();
     setStatus('connecting');
     setError(null);
@@ -75,7 +81,9 @@ export function useLive(
       const notice = interpretMessage(parsed);
       if (notice.kind === 'error') {
         setError(notice.message);
+        if (!notice.close) return;
         liveRef.current = null;
+        readyRef.current = false;
         setStatus('off');
         ws.close();
         return;
@@ -84,8 +92,14 @@ export function useLive(
         setPlayers(notice.players);
         return;
       }
+      if (notice.kind === 'delta') {
+        if (readyRef.current && !notice.duplicate) applyRef.current(notice.event);
+        setPlayers(notice.players);
+        return;
+      }
       if (notice.kind === 'log') {
         replaceRef.current(notice.log);
+        readyRef.current = true;
         setPlayers(notice.players);
         setStatus('live');
         liveRef.current = (courtEvent: MatchEvent) => {
@@ -101,6 +115,7 @@ export function useLive(
     ws.onclose = () => {
       if (socketRef.current !== ws) return;
       liveRef.current = null;
+      readyRef.current = false;
       setStatus('off');
     };
   };

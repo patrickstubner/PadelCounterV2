@@ -24,7 +24,7 @@ A second, view-only QR code is not available yet. The server already has a `play
 | `adapters/cloudflare` | `@padel/worker` | Worker, one Durable Object per match, D1 migration stub |
 | `docs/architektur-report.md` | | Architecture notes this scaffold follows |
 
-Live scoring is stored in the Durable Object. D1 is only a table for a later match index. The worker does not read it yet.
+Live scoring is stored in the Durable Object. D1 stores the match id. A websocket is forwarded only when that id is already there, so an unknown id does not create storage. The worker chooses the match id. The dev worker name is `padel-counter-dev`.
 
 ## Scripts
 

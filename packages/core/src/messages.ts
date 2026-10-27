@@ -21,3 +21,18 @@ const ROOM_CODES: ReadonlySet<string> = new Set(Object.keys(ROOM_MESSAGES));
 export function isRoomCode(value: unknown): value is RoomCode {
   return typeof value === 'string' && ROOM_CODES.has(value);
 }
+
+/** Admission failures close the socket. A bad score or a rate limit does not. */
+const CLOSE_CODES: ReadonlySet<RoomCode> = new Set([
+  'bad_token',
+  'expired',
+  'revoked',
+  'spectator_not_available',
+  'upgrade_required',
+  'match_full',
+  'unavailable',
+]);
+
+export function connectionCloses(code: RoomCode): boolean {
+  return CLOSE_CODES.has(code);
+}

@@ -1,4 +1,5 @@
 import { createMatchId, isUuid } from './id';
+import type { MatchLog } from './parse';
 import { sanitizeTeamName } from './names';
 import { gamesPlayed, isPlausibleSetScore, matchWinner, rotateServe, setWinner } from './rules';
 import { SCHEMA_VERSION, isNewMatchEvent, isPlayerSlot, isSetIndex, isTeamId, isTimestamp, type MatchEvent, type MatchState, type Server, type SetIndex, type SetScore, type TeamId } from './types';
@@ -199,4 +200,19 @@ export function matchReducer(state: MatchState, event: MatchEvent): MatchState {
 
 export function replayScore(base: MatchState, events: readonly MatchEvent[]): MatchState {
   return events.reduce(matchReducer, base);
+}
+
+/** The worker picks the id. The client id is not a capability and is not kept. */
+export function assignMatchId(log: MatchLog, matchId: string): MatchLog | null {
+  if (!isUuid(matchId)) return null;
+  const nextId = matchId.toLowerCase();
+  const current = replayScore(log.base, log.events).matchId;
+  const rewrite = (id: string) => (id === current ? nextId : id);
+  return {
+    schemaVersion: log.schemaVersion,
+    base: { ...log.base, matchId: rewrite(log.base.matchId) },
+    events: log.events.map((event) =>
+      isNewMatchEvent(event) ? { ...event, matchId: rewrite(event.matchId) } : event,
+    ),
+  };
 }
