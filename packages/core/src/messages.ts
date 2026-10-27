@@ -14,6 +14,8 @@ export const ROOM_MESSAGES = {
   offline: 'The live server did not answer. The score on this device is unchanged.',
   device_daily_limit: "You've reached 10 new matches today on this device.",
   network_daily_limit: 'Too many new matches from this network today.',
+  join_device_limit: 'Too many connection attempts from this device. Wait a minute.',
+  join_network_limit: 'Too many connection attempts from this network. Wait a minute.',
   closed: 'This match is closed. It can no longer be scored.',
   reconnect_unavailable: 'The previous players can no longer be reconnected. Share a new code.',
 } as const;

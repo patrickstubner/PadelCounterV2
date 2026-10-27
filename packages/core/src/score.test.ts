@@ -133,5 +133,7 @@ describe('socket close policy', () => {
     expect(connectionCloses('not_applied')).toBe(false);
     expect(connectionCloses('forbidden')).toBe(false);
     expect(connectionCloses('slow_down')).toBe(false);
+    expect(connectionCloses('join_device_limit')).toBe(false);
+    expect(connectionCloses('join_network_limit')).toBe(false);
   });
 });

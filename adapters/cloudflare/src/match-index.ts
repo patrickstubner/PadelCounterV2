@@ -1,8 +1,11 @@
 import {
   HISTORY_RETAIN_MS,
+  JOINS_PER_DEVICE,
+  JOINS_PER_NETWORK,
   MATCHES_PER_DAY,
   MATCHES_PER_NETWORK_PER_DAY,
   QUOTA_RETAIN_MS,
+  joinWindow,
   quotaDay,
 } from '@padel/core';
 
@@ -16,6 +19,10 @@ const UPSERT_QUOTA =
   'INSERT INTO create_quota (address_hash, day, n, cap) VALUES (?, ?, 1, ?) ON CONFLICT(address_hash, day) DO UPDATE SET n = n + 1';
 const RELEASE_QUOTA = 'UPDATE create_quota SET n = n - 1 WHERE address_hash = ? AND day = ? AND n > 0';
 const DELETE_OLD_QUOTA = 'DELETE FROM create_quota WHERE day < ?';
+const SELECT_JOIN = 'SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?';
+const UPSERT_JOIN =
+  'INSERT INTO join_quota (subject_hash, window, n, cap) VALUES (?, ?, 1, ?) ON CONFLICT(subject_hash, window) DO UPDATE SET n = n + 1';
+const DELETE_OLD_JOIN = 'DELETE FROM join_quota WHERE window < ?';
 const INSERT_CREDENTIAL =
   'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?)';
 const FIND_CREDENTIAL =
@@ -70,6 +77,7 @@ export interface MatchIndex {
   touchActivity(id: string, now: number): Promise<void>;
   takeCreateQuota(deviceHash: string, ipHash: string, now: number): Promise<{ ok: true } | { ok: false; reason: QuotaReason }>;
   releaseCreateQuota(deviceHash: string, ipHash: string, now: number): Promise<void>;
+  takeJoinQuota(deviceHash: string, ipHash: string, now: number): Promise<{ ok: true } | { ok: false; reason: QuotaReason }>;
   insertCredential(row: CredentialRow): Promise<void>;
   findCredential(tokenHash: string): Promise<CredentialRow | null>;
   replacePlayerCredential(matchId: string, now: number, row: CredentialRow): Promise<void>;
@@ -94,8 +102,8 @@ function isQuotaCap(error: unknown): boolean {
   return /check constraint/i.test(message);
 }
 
-async function quotaCount(db: D1Like, hash: string, day: string): Promise<number | null> {
-  const row = await db.prepare(SELECT_QUOTA).bind(hash, day).first();
+async function quotaCount(db: D1Like, hash: string, bucket: string | number, query = SELECT_QUOTA): Promise<number | null> {
+  const row = await db.prepare(query).bind(hash, bucket).first();
   if (!row) return null;
   return integer(row.n);
 }
@@ -145,6 +153,24 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
         db.prepare(RELEASE_QUOTA).bind(deviceHash, day),
         db.prepare(RELEASE_QUOTA).bind(ipHash, day),
       ]);
+    },
+    async takeJoinQuota(deviceHash, ipHash, now) {
+      const window = joinWindow(now);
+      try {
+        await db.batch([
+          db.prepare(UPSERT_JOIN).bind(deviceHash, window, JOINS_PER_DEVICE),
+          db.prepare(UPSERT_JOIN).bind(ipHash, window, JOINS_PER_NETWORK),
+        ]);
+        return { ok: true };
+      } catch (error) {
+        if (!isQuotaCap(error)) throw error;
+        const deviceN = await quotaCount(db, deviceHash, window, SELECT_JOIN);
+        const networkN = await quotaCount(db, ipHash, window, SELECT_JOIN);
+        if (networkN !== null && networkN >= JOINS_PER_NETWORK && (deviceN === null || deviceN < JOINS_PER_DEVICE)) {
+          return { ok: false, reason: 'network' };
+        }
+        return { ok: false, reason: 'device' };
+      }
     },
     async insertCredential(row) {
       await db
@@ -202,6 +228,7 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
       await db.batch([
         db.prepare(DELETE_OLD_QUOTA).bind(quotaDay(now - QUOTA_RETAIN_MS)),
         db.prepare(DELETE_EXPIRED_TICKETS).bind(now),
+        db.prepare(DELETE_OLD_JOIN).bind(joinWindow(now - QUOTA_RETAIN_MS)),
       ]);
     },
   };

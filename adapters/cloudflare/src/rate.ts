@@ -1,4 +1,4 @@
-/** Every `/matches*` request shares this budget. It is per isolate, not a global edge rule. */
+/** Create, invite, carry, POST /join, and the websocket upgrade share this budget. It is per isolate, not the D1 join limit. */
 export const MATCH_ROUTE_LIMIT = 20;
 export const MATCH_ROUTE_WINDOW_MS = 60_000;
 

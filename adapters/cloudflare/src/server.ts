@@ -3,6 +3,7 @@ import {
   JOIN_TOKEN_TTL_MS,
   ROOM_MESSAGES,
   assignMatchId,
+  joinWindow,
   carryTokenHashes,
   createMatchId,
   isJoinToken,
@@ -304,11 +305,26 @@ async function roomInfo(env: ServerEnv, matchId: string, hostToken: string): Pro
 }
 
 async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
+  const body = await readJson(request, 1000);
+  const device = body && typeof body === 'object' ? (body as { device?: unknown }).device : undefined;
+  if (typeof device !== 'string' || !DEVICE_ID.test(device)) {
+    return Response.json({ error: 'invalid_match' }, { status: 400 });
+  }
+  const secret = env.QUOTA_HMAC_KEY;
+  if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
+  const index = d1MatchIndex(env.DB);
+  const now = Date.now();
+  const window = joinWindow(now);
+  const deviceHash = await quotaMac(secret, 'join-device', device, String(window));
+  const ipHash = await quotaMac(secret, 'join-ip', clientAddress(request), String(window));
+  const limited = await index.takeJoinQuota(deviceHash, ipHash, now);
+  if (!limited.ok) {
+    const code = limited.reason === 'network' ? 'join_network_limit' : 'join_device_limit';
+    return Response.json({ error: code, message: ROOM_MESSAGES[code] }, { status: 429 });
+  }
   const token = bearer(request);
   if (!token) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
-  const index = d1MatchIndex(env.DB);
   const credential = await index.findCredential(await sha256Hex(token));
-  const now = Date.now();
   if (!credential || credential.revokedAt !== null || now >= credential.expiresAt) {
     return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
   }

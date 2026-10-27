@@ -49,6 +49,7 @@ function harness(options?: {
   const calls: { id: string; body: string; ip: string | null }[] = [];
   const ops: string[] = [];
   const quota = new Map<string, number>();
+  const joins = new Map<string, number>();
   const creds = new Map<string, CredRow>();
   const tickets = new Map<string, TicketRow>();
   let conflictsLeft = options?.conflictOnce ? 1 : 0;
@@ -110,6 +111,10 @@ function harness(options?: {
               const n = quota.get(`${values[0]}|${values[1]}`);
               return n === undefined ? null : { n };
             }
+            if (sql.includes('FROM join_quota')) {
+              const n = joins.get(`${values[0]}|${values[1]}`);
+              return n === undefined ? null : { n };
+            }
             if (sql.includes('FROM credentials')) {
               const row = creds.get(String(values[0]));
               if (!row) return null;
@@ -142,6 +147,13 @@ function harness(options?: {
             } else if (sql.startsWith('DELETE FROM matches') && typeof values[0] === 'string') {
               found.delete(values[0]);
               ops.push('d1-delete');
+            } else if (sql.startsWith('INSERT INTO join_quota')) {
+              const key = `${values[0]}|${values[1]}`;
+              const cap = Number(values[2]);
+              const current = joins.get(key);
+              if (current === undefined) joins.set(key, 1);
+              else if (current + 1 <= cap) joins.set(key, current + 1);
+              else throw new Error('CHECK constraint failed');
             } else if (sql.startsWith('INSERT INTO create_quota')) {
               const key = `${values[0]}|${values[1]}`;
               const cap = Number(values[2]);
@@ -201,6 +213,7 @@ function harness(options?: {
       },
       async batch(statements: readonly { run(): Promise<unknown> }[]) {
         const quotaSnapshot = new Map(quota);
+        const joinSnapshot = new Map(joins);
         const credSnapshot = new Map([...creds].map(([key, row]) => [key, { ...row }]));
         try {
           const results = [];
@@ -210,6 +223,8 @@ function harness(options?: {
         } catch (error) {
           quota.clear();
           for (const [key, value] of quotaSnapshot) quota.set(key, value);
+          joins.clear();
+          for (const [key, value] of joinSnapshot) joins.set(key, value);
           creds.clear();
           for (const [key, value] of credSnapshot) creds.set(key, value);
           throw error;
@@ -229,10 +244,16 @@ function postMatch(ip: string, extra?: Record<string, unknown>, device = 'd00000
   });
 }
 
-function joinRequest(ip: string, token: string): Request {
+function joinRequest(ip: string, token: string, device = 'd00000001'): Request {
   return new Request('https://padel.example/join', {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}`, origin: PAGES, 'cf-connecting-ip': ip },
+    headers: {
+      authorization: `Bearer ${token}`,
+      origin: PAGES,
+      'content-type': 'application/json',
+      'cf-connecting-ip': ip,
+    },
+    body: JSON.stringify({ device }),
   });
 }
 
@@ -351,6 +372,43 @@ describe('match index gate', () => {
     expect(blocked.status).toBe(429);
     expect(((await blocked.json()) as { error: string }).error).toBe('slow_down');
     expect(calls).toHaveLength(1);
+  });
+
+  it('limits join tickets per device in D1 across addresses', async () => {
+    const { env } = harness();
+    const created = await handleFetch(postMatch('192.0.2.1', undefined, 'd00000099'), env);
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as { hostToken: string };
+    for (let i = 0; i < 20; i += 1) {
+      const response = await handleFetch(joinRequest(`192.0.2.${i + 2}`, body.hostToken, 'd00000099'), env);
+      expect(response.status).toBe(201);
+    }
+    const blocked = await handleFetch(joinRequest('192.0.2.30', body.hostToken, 'd00000099'), env);
+    expect(blocked.status).toBe(429);
+    const payload = (await blocked.json()) as { error: string; message: string };
+    expect(payload).toEqual({
+      error: 'join_device_limit',
+      message: 'Too many connection attempts from this device. Wait a minute.',
+    });
+    const other = await handleFetch(joinRequest('192.0.2.31', body.hostToken, 'd00000098'), env);
+    expect(other.status).toBe(201);
+    const missingDevice = await handleFetch(
+      new Request('https://padel.example/join', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${body.hostToken}`,
+          origin: PAGES,
+          'content-type': 'application/json',
+          'cf-connecting-ip': '192.0.2.32',
+        },
+        body: JSON.stringify({ device: 'phone' }),
+      }),
+      env,
+    );
+    expect(missingDevice.status).toBe(400);
+    const missingKey = harness({ omitQuotaKey: true });
+    const unconfigured = await handleFetch(joinRequest('192.0.2.33', body.hostToken, 'd00000099'), missingKey.env);
+    expect(unconfigured.status).toBe(503);
   });
 
   it('writes the index first and drops the row and the room when create fails', async () => {
@@ -541,6 +599,7 @@ describe('match index gate', () => {
     expect(create).toContain('discardMatch');
     expect(create).toContain('takeCreateQuota');
     expect(create).toContain('quotaMac');
+    expect(source).toContain('takeJoinQuota');
     const room = readFileSync(new URL('./match-room.ts', import.meta.url), 'utf8');
     expect(room).toContain("pathname === '/discard'");
     expect(room).toContain('deleteAll');

@@ -39,9 +39,10 @@ export function PrivacyPage({ onBack }: PrivacyPageProps) {
           can tell the phones apart and invite them back within one hour. The id stays until the match history is deleted.
         </p>
         <p>
-          Starting a live match is limited for each phone and for each network. The server stores a keyed hash of
-          the device id and a keyed hash of the network address for that count. The hash is not the address itself.
-          Those rows are deleted after two days.
+          Starting a live match is limited for each phone and for each network. Opening the live connection is
+          limited the same way, for one minute. The server stores a keyed hash of the device id and a keyed hash
+          of the network address for those counts. The hash is not the address itself. Those rows are deleted
+          after two days.
         </p>
         <p>
           Join codes are stored only as hashes. A player code hash stops working after 2 hours. The phone that

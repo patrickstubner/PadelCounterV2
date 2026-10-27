@@ -37,10 +37,11 @@ async function createLive(device: string): Promise<{ matchId: string; hostToken:
   return { matchId: body.matchId, hostToken: body.hostToken, lastActivity };
 }
 
-async function ticketFor(token: string): Promise<string> {
+async function ticketFor(token: string, device: string): Promise<string> {
   const response = await call('/join', {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ device }),
   });
   expect(response.status).toBe(201);
   const body = (await response.json()) as { ticket: string };
@@ -80,7 +81,7 @@ function inbox(ws: WebSocket): { waitFor(match: (message: Record<string, unknown
 }
 
 async function connect(token: string, device: string): Promise<{ ws: WebSocket; messages: ReturnType<typeof inbox> }> {
-  const response = await call(`/ws/${await ticketFor(token)}`, { headers: { upgrade: 'websocket' } });
+  const response = await call(`/ws/${await ticketFor(token, device)}`, { headers: { upgrade: 'websocket' } });
   const ws = response.webSocket;
   if (!ws) throw new Error(`websocket upgrade failed: ${response.status}`);
   ws.accept();

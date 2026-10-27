@@ -1,4 +1,4 @@
-import { HISTORY_RETAIN_MS, quotaDay } from '@padel/core';
+import { HISTORY_RETAIN_MS, JOINS_PER_DEVICE, JOINS_PER_NETWORK, JOIN_WINDOW_MS, joinWindow, quotaDay } from '@padel/core';
 import { describe, expect, it } from 'vitest';
 import { d1MatchIndex, shouldTouchActivity, type CredentialRow, type D1Like, type D1Statement } from './match-index';
 import { quotaMac, sha256Hex } from './tokens';
@@ -30,8 +30,16 @@ interface CredRow {
   revokedAt: number | null;
 }
 
+interface JoinRow {
+  hash: string;
+  window: number;
+  n: number;
+  cap: number;
+}
+
 function memory(): { db: D1Like; queries: string[] } {
   const quota = new Map<string, QuotaRow>();
+  const joins = new Map<string, JoinRow>();
   const tickets = new Map<string, TicketRow>();
   const matches = new Map<string, MatchRow>();
   const creds = new Map<string, CredRow>();
@@ -40,6 +48,7 @@ function memory(): { db: D1Like; queries: string[] } {
   function snapshot() {
     return {
       quota: new Map([...quota].map(([key, row]) => [key, { ...row }])),
+      joins: new Map([...joins].map(([key, row]) => [key, { ...row }])),
       tickets: new Map([...tickets].map(([key, row]) => [key, { ...row }])),
       matches: new Map([...matches].map(([key, row]) => [key, { ...row }])),
       creds: new Map([...creds].map(([key, row]) => [key, { ...row }])),
@@ -48,10 +57,12 @@ function memory(): { db: D1Like; queries: string[] } {
 
   function restore(saved: ReturnType<typeof snapshot>) {
     quota.clear();
+    joins.clear();
     tickets.clear();
     matches.clear();
     creds.clear();
     for (const [key, row] of saved.quota) quota.set(key, row);
+    for (const [key, row] of saved.joins) joins.set(key, row);
     for (const [key, row] of saved.tickets) tickets.set(key, row);
     for (const [key, row] of saved.matches) matches.set(key, row);
     for (const [key, row] of saved.creds) creds.set(key, row);
@@ -97,6 +108,33 @@ function memory(): { db: D1Like; queries: string[] } {
     if (sql.includes('SET n = n - 1')) {
       const row = quota.get(`${values[0]}|${values[1]}`);
       if (row && row.n > 0) row.n -= 1;
+      return { meta: { changes: 1 } };
+    }
+    if (sql.startsWith('INSERT INTO join_quota')) {
+      const hash = String(values[0]);
+      const window = Number(values[1]);
+      const cap = Number(values[2]);
+      const key = `${hash}|${window}`;
+      const current = joins.get(key);
+      if (!current) {
+        if (1 > cap) throw new Error('CHECK constraint failed');
+        joins.set(key, { hash, window, n: 1, cap });
+      } else if (current.n + 1 <= current.cap) {
+        current.n += 1;
+      } else {
+        throw new Error('CHECK constraint failed');
+      }
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes('FROM join_quota WHERE subject_hash')) {
+      const row = joins.get(`${values[0]}|${values[1]}`);
+      return row ? { n: row.n } : null;
+    }
+    if (sql.startsWith('DELETE FROM join_quota')) {
+      const cutoff = Number(values[0]);
+      for (const [key, row] of joins) {
+        if (row.window < cutoff) joins.delete(key);
+      }
       return { meta: { changes: 1 } };
     }
     if (sql.startsWith('DELETE FROM create_quota')) {
@@ -297,6 +335,37 @@ describe('create quota', () => {
     expect(await index.expiredMatchIds(NOW)).toEqual(['match-old']);
     await index.touchActivity('match-old', NOW);
     expect(await index.expiredMatchIds(NOW)).toEqual([]);
+  });
+
+  it('limits POST /join in D1 for one device and one network, including a fresh index', async () => {
+    const { db } = memory();
+    const index = d1MatchIndex(db);
+    const window = joinWindow(NOW);
+    const device = await quotaMac('test-quota-hmac-key', 'join-device', 'd00000001', String(window));
+    const network = await quotaMac('test-quota-hmac-key', 'join-ip', '192.0.2.1', String(window));
+    expect(device).not.toBe(await sha256Hex('d00000001'));
+    expect(network).not.toBe(await sha256Hex('192.0.2.1'));
+    for (let i = 0; i < JOINS_PER_DEVICE; i += 1) {
+      expect((await index.takeJoinQuota(device, `${network}-${i}`, NOW)).ok).toBe(true);
+    }
+    const again = d1MatchIndex(db);
+    const blocked = await again.takeJoinQuota(device, `${network}-next`, NOW);
+    expect(blocked).toEqual({ ok: false, reason: 'device' });
+    const later = await again.takeJoinQuota(device, `${network}-next`, NOW + JOIN_WINDOW_MS);
+    expect(later.ok).toBe(true);
+
+    const shared = await quotaMac('test-quota-hmac-key', 'join-ip', '192.0.2.9', String(window));
+    for (let i = 0; i < JOINS_PER_NETWORK; i += 1) {
+      const phone = await quotaMac('test-quota-hmac-key', 'join-device', `phone-${i}`, String(window));
+      expect((await index.takeJoinQuota(phone, shared, NOW)).ok).toBe(true);
+    }
+    const overflowPhone = await quotaMac('test-quota-hmac-key', 'join-device', 'd000000ff', String(window));
+    const before = await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(overflowPhone, window).first();
+    expect(await index.takeJoinQuota(overflowPhone, shared, NOW)).toEqual({ ok: false, reason: 'network' });
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(overflowPhone, window).first()).toEqual(before);
+
+    await index.purgeEphemeral(NOW + 3 * 24 * 60 * 60 * 1000);
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(device, window).first()).toBeNull();
   });
 
   it('rolls back a player-credential revoke when the insert fails', async () => {

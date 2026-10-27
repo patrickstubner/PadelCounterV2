@@ -71,6 +71,9 @@ export type { RoomCode } from './messages';
 export {
   HISTORY_RETAIN_MS,
   HOST_ACTOR,
+  JOINS_PER_DEVICE,
+  JOINS_PER_NETWORK,
+  JOIN_WINDOW_MS,
   MATCHES_PER_DAY,
   MATCHES_PER_NETWORK_PER_DAY,
   MAX_PLAYER_ACTOR,
@@ -83,6 +86,7 @@ export {
   credentialAllowsEvent,
   historyExpired,
   isOpenMatch,
+  joinWindow,
   lastChangeAt,
   offerReconnect,
   planNewMatch,

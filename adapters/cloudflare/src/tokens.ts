@@ -15,8 +15,13 @@ export async function hmacSha256Hex(secret: string, message: string): Promise<st
   return hex(mac);
 }
 
-/** Daily create counter key. The UTC day is inside the MAC, so the stored hash rotates every day. */
-export async function quotaMac(secret: string, kind: 'device' | 'ip', subject: string, day: string): Promise<string> {
+/** Counter key. The UTC day or the minute window is inside the MAC, so the stored hash rotates. */
+export async function quotaMac(
+  secret: string,
+  kind: 'device' | 'ip' | 'join-device' | 'join-ip',
+  subject: string,
+  day: string,
+): Promise<string> {
   return hmacSha256Hex(secret, `${kind}:${day}:${subject}`);
 }
 
