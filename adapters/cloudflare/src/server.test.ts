@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
-import { createMatch, quotaDay } from '@padel/core';
+import { createMatch, joinWindow, quotaDay } from '@padel/core';
 import { describe, expect, it } from 'vitest';
 import { CLIENT_IP_HEADER, clientIpHeaders } from './match-index';
 import { handleFetch, type RoomNamespace, type ServerEnv } from './server';
-import { quotaMac } from './tokens';
+import { quotaMac, sha256Hex } from './tokens';
 
 const CLIENT = '00000000-0000-4000-8000-0000000000aa';
 const PAGES = 'https://patrickstubner.github.io';
@@ -37,6 +37,9 @@ function harness(options?: {
   roomInfo?: RoomInfo;
   omitQuotaKey?: boolean;
   failPlayerInsert?: boolean;
+  omitLimiter?: boolean;
+  /** After this many binding checks, `limit()` returns `{ success: false }`. */
+  edgeFailAfter?: number;
 }): {
   env: ServerEnv;
   found: Set<string>;
@@ -44,12 +47,15 @@ function harness(options?: {
   ops: string[];
   creds: Map<string, CredRow>;
   quota: Map<string, number>;
+  joins: Map<string, number>;
+  edge: { calls: number; keys: string[] };
 } {
   const found = new Set<string>();
   const calls: { id: string; body: string; ip: string | null }[] = [];
   const ops: string[] = [];
   const quota = new Map<string, number>();
   const joins = new Map<string, number>();
+  const edge = { calls: 0, keys: [] as string[] };
   const creds = new Map<string, CredRow>();
   const tickets = new Map<string, TicketRow>();
   let conflictsLeft = options?.conflictOnce ? 1 : 0;
@@ -232,8 +238,22 @@ function harness(options?: {
       },
     },
     ...(options?.omitQuotaKey ? {} : { QUOTA_HMAC_KEY: 'test-quota-hmac-key' }),
+    ...(options?.omitLimiter
+      ? {}
+      : {
+          REQUEST_LIMIT: {
+            async limit(input: { key: string }) {
+              edge.calls += 1;
+              edge.keys.push(input.key);
+              if (options?.edgeFailAfter !== undefined && edge.calls > options.edgeFailAfter) {
+                return { success: false };
+              }
+              return { success: true };
+            },
+          },
+        }),
   };
-  return { env, found, calls, ops, creds, quota };
+  return { env, found, calls, ops, creds, quota, joins, edge };
 }
 
 function postMatch(ip: string, extra?: Record<string, unknown>, device = 'd00000001'): Request {
@@ -406,9 +426,108 @@ describe('match index gate', () => {
       env,
     );
     expect(missingDevice.status).toBe(400);
+    expect(((await missingDevice.json()) as { error: string }).error).toBe('invalid_device');
     const missingKey = harness({ omitQuotaKey: true });
     const unconfigured = await handleFetch(joinRequest('192.0.2.33', body.hostToken, 'd00000099'), missingKey.env);
     expect(unconfigured.status).toBe(503);
+  });
+
+  it('counts the network only after a rejected token and still admits a valid one', async () => {
+    const { env, joins } = harness();
+    const created = await handleFetch(postMatch('192.0.2.60', undefined, 'd00000060'), env);
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as { hostToken: string };
+    const window = joinWindow(Date.now());
+    const device = await quotaMac('test-quota-hmac-key', 'join-device', 'd00000060', String(window));
+    const network = await quotaMac('test-quota-hmac-key', 'join-ip', '192.0.2.61', String(window));
+    const ok = await handleFetch(joinRequest('192.0.2.61', body.hostToken, 'd00000060'), env);
+    expect(ok.status).toBe(201);
+    expect(joins.get(`${device}|${window}`)).toBe(1);
+    expect(joins.has(`${network}|${window}`)).toBe(false);
+
+    const bad = await handleFetch(joinRequest('192.0.2.61', 'b'.repeat(22), 'd00000060'), env);
+    expect(bad.status).toBe(401);
+    expect(((await bad.json()) as { error: string }).error).toBe('bad_token');
+    expect(joins.get(`${network}|${window}`)).toBe(1);
+    expect(joins.get(`${device}|${window}`)).toBe(2);
+
+    const invalid = await handleFetch(joinRequest('192.0.2.62', body.hostToken, 'not-a-device'), env);
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({
+      error: 'invalid_device',
+      message: 'This device id is not valid.',
+    });
+    expect(joins.size).toBe(2);
+
+    const full = await quotaMac('test-quota-hmac-key', 'join-ip', '192.0.2.71', String(window));
+    joins.set(`${full}|${window}`, 60);
+    const still = await handleFetch(joinRequest('192.0.2.71', body.hostToken, 'd00000070'), env);
+    expect(still.status).toBe(201);
+    expect(joins.get(`${full}|${window}`)).toBe(60);
+    const overflow = await handleFetch(joinRequest('192.0.2.71', 'c'.repeat(22), 'd00000071'), env);
+    expect(overflow.status).toBe(429);
+    expect(await overflow.json()).toEqual({
+      error: 'join_network_limit',
+      message: 'Too many failed connection attempts from this network. Wait a minute.',
+    });
+    expect(joins.get(`${full}|${window}`)).toBe(60);
+  });
+
+  it('stops a match route at the Workers rate limit before D1 and before the isolate map', async () => {
+    const blocked = harness({ edgeFailAfter: 0 });
+    const create = await handleFetch(postMatch('192.0.2.50'), blocked.env);
+    expect(create.status).toBe(429);
+    expect(((await create.json()) as { error: string }).error).toBe('slow_down');
+    expect(blocked.ops).toHaveLength(0);
+    expect(blocked.joins.size).toBe(0);
+    expect(blocked.calls).toHaveLength(0);
+    const join = await handleFetch(joinRequest('192.0.2.51', 'd'.repeat(22)), blocked.env);
+    expect(join.status).toBe(429);
+    expect(blocked.joins.size).toBe(0);
+    const socket = await handleFetch(
+      new Request('https://padel.example/ws/abcdefghijklmnopqrstuv', {
+        headers: { upgrade: 'websocket', origin: PAGES, 'cf-connecting-ip': '192.0.2.52' },
+      }),
+      blocked.env,
+    );
+    expect(socket.status).toBe(429);
+    expect(blocked.edge.calls).toBe(3);
+    expect(blocked.ops).toHaveLength(0);
+
+    const open = harness();
+    const health = await handleFetch(
+      new Request('https://padel.example/health', { headers: { 'cf-connecting-ip': '192.0.2.53' } }),
+      open.env,
+    );
+    expect(health.status).toBe(200);
+    expect(open.edge.calls).toBe(0);
+    const auth = await handleFetch(
+      new Request('https://padel.example/auth/google', {
+        method: 'POST',
+        headers: { 'cf-connecting-ip': '192.0.2.54' },
+      }),
+      open.env,
+    );
+    expect(auth.status).toBe(501);
+    expect(open.edge.calls).toBe(0);
+
+    const keyed = harness();
+    await handleFetch(postMatch('192.0.2.80'), keyed.env);
+    await handleFetch(postMatch('192.0.2.80', undefined, 'd00000080'), keyed.env);
+    const expected = await quotaMac('test-quota-hmac-key', 'rate-ip', '192.0.2.80', 'binding');
+    expect(keyed.edge.keys).toEqual([expected, expected]);
+    expect(expected).not.toContain('192.0.2.80');
+    expect(expected).not.toBe(await sha256Hex('192.0.2.80'));
+
+    const bare = harness({ omitLimiter: true });
+    const missingBinding = await handleFetch(postMatch('192.0.2.55'), bare.env);
+    expect(missingBinding.status).toBe(503);
+    expect(bare.ops).toHaveLength(0);
+    const missingKey = harness({ omitQuotaKey: true });
+    const refused = await handleFetch(postMatch('192.0.2.56'), missingKey.env);
+    expect(refused.status).toBe(503);
+    expect(missingKey.edge.calls).toBe(0);
+    expect(missingKey.ops).toHaveLength(0);
   });
 
   it('writes the index first and drops the row and the room when create fails', async () => {
@@ -599,7 +718,28 @@ describe('match index gate', () => {
     expect(create).toContain('discardMatch');
     expect(create).toContain('takeCreateQuota');
     expect(create).toContain('quotaMac');
-    expect(source).toContain('takeJoinQuota');
+    expect(source).toContain('takeJoinDevice');
+    expect(source).toContain('noteJoinFailure');
+    const gate = source.slice(source.indexOf('async function enforceMatchRouteLimit'), source.indexOf('async function createMatch'));
+    expect(gate.indexOf('limiter.limit')).toBeGreaterThan(-1);
+    expect(gate.indexOf('limiter.limit')).toBeLessThan(gate.indexOf('takeMatchRoute'));
+    const fetchFn = source.slice(source.indexOf('export async function handleFetch'), source.indexOf('const CREATE_ATTEMPTS'));
+    expect(fetchFn.indexOf('enforceMatchRouteLimit')).toBeGreaterThan(-1);
+    expect(fetchFn.indexOf('enforceMatchRouteLimit')).toBeLessThan(fetchFn.indexOf('mintTicket'));
+    const ticket = source.slice(source.indexOf('async function mintTicket'), source.indexOf('async function openSocket'));
+    expect(ticket.indexOf('takeJoinDevice')).toBeLessThan(ticket.indexOf('findCredential'));
+    expect(ticket.indexOf('noteJoinFailure')).toBeGreaterThan(ticket.indexOf('findCredential'));
+    expect(ticket).toContain('invalid_device');
+    expect(toml).toContain('[[ratelimits]]');
+    expect(toml).toContain('name = "REQUEST_LIMIT"');
+    expect(toml).toContain('namespace_id = "1001"');
+    expect(toml).toContain('namespace_id = "1002"');
+    expect(toml).toContain('namespace_id = "1003"');
+    expect(toml).toContain('[[env.dev.ratelimits]]');
+    expect(toml).toContain('[[env.staging.ratelimits]]');
+    expect(toml).toContain('[[env.production.ratelimits]]');
+    expect(toml).toContain('limit = 30');
+    expect(toml).toContain('period = 60');
     const room = readFileSync(new URL('./match-room.ts', import.meta.url), 'utf8');
     expect(room).toContain("pathname === '/discard'");
     expect(room).toContain('deleteAll');

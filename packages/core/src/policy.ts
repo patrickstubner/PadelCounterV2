@@ -22,7 +22,7 @@ export const QUOTA_RETAIN_MS = 2 * 24 * 60 * 60 * 1000;
 /** POST /join attempts for one device inside one minute. */
 export const JOINS_PER_DEVICE = 20;
 
-/** POST /join attempts for one network address inside one minute. */
+/** Failed POST /join attempts for one network address inside one minute. A successful join does not count. */
 export const JOINS_PER_NETWORK = 60;
 
 export const JOIN_WINDOW_MS = 60_000;
