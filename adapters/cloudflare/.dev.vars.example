@@ -1,0 +1,3 @@
+# Copy to .dev.vars for `wrangler dev`. Do not put real secrets in this file.
+# This version has no OAuth secrets. Leave the file empty or omit it.
+ENVIRONMENT=development

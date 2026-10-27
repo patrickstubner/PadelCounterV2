@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.wrangler/
+.dev.vars
+*.log
+*.tsbuildinfo
+.DS_Store
+.eslintcache
+.env
+.env.*
+!.env.example
+!.dev.vars.example
