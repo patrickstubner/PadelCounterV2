@@ -17,11 +17,12 @@ export async function hmacSha256Hex(secret: string, message: string): Promise<st
 
 /**
  * Counter key. The UTC day or the minute window is inside the MAC, so the stored hash rotates.
- * The scope `binding` is fixed: the Workers rate-limit binding keeps its own 60 second window.
+ * The scopes `binding` and `socket` are fixed: the rate-limit binding and the socket attachment
+ * keep one key per address, so their own windows can accumulate.
  */
 export async function quotaMac(
   secret: string,
-  kind: 'device' | 'ip' | 'join-device' | 'join-ip' | 'rate-ip',
+  kind: 'device' | 'ip' | 'join-device' | 'join-ip' | 'rate-ip' | 'socket-ip',
   subject: string,
   day: string,
 ): Promise<string> {

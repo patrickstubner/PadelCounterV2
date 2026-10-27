@@ -5,10 +5,14 @@ import { CLIENT_IP_HEADER, shouldTouchActivity, touchMatchActivity, type D1Like 
 import { takeLiveMessage } from './rate';
 import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange } from './room';
 import { ensureActivityColumn, insertEvent, insertInvite, insertJoined, insertRoom, markActivityTouch, openRoomForCreate, readActivityTouch, readJoined, readRoom, revokePlayerInvites, type RoomSql } from './store';
-import { safeEqualHex, sha256Hex } from './tokens';
+import { quotaMac, safeEqualHex, sha256Hex } from './tokens';
+
+/** Fixed scope. A minute in the MAC would split one address across two pending caps. */
+const SOCKET_IP_SCOPE = 'socket';
 
 interface PendingState {
   readonly admitted: false;
+  /** HMAC of the client address. Never the address itself. */
   readonly ip: string;
   readonly openedAt: number;
 }
@@ -17,6 +21,7 @@ interface AdmittedState {
   readonly admitted: true;
   readonly credential: Credential;
   readonly stamps: readonly number[];
+  /** HMAC of the client address. Never the address itself. */
   readonly ip: string;
   readonly actor: string;
   readonly tokenHash: string;
@@ -44,6 +49,7 @@ async function readBody(request: Request, max: number): Promise<unknown | null> 
 
 interface RoomEnv {
   DB: D1Like;
+  QUOTA_HMAC_KEY?: string;
 }
 
 export class MatchRoom extends DurableObject<RoomEnv> {
@@ -83,15 +89,17 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   }
 
   private async openSocket(request: Request): Promise<Response> {
-    const ip = request.headers.get(CLIENT_IP_HEADER) ?? 'missing';
-    const views = this.views();
-    if (!allowPending(views, ip)) return json(429, { error: 'slow_down' });
+    const secret = this.env.QUOTA_HMAC_KEY;
+    if (!secret) return json(503, { error: 'not_configured' });
+    const address = request.headers.get(CLIENT_IP_HEADER) ?? 'missing';
+    const ipMac = await quotaMac(secret, 'socket-ip', address, SOCKET_IP_SCOPE);
+    if (!allowPending(this.views(), ipMac)) return json(429, { error: 'slow_down' });
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server);
     const openedAt = Date.now();
-    server.serializeAttachment({ admitted: false, ip, openedAt } satisfies PendingState);
+    server.serializeAttachment({ admitted: false, ip: ipMac, openedAt } satisfies PendingState);
     await this.armAlarm(openedAt);
     return new Response(null, { status: 101, webSocket: client });
   }

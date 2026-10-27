@@ -163,13 +163,81 @@ On this first staging run, confirm that the token from step 2 is enough. Workers
 
 ## 12. Smoke test
 
-**can be scripted with wrangler/gh once a token exists** for `/health`. **Owner must do (browser/account)** for a pass on the court.
+**can be scripted with wrangler/gh once a token exists** for the HTTP checks below. **Owner must do (browser/account)** for a pass on the court.
+
+Run this against the staging worker from step 11, after step 6. Without `QUOTA_HMAC_KEY`, `POST /matches` and `POST /join` return `503` and `not_configured`. Send `Origin: https://patrickstubner.github.io` on every call except `/health` and the foreign-origin check. Staging is not `development`, so a localhost origin is refused. `/health` does not check `Origin`.
 
 ```sh
-curl -fsS "https://padel-counter-staging.<workers.dev subdomain>.workers.dev/health"
+BASE="https://padel-counter-staging.<workers.dev subdomain>.workers.dev"
+ORIGIN="https://patrickstubner.github.io"
+
+curl -fsS "$BASE/health"
 ```
 
-Expect JSON with `"ok": true` and `"service": "padel-counter"`. Then open the court, share a match, and join from a second browser only after production Pages has the `PUBLIC_API_URL` from step 9. A staging worker and the published court are different hosts until that variable is the production origin and Pages has been deployed.
+Expect `200` and JSON with `"ok": true`, `"service": "padel-counter"`, and `"protocol": 1`.
+
+`POST /matches` expects `201`. The body is a device id (`d` plus 8 hex digits) and a schema 2 log. The server replaces `matchId`. Names are NFC, trimmed, and 1–20 code points. `createdAt` and `updatedAt` are positive integers below `10000000000000`.
+
+```sh
+curl -sS -o /tmp/padel-match.json -w "%{http_code}\n" \
+  -H "origin: $ORIGIN" -H "content-type: application/json" \
+  -d '{"device":"d00000001","log":{"schemaVersion":2,"base":{"schemaVersion":2,"matchId":"11111111-1111-4111-8111-111111111111","revision":0,"createdAt":1700000000000,"updatedAt":1700000000000,"teams":{"a":{"name":"Team A"},"b":{"name":"Team B"}},"sets":[{"a":0,"b":0},{"a":0,"b":0},{"a":0,"b":0}],"activeSet":0,"serve":null},"events":[]}}' \
+  "$BASE/matches"
+```
+
+Expect `201` and JSON with `matchId` and `hostToken`. Use those values as `MATCH` and `HOST`.
+
+`POST /matches/:id/invites` expects `201`. The bearer is the host token. The role is `player`. A spectator role is refused.
+
+```sh
+curl -sS -o /tmp/padel-invite.json -w "%{http_code}\n" \
+  -H "origin: $ORIGIN" -H "content-type: application/json" \
+  -H "authorization: Bearer $HOST" \
+  -d '{"role":"player"}' \
+  "$BASE/matches/$MATCH/invites"
+```
+
+Expect `201` and JSON with `token`, `role` `"player"`, `matchId`, and `expiresAt`. Use `token` as `INVITE`.
+
+`POST /join` with an unknown but well-formed bearer (22 URL-safe characters, for example 22 `a`s) and a valid device expects `401` and `{ "error": "bad_token", "message": "This code is not valid." }`. One such call is enough. It records a failed attempt. Do not repeat it.
+
+```sh
+curl -sS -o /tmp/padel-join-bad.json -w "%{http_code}\n" \
+  -H "origin: $ORIGIN" -H "content-type: application/json" \
+  -H "authorization: Bearer aaaaaaaaaaaaaaaaaaaaaa" \
+  -d '{"device":"d00000002"}' \
+  "$BASE/join"
+```
+
+The same path with the invite token expects `201` and JSON with `ticket` and `expiresAt`. The host token is also valid here. The ticket lasts 30 seconds and is single-use. The next two calls do not consume it. The WebSocket upgrade does. Run all three within those 30 seconds.
+
+```sh
+curl -sS -o /tmp/padel-join.json -w "%{http_code}\n" \
+  -H "origin: $ORIGIN" -H "content-type: application/json" \
+  -H "authorization: Bearer $INVITE" \
+  -d '{"device":"d00000002"}' \
+  "$BASE/join"
+```
+
+`GET /ws/:ticket` with the Pages origin and no `Upgrade` header expects `426` and `{ "error": "upgrade_required", "message": "Update the app to keep scoring." }`. A missing origin on this path is `403`, so the `426` check must send the Pages origin.
+
+```sh
+curl -sS -o /tmp/padel-ws-plain.json -w "%{http_code}\n" \
+  -H "origin: $ORIGIN" \
+  "$BASE/ws/$TICKET"
+```
+
+The same URL with a foreign origin, for example `https://example.com`, expects `403` and `{ "error": "origin" }`. That call does not consume the ticket either.
+
+```sh
+curl -sS -o /tmp/padel-ws-origin.json -w "%{http_code}\n" \
+  -H "origin: https://example.com" \
+  "$BASE/ws/$TICKET"
+```
+
+Open a WebSocket to `wss://padel-counter-staging.<workers.dev subdomain>.workers.dev/ws/$TICKET` with `Origin: https://patrickstubner.github.io`. Expect HTTP `101`. `curl` does not complete this handshake or read the frames; use a WebSocket client such as `websocat`. The first client message is `{"type":"hello","protocol":1,"token":"<invite token>","device":"d00000002"}`. The server then sends a text frame `{ "type": "snapshot", "protocol": 1, ... }` and a text frame `{ "type": "presence", "players": <number> }`. A second upgrade with the same ticket expects `401` and `bad_token`.
+
+Then open the court, share a match, and join from a second browser only after production Pages has the `PUBLIC_API_URL` from step 9. A staging worker and the published court are different hosts until that variable is the production origin and Pages has been deployed.
 
 ## 13. Production approval
 
