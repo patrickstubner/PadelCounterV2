@@ -1,0 +1,5 @@
+# Copy to .dev.vars for `wrangler dev`. Do not put real secrets in this file.
+# QUOTA_HMAC_KEY is required before a live match can be created.
+# Use a long random string locally. Do not commit the value.
+# Production and staging use `wrangler secret put QUOTA_HMAC_KEY`.
+ENVIRONMENT=development
