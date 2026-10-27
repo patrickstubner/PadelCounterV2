@@ -337,7 +337,7 @@ describe('create quota', () => {
     expect(await index.expiredMatchIds(NOW)).toEqual([]);
   });
 
-  it('limits POST /join in D1 for one device and one network, including a fresh index', async () => {
+  it('limits a device on every join and a network only when a failure is recorded', async () => {
     const { db } = memory();
     const index = d1MatchIndex(db);
     const window = joinWindow(NOW);
@@ -346,26 +346,26 @@ describe('create quota', () => {
     expect(device).not.toBe(await sha256Hex('d00000001'));
     expect(network).not.toBe(await sha256Hex('192.0.2.1'));
     for (let i = 0; i < JOINS_PER_DEVICE; i += 1) {
-      expect((await index.takeJoinQuota(device, `${network}-${i}`, NOW)).ok).toBe(true);
+      expect((await index.takeJoinDevice(device, NOW)).ok).toBe(true);
     }
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(network, window).first()).toBeNull();
     const again = d1MatchIndex(db);
-    const blocked = await again.takeJoinQuota(device, `${network}-next`, NOW);
-    expect(blocked).toEqual({ ok: false, reason: 'device' });
-    const later = await again.takeJoinQuota(device, `${network}-next`, NOW + JOIN_WINDOW_MS);
-    expect(later.ok).toBe(true);
+    expect(await again.takeJoinDevice(device, NOW)).toEqual({ ok: false, reason: 'device' });
+    expect((await again.takeJoinDevice(device, NOW + JOIN_WINDOW_MS)).ok).toBe(true);
 
     const shared = await quotaMac('test-quota-hmac-key', 'join-ip', '192.0.2.9', String(window));
     for (let i = 0; i < JOINS_PER_NETWORK; i += 1) {
-      const phone = await quotaMac('test-quota-hmac-key', 'join-device', `phone-${i}`, String(window));
-      expect((await index.takeJoinQuota(phone, shared, NOW)).ok).toBe(true);
+      expect((await index.noteJoinFailure(shared, NOW)).ok).toBe(true);
     }
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toEqual({ n: JOINS_PER_NETWORK });
+    expect(await index.noteJoinFailure(shared, NOW)).toEqual({ ok: false, reason: 'network' });
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toEqual({ n: JOINS_PER_NETWORK });
     const overflowPhone = await quotaMac('test-quota-hmac-key', 'join-device', 'd000000ff', String(window));
-    const before = await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(overflowPhone, window).first();
-    expect(await index.takeJoinQuota(overflowPhone, shared, NOW)).toEqual({ ok: false, reason: 'network' });
-    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(overflowPhone, window).first()).toEqual(before);
+    expect((await index.takeJoinDevice(overflowPhone, NOW)).ok).toBe(true);
 
     await index.purgeEphemeral(NOW + 3 * 24 * 60 * 60 * 1000);
     expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(device, window).first()).toBeNull();
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toBeNull();
   });
 
   it('rolls back a player-credential revoke when the insert fails', async () => {

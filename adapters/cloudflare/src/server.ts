@@ -24,12 +24,19 @@ export interface RoomNamespace {
   get(id: unknown): { fetch(input: Request | string, init?: RequestInit): Promise<Response> };
 }
 
+/** Workers Rate Limiting binding. The real type is `RateLimit` from workers-types. */
+export interface RequestLimit {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
 export interface ServerEnv {
   MATCH_ROOMS: RoomNamespace;
   ENVIRONMENT: string;
   DB: D1Like;
-  /** Wrangler secret. HMAC key for the daily create counters. */
+  /** Wrangler secret. HMAC key for the daily create counters and the rate-limit key. */
   QUOTA_HMAC_KEY?: string;
+  /** `[[ratelimits]]` binding `REQUEST_LIMIT`. Missing means the worker is not configured. */
+  REQUEST_LIMIT?: RequestLimit;
 }
 
 const routeBuckets = new Map<string, readonly number[]>();
@@ -91,8 +98,9 @@ export async function handleFetch(request: Request, env: ServerEnv): Promise<Res
     if (kind === 'none') return error(404, 'not_found', origin, environment);
     if (origin && !isAllowedOrigin(origin, environment)) return error(403, 'origin', origin, environment);
     if (kind === 'socket' && !isAllowedOrigin(origin, environment)) return error(403, 'origin', origin, environment);
-    if (limitsMatchRoute(kind) && !takeMatchRoute(routeBuckets, clientAddress(request), Date.now())) {
-      return error(429, 'slow_down', origin, environment);
+    if (limitsMatchRoute(kind)) {
+      const blocked = await enforceMatchRouteLimit(request, env, origin, environment);
+      if (blocked) return blocked;
     }
 
     if (kind === 'socket') return openSocket(request, env, url.pathname);
@@ -108,6 +116,26 @@ export async function handleFetch(request: Request, env: ServerEnv): Promise<Res
 
 const CREATE_ATTEMPTS = 3;
 const TICKET_TTL_MS = 30_000;
+/** Fixed scope so the binding's own 60 second window can accumulate. A minute in the MAC would reset the key. */
+const RATE_LIMIT_SCOPE = 'binding';
+
+async function enforceMatchRouteLimit(
+  request: Request,
+  env: ServerEnv,
+  origin: string | null,
+  environment: string,
+): Promise<Response | null> {
+  const secret = env.QUOTA_HMAC_KEY;
+  const limiter = env.REQUEST_LIMIT;
+  if (!secret || !limiter) return error(503, 'not_configured', origin, environment);
+  const key = await quotaMac(secret, 'rate-ip', clientAddress(request), RATE_LIMIT_SCOPE);
+  const outcome = await limiter.limit({ key });
+  if (!outcome.success) return error(429, 'slow_down', origin, environment);
+  if (!takeMatchRoute(routeBuckets, clientAddress(request), Date.now())) {
+    return error(429, 'slow_down', origin, environment);
+  }
+  return null;
+}
 
 const DEVICE_ID = /^d[a-f0-9]{8}$/;
 
@@ -308,7 +336,7 @@ async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
   const body = await readJson(request, 1000);
   const device = body && typeof body === 'object' ? (body as { device?: unknown }).device : undefined;
   if (typeof device !== 'string' || !DEVICE_ID.test(device)) {
-    return Response.json({ error: 'invalid_match' }, { status: 400 });
+    return Response.json({ error: 'invalid_device', message: ROOM_MESSAGES.invalid_device }, { status: 400 });
   }
   const secret = env.QUOTA_HMAC_KEY;
   if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
@@ -316,19 +344,30 @@ async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
   const now = Date.now();
   const window = joinWindow(now);
   const deviceHash = await quotaMac(secret, 'join-device', device, String(window));
-  const ipHash = await quotaMac(secret, 'join-ip', clientAddress(request), String(window));
-  const limited = await index.takeJoinQuota(deviceHash, ipHash, now);
-  if (!limited.ok) {
-    const code = limited.reason === 'network' ? 'join_network_limit' : 'join_device_limit';
-    return Response.json({ error: code, message: ROOM_MESSAGES[code] }, { status: 429 });
+  const deviceQuota = await index.takeJoinDevice(deviceHash, now);
+  if (!deviceQuota.ok) {
+    return Response.json(
+      { error: 'join_device_limit', message: ROOM_MESSAGES.join_device_limit },
+      { status: 429 },
+    );
   }
   const token = bearer(request);
-  if (!token) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
-  const credential = await index.findCredential(await sha256Hex(token));
-  if (!credential || credential.revokedAt !== null || now >= credential.expiresAt) {
-    return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
+  const credential = token ? await index.findCredential(await sha256Hex(token)) : null;
+  const admitted = Boolean(credential && credential.revokedAt === null && now < credential.expiresAt && (await index.find(credential.matchId)));
+  if (!admitted || !credential) {
+    const ipHash = await quotaMac(secret, 'join-ip', clientAddress(request), String(window));
+    const networkQuota = await index.noteJoinFailure(ipHash, now);
+    if (!networkQuota.ok) {
+      return Response.json(
+        { error: 'join_network_limit', message: ROOM_MESSAGES.join_network_limit },
+        { status: 429 },
+      );
+    }
+    if (!token || !credential || credential.revokedAt !== null || now >= credential.expiresAt) {
+      return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
+    }
+    return Response.json({ error: 'not_found' }, { status: 404 });
   }
-  if (!(await index.find(credential.matchId))) return Response.json({ error: 'not_found' }, { status: 404 });
   const ticket = randomToken();
   await index.putTicket(await sha256Hex(ticket), credential.matchId, now + TICKET_TTL_MS);
   return Response.json({ ticket, expiresAt: now + TICKET_TTL_MS }, { status: 201, headers: { 'cache-control': 'no-store' } });

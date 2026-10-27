@@ -19,6 +19,14 @@ database_name = "padel-counter"
 database_id = "11111111-1111-4111-8111-111111111111"
 migrations_dir = "migrations"
 
+[[ratelimits]]
+name = "REQUEST_LIMIT"
+namespace_id = "1001"
+
+[ratelimits.simple]
+limit = 30
+period = 60
+
 [env.dev]
 name = "padel-counter-dev"
 
@@ -38,6 +46,14 @@ binding = "DB"
 database_name = "padel-counter-dev"
 database_id = "22222222-2222-4222-8222-222222222222"
 migrations_dir = "migrations"
+
+[[env.dev.ratelimits]]
+name = "REQUEST_LIMIT"
+namespace_id = "1003"
+
+[env.dev.ratelimits.simple]
+limit = 30
+period = 60
 
 [env.staging]
 name = "padel-counter-staging"
@@ -62,6 +78,14 @@ database_name = "padel-counter-staging"
 database_id = "33333333-3333-4333-8333-333333333333"
 migrations_dir = "migrations"
 
+[[env.staging.ratelimits]]
+name = "REQUEST_LIMIT"
+namespace_id = "1002"
+
+[env.staging.ratelimits.simple]
+limit = 30
+period = 60
+
 [env.production]
 name = "padel-counter"
 
@@ -84,3 +108,11 @@ binding = "DB"
 database_name = "padel-counter"
 database_id = "11111111-1111-4111-8111-111111111111"
 migrations_dir = "migrations"
+
+[[env.production.ratelimits]]
+name = "REQUEST_LIMIT"
+namespace_id = "1001"
+
+[env.production.ratelimits.simple]
+limit = 30
+period = 60

@@ -23,7 +23,7 @@ Minimal permissions, restricted to this account:
 - Account, Workers Scripts, Edit
 - Account, D1, Edit
 
-Do not grant a zone permission. This project has no zone. Do not grant account-wide admin.
+Do not grant a zone permission. This project has no zone. Do not grant account-wide admin. Do not add Account Settings: Read yet. Step 11 checks whether these two permissions are enough. Add Account Settings: Read only if that first staging deploy says the token cannot read account settings.
 
 ## 3. Account id
 
@@ -130,24 +130,33 @@ Replace `<workers.dev subdomain>` with the name from step 1. The Pages build cop
 
 ## 10. Rate limit
 
-**No dashboard step.** The measure ships in the repository.
+**No dashboard step.** The measures ship in the repository.
 
 A WAF rate-limiting rule cannot target `*.workers.dev`. Those rules belong to a zone, and this account does not attach the worker to a zone. `SECURITY.md` cites the Cloudflare docs and the date they were read.
 
-What actually limits traffic on the workers.dev host:
+What limits traffic on the workers.dev host, in this order:
 
-- `POST /join` writes D1 table `join_quota`: 20 attempts per minute for one device, and 60 per minute for one network address. The stored key is an HMAC, not the device id or the address. Migration `0004_join_quota.sql` is applied by step 4.
-- Create, invite, carry, `POST /join`, and `GET /ws/*` also share 20 requests per minute per address inside one isolate. That counter is not global. The D1 join limit is the one that survives a new isolate.
+- A Workers Rate Limiting binding, `REQUEST_LIMIT`, from `[[ratelimits]]` in `wrangler.toml`. It allows 30 requests per 60 seconds for one HMAC of the client address. The check runs before the D1 counters, on `POST /matches`, `POST /matches/:id/invites`, `POST /matches/:id/carry`, `POST /join`, and `GET /ws/*`. Over the limit the worker returns 429. The count is per Cloudflare location and is approximate: a burst can pass. Staging uses namespace `1002` and dev uses `1003`, so they do not share the production namespace `1001`. Source: [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) (last updated 21 October 2026). The key is an HMAC of `QUOTA_HMAC_KEY`, not the raw address. The same page advises against a raw IP key because many people share one address; this project still keys on the address, because there is no account, and stores only the HMAC.
+- `POST /join` writes D1 table `join_quota`. One device may try 20 times per minute. One network may record 60 failed attempts per minute (missing, invalid, expired, or revoked token, or a match that is not in D1). A successful join does not increment the network row, so several phones on one court Wi-Fi or one CGNAT address are not locked out by playing. The stored key is an HMAC, not the device id or the address. Migration `0004_join_quota.sql` is applied by step 4.
+- Those same routes also share 20 requests per minute per address inside one isolate. That counter is not global.
 
-Do not create `EDGE_RATE_LIMIT_RULE`. Do not pass `edge_rate_limit_confirmed`. The deploy workflow does not read either. A Workers Rate Limiting binding (`[[ratelimits]]`) would run without a zone, but its count is per Cloudflare location and is not strict. It is not the limit this deploy uses. A custom domain would make a zone WAF rule possible, and this project does not add one.
+Do not create `EDGE_RATE_LIMIT_RULE`. Do not pass `edge_rate_limit_confirmed`. The deploy workflow does not read either. A custom domain would make a zone WAF rule possible, and this project does not add one.
 
-If a zone is ever added later, the rule expressions to cover are `starts_with(http.request.uri.path, "/matches")`, `http.request.uri.path eq "/join"`, and `starts_with(http.request.uri.path, "/ws/")`, characteristic IP, action Block, 60 requests per minute. `/matches/:id/ws` is not a route.
+If a zone is added later, the Free plan allows one rate limiting rule, a counting period of 10 seconds, and a mitigation timeout of 10 seconds. The counting characteristic is IP. The expression can use path. Source: the availability table on [Rate limiting rules](https://developers.cloudflare.com/waf/rate-limiting-rules/) (last updated 25 August 2026). Use one rule whose expression ORs the three paths:
+
+```txt
+(starts_with(http.request.uri.path, "/matches") or http.request.uri.path eq "/join" or starts_with(http.request.uri.path, "/ws/"))
+```
+
+Characteristic IP, action Block, period 10 seconds, mitigation timeout 10 seconds, 10 requests per period. Ten requests in 10 seconds is the Free-plan stand-in for 60 requests in a minute: the Free plan cannot count over 60 seconds. `/matches/:id/ws` is not a route. That rule is documentation only. It is not a deploy step.
 
 ## 11. First staging deploy
 
 **can be scripted with wrangler/gh once a token exists.**
 
 Push to `main` after steps 1–7. The staging job runs on that push. It migrates `padel-counter-staging` and deploys the worker `padel-counter-staging`. Watch the Actions log. A missing token skips successfully and does not deploy. A missing production reviewer is not required for staging.
+
+On this first staging run, confirm that the token from step 2 is enough. Workers Scripts: Edit and D1: Edit are the intended set. If `wrangler d1 migrations apply` or `wrangler deploy` fails because the token is not allowed to read account settings, add Account Settings: Read and rerun the job. Do not add that permission before the failure.
 
 ## 12. Smoke test
 
@@ -164,3 +173,18 @@ Expect JSON with `"ok": true` and `"service": "padel-counter"`. Then open the co
 **Owner must do (browser/account).**
 
 On `main`, run the Deploy workflow with “Run workflow”. `production` asks `patrickstubner` to approve. The job checks out that exact commit, migrates `padel-counter`, deploys the worker `padel-counter`, and, when `DEPLOY_PAGES` is `true`, publishes GitHub Pages for the same commit. Do not approve a commit that has not passed CI. Do not mark a pull request ready just to deploy.
+
+## 14. Usage and billing notifications
+
+**Owner must do (browser/account).** Patrick does this in the Cloudflare dashboard after the account in step 1 exists. It can wait until after the first staging deploy. It does not change the worker.
+
+The free Workers plan includes 10 million requests and 30 million CPU milliseconds. Past that, Workers bills requests and CPU time. D1 bills rows read and rows written. Notifications do not stop usage and do not cap a bill. The monthly invoice is the source of truth.
+
+Checked against the Cloudflare docs on 2026-10-27:
+
+- [Usage-based billing](https://developers.cloudflare.com/billing/understand/usage-based-billing/) (last updated 29 May 2026). Workers billable metrics are requests and CPU time. Per-product email notifications are described for a Professional plan or higher: open the account, go to Notifications, and add a Billable Usage notification. The same page says those emails are informational.
+- [Platform Notifications](https://developers.cloudflare.com/notifications/notification-available/) (last updated 21 October 2026). The catalog entry is Usage Based Billing, under Billing. The dashboard path on that page is Alerts, then Platform Notifications, then Create a Notification. It is included with Professional plans or higher, and the note says usage-based billing notifications are for Pay-as-you-go accounts only.
+- [D1 billing](https://developers.cloudflare.com/d1/observability/billing/) (last updated 21 April 2026). D1 notifications cover Rows Read and Rows Written. The same page shows current usage under Billing, then Billable Usage. History there is kept for 30 days.
+- [Budget alerts](https://developers.cloudflare.com/billing/manage/budget-alerts/) (last updated 29 May 2026). An account-wide dollar threshold is Billing, then Billable Usage, then Create budget alert. Pay-as-you-go only. The alert resets each billing period and does not pause usage.
+
+Open both screens. If the dashboard shows Workers, set a notification for requests and for CPU time. If it shows D1, set one for Rows Read and one for Rows Written. If a budget alert is offered, add one low dollar threshold as well. If those controls are missing, that matches a free plan that is not Professional and not Pay-as-you-go. Do not buy a plan only to obtain the alert. The accepted residual risk in `SECURITY.md` covers cost and availability while the worker stays on `workers.dev` without a zone.

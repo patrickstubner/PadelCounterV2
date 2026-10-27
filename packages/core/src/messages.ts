@@ -15,7 +15,8 @@ export const ROOM_MESSAGES = {
   device_daily_limit: "You've reached 10 new matches today on this device.",
   network_daily_limit: 'Too many new matches from this network today.',
   join_device_limit: 'Too many connection attempts from this device. Wait a minute.',
-  join_network_limit: 'Too many connection attempts from this network. Wait a minute.',
+  join_network_limit: 'Too many failed connection attempts from this network. Wait a minute.',
+  invalid_device: 'This device id is not valid.',
   closed: 'This match is closed. It can no longer be scored.',
   reconnect_unavailable: 'The previous players can no longer be reconnected. Share a new code.',
 } as const;
