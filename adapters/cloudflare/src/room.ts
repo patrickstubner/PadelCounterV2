@@ -4,10 +4,15 @@ import {
   MAX_EVENTS,
   ROOM_MESSAGES,
   actionForEvent,
+  actorId,
   canPerform,
+  canReopen,
+  credentialAllowsEvent,
   decideJoin,
+  lastChangeAt,
   parseStoredEvent,
   replayScore,
+  roomAcceptsScore,
   type Credential,
   type MatchEvent,
   type MatchLog,
@@ -22,6 +27,8 @@ export interface InviteRow {
   readonly host: boolean;
   readonly expiresAt: number;
   readonly revokedAt: number | null;
+  /** Set only for a reconnect invite. A QR invite leaves this empty. */
+  readonly deviceId?: string | null;
 }
 
 export interface StoredEvent {
@@ -99,9 +106,11 @@ export function admit(
   tokenHash: string,
   connectedPlayers: number,
   now: number,
+  deviceId?: string | null,
 ): { readonly ok: true; readonly credential: Credential } | RoomFailure {
   const row = record.invites.find((invite) => safeEqualHex(invite.tokenHash, tokenHash));
   if (!row) return fail('bad_token');
+  if (row.deviceId && row.deviceId !== deviceId) return fail('bad_token');
   const decision = decideJoin({
     role: row.role,
     connectedPlayers,
@@ -133,8 +142,9 @@ export function helloPayload(
   tokenHash: string,
   connectedPlayers: number,
   now: number,
+  deviceId?: string | null,
 ): { readonly ok: true; readonly credential: Credential; readonly payload: ClientPayload } | (RoomFailure & { readonly payload: ClientPayload }) {
-  const admitted = admit(record, tokenHash, connectedPlayers, now);
+  const admitted = admit(record, tokenHash, connectedPlayers, now, deviceId);
   if (!admitted.ok) {
     return { ...admitted, payload: { type: 'error', code: admitted.code, message: admitted.message } };
   }
@@ -154,12 +164,44 @@ export function helloPayload(
   };
 }
 
+export function applyLiveEvent(
+  record: RoomRecord,
+  invite: InviteRow,
+  actor: string,
+  eventId: string,
+  rawEvent: unknown,
+  now: number,
+):
+  | { readonly ok: true; readonly record: RoomRecord; readonly event: StoredEvent; readonly duplicate: boolean }
+  | RoomFailure {
+  const blocked = credentialAllowsEvent({
+    role: invite.role,
+    expiresAt: invite.expiresAt,
+    revokedAt: invite.revokedAt,
+    now,
+  });
+  if (blocked) return fail(blocked);
+  const last = lastChangeAt(record.base.createdAt, record.events.map((item) => item.event.at));
+  if (!roomAcceptsScore(last, now)) return fail('closed');
+  const parsed = parseStoredEvent(rawEvent);
+  if (parsed?.type === 'match/resume') {
+    const allowed = canReopen({
+      events: record.events.map((item) => item.event),
+      actorId: actor,
+      actorIsHost: invite.host,
+    });
+    if (!allowed) return fail('forbidden');
+  }
+  return applyPlay(record, credentialFor(invite), eventId, rawEvent, now, actor);
+}
+
 export function applyPlay(
   record: RoomRecord,
   credential: Credential,
   eventId: string,
   rawEvent: unknown,
   now: number,
+  actor?: string,
 ):
   | { readonly ok: true; readonly record: RoomRecord; readonly event: StoredEvent; readonly duplicate: boolean }
   | RoomFailure {
@@ -176,7 +218,7 @@ export function applyPlay(
   if (parsed.type === 'match/new' || parsed.type === 'match/reset') return fail('not_applied');
   if (record.events.length >= MAX_EVENTS) return fail('not_applied');
 
-  const stamped: MatchEvent = { ...parsed, at: now };
+  const stamped: MatchEvent = actorId(actor) ? { ...parsed, at: now, by: actorId(actor) } : { ...parsed, at: now };
   const current = replayScore(record.base, record.events.map((item) => item.event));
   const next = replayScore(current, [stamped]);
   if (next === current) return fail('not_applied');
@@ -204,6 +246,25 @@ export function eventDelta(input: {
     duplicate: input.duplicate,
     players: input.players,
   };
+}
+
+/** QR invites have no device. Each phone that actually connected is listed on its own. */
+export function invitesForCarry(
+  invites: readonly InviteRow[],
+  joined: readonly { readonly tokenHash: string; readonly deviceId: string | null }[],
+): { readonly tokenHash: string; readonly host: boolean; readonly deviceId: string | null }[] {
+  const listed: { tokenHash: string; host: boolean; deviceId: string | null }[] = [];
+  for (const invite of invites) {
+    const devices = joined.filter((row) => row.tokenHash === invite.tokenHash && row.deviceId);
+    if (devices.length === 0) {
+      listed.push({ tokenHash: invite.tokenHash, host: invite.host, deviceId: invite.deviceId ?? null });
+      continue;
+    }
+    for (const device of devices) {
+      listed.push({ tokenHash: invite.tokenHash, host: invite.host, deviceId: device.deviceId });
+    }
+  }
+  return listed;
 }
 
 export function toLog(record: RoomRecord): MatchLog {

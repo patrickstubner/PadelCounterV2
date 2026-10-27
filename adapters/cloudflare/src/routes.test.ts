@@ -10,7 +10,9 @@ describe('public routes', () => {
     expect(classifyPath('GET', '/health')).toBe('health');
     expect(classifyPath('POST', '/matches')).toBe('create');
     expect(classifyPath('POST', `/matches/${ID}/invites`)).toBe('invite');
-    expect(classifyPath('GET', `/matches/${ID}/ws`)).toBe('socket');
+    expect(classifyPath('POST', '/join')).toBe('ticket');
+    expect(classifyPath('GET', '/ws/abcdefghijklmnopqrstuv')).toBe('socket');
+    expect(classifyPath('POST', `/matches/${ID}/carry`)).toBe('carry');
     expect(classifyPath('POST', '/auth/google')).toBe('auth');
   });
 
@@ -20,7 +22,9 @@ describe('public routes', () => {
     expect(classifyPath('POST', '/internal/create')).toBe('none');
     expect(classifyPath('POST', '/internal/discard')).toBe('none');
     expect(classifyPath('DELETE', `/matches/${ID}`)).toBe('none');
+    expect(classifyPath('GET', `/matches/${ID}/ws`)).toBe('none');
     expect(classifyPath('GET', '/matches/not-a-uuid/ws')).toBe('none');
+    expect(classifyPath('GET', '/ws/short')).toBe('none');
     expect(matchIdFrom(`/matches/${ID}/ws`)).toBe(ID);
     expect(matchIdFrom('/matches')).toBeNull();
   });
@@ -29,6 +33,8 @@ describe('public routes', () => {
     expect(limitsMatchRoute('create')).toBe(true);
     expect(limitsMatchRoute('invite')).toBe(true);
     expect(limitsMatchRoute('socket')).toBe(true);
+    expect(limitsMatchRoute('ticket')).toBe(true);
+    expect(limitsMatchRoute('carry')).toBe(true);
     expect(limitsMatchRoute('health')).toBe(false);
     expect(limitsMatchRoute('auth')).toBe(false);
     expect(limitsMatchRoute('none')).toBe(false);

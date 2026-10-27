@@ -104,7 +104,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderP
     <header className="top">
       <h1 className="brand">
         <button type="button" className="brand-btn" data-testid="open-matches" onClick={onBrand}>
-          Padel Counter
+          Padel Counter V2
         </button>
       </h1>
       <p className="set-heading" data-testid="active-set">{setLabel}</p>

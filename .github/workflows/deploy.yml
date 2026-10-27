@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      edge_rate_limit_confirmed:
+        description: Edge rate-limit rule is saved (IP, block, 60 per minute, path starts with /matches)
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -15,13 +21,22 @@ concurrency:
 jobs:
   staging:
     name: Staging worker
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: staging
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Require this exact head
+        run: |
+          if [ "$(git rev-parse HEAD)" != "${{ github.sha }}" ]; then
+            echo "HEAD does not match github.sha"
+            exit 1
+          fi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@9fd676a19091d4595eefd76e4bd31c97133911f1 # v4.2.0
@@ -43,25 +58,41 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ACCOUNT_FROM_VARS: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          EDGE_RATE_LIMIT_RULE: ${{ vars.EDGE_RATE_LIMIT_RULE }}
         run: |
           account="${CLOUDFLARE_ACCOUNT_ID:-$ACCOUNT_FROM_VARS}"
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$account" ]; then
             echo "CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is missing. Skipping staging deploy."
             exit 0
           fi
+          if [ "$EDGE_RATE_LIMIT_RULE" != "confirmed" ]; then
+            echo "Set repository variable EDGE_RATE_LIMIT_RULE=confirmed after the edge rule is saved."
+            exit 1
+          fi
           export CLOUDFLARE_ACCOUNT_ID="$account"
           pnpm exec wrangler d1 migrations apply DB --env staging --remote
           pnpm exec wrangler deploy --env staging
 
   production:
-    name: Production worker
+    name: Production worker and pages
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
+    outputs:
+      ship: ${{ steps.gate.outputs.ship }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Require this exact head
+        run: |
+          if [ "$(git rev-parse HEAD)" != "${{ github.sha }}" ]; then
+            echo "HEAD does not match github.sha"
+            exit 1
+          fi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@9fd676a19091d4595eefd76e4bd31c97133911f1 # v4.2.0
@@ -78,24 +109,38 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Migrate and deploy, or skip
+        id: gate
         working-directory: adapters/cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ACCOUNT_FROM_VARS: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          EDGE_RATE_LIMIT_RULE: ${{ vars.EDGE_RATE_LIMIT_RULE }}
+          EDGE_CONFIRMED: ${{ inputs.edge_rate_limit_confirmed }}
         run: |
           account="${CLOUDFLARE_ACCOUNT_ID:-$ACCOUNT_FROM_VARS}"
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$account" ]; then
             echo "CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is missing. Skipping production deploy."
+            echo "ship=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          if [ "$EDGE_CONFIRMED" != "true" ]; then
+            echo "Run the workflow with edge_rate_limit_confirmed set."
+            exit 1
+          fi
+          if [ "$EDGE_RATE_LIMIT_RULE" != "confirmed" ]; then
+            echo "Set repository variable EDGE_RATE_LIMIT_RULE=confirmed after the edge rule is saved."
+            exit 1
           fi
           export CLOUDFLARE_ACCOUNT_ID="$account"
           pnpm exec wrangler d1 migrations apply DB --env production --remote
           pnpm exec wrangler deploy --env production
+          echo "ship=true" >> "$GITHUB_OUTPUT"
 
   pages:
     name: GitHub Pages
-    if: github.ref == 'refs/heads/main' && vars.DEPLOY_PAGES == 'true'
+    needs: production
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.production.outputs.ship == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -108,6 +153,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Require this exact head
+        run: |
+          if [ "$(git rev-parse HEAD)" != "${{ github.sha }}" ]; then
+            echo "HEAD does not match github.sha"
+            exit 1
+          fi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@9fd676a19091d4595eefd76e4bd31c97133911f1 # v4.2.0

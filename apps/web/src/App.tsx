@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { isOpenMatch, lastChangeAt, planNewMatch, type NewMatchPlan } from '@padel/core';
 import { connectHistoryState, detailHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
@@ -9,6 +10,10 @@ import { TeamPanel } from './components/TeamPanel';
 import { UpdateReady } from './components/UpdateReady';
 import { Victory } from './components/Victory';
 import { listMatches } from './domain/archive';
+import { deviceId } from './domain/device';
+import { fanfareEnabled, playFanfare, setFanfareEnabled, shouldPlayFanfare } from './domain/fanfare';
+import { appendEvent } from './domain/log';
+import { commitNewMatch, newMatchCopy } from './domain/newMatch';
 import {
   acknowledgeCelebrated,
   celebrationKey,
@@ -57,7 +62,17 @@ export function App() {
   useWakeLock();
   const updateReady = useUpdateReady();
   const updateButton = updateReady ? <UpdateReady onReload={() => window.location.reload()} /> : null;
-  const [confirming, setConfirming] = useState<'reset' | 'end' | null>(null);
+  const [confirming, setConfirming] = useState<'end' | null>(null);
+  const [pendingPlan, setPendingPlan] = useState<NewMatchPlan | null>(null);
+  const [reconnectChoice, setReconnectChoice] = useState(false);
+  const [fanfareOn, setFanfareOn] = useState(() => {
+    try {
+      return typeof localStorage === 'undefined' ? true : fanfareEnabled(localStorage);
+    } catch {
+      return true;
+    }
+  });
+  const fanfarePlayed = useRef<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [screen, setScreen] = useState<ArchiveScreen>(() => {
     if (typeof history !== 'undefined') {
@@ -78,9 +93,9 @@ export function App() {
     try {
       const raw = sessionStorage.getItem(JOIN_KEY);
       if (!raw) return;
-      const parsed = JSON.parse(raw) as { matchId?: unknown; token?: unknown };
-      if (typeof parsed.matchId !== 'string' || typeof parsed.token !== 'string') return;
-      room.connect(parsed.matchId, parsed.token);
+      const parsed = JSON.parse(raw) as { token?: unknown };
+      if (typeof parsed.token !== 'string') return;
+      room.connect(parsed.token);
     } catch {
       // A bad saved code is ignored. The connect screen explains the failure if the socket opens.
     }
@@ -175,6 +190,11 @@ export function App() {
     }
     setOpened(victoryKey);
   }, [fresh, victoryKey, win]);
+  useEffect(() => {
+    if (!victoryKey || !shouldPlayFanfare(showVictory, fanfareOn, fanfarePlayed.current, victoryKey)) return;
+    fanfarePlayed.current = victoryKey;
+    playFanfare();
+  }, [showVictory, fanfareOn, victoryKey]);
   const active = state.sets[state.activeSet];
   const tiebreak = tiebreakHint(state);
   const pick = servePickPrompt(state);
@@ -273,7 +293,36 @@ export function App() {
     state.ended
       ? { id: 'resume', label: 'Resume', testId: 'resume-match', emphasized: true, onSelect: match.resumeMatch }
       : { id: 'end', label: 'End match', testId: 'end-match', onSelect: () => setConfirming('end') },
-    { id: 'reset', label: 'New match', testId: 'new-match', onSelect: () => setConfirming('reset') },
+    {
+      id: 'reset',
+      label: 'New match',
+      testId: 'new-match',
+      onSelect: () => {
+        const plan = planNewMatch({
+          host: room.status !== 'live' || room.host,
+          open: isOpenMatch(state),
+          lastEventAt: lastChangeAt(state.createdAt, match.log.events.map((event) => event.at)),
+          now: Date.now(),
+          coPlayers: room.status === 'live' ? Math.max(0, room.players - 1) : 0,
+        });
+        setReconnectChoice(plan.reconnectSelected);
+        setPendingPlan(plan);
+      },
+    },
+    {
+      id: 'fanfare',
+      label: fanfareOn ? 'Victory sound: On' : 'Victory sound: Off',
+      testId: 'fanfare-toggle',
+      onSelect: () => {
+        const next = !fanfareOn;
+        setFanfareOn(next);
+        try {
+          setFanfareEnabled(localStorage, next);
+        } catch {
+          // Storage may be blocked. This visit still uses the choice.
+        }
+      },
+    },
     { id: 'privacy', label: 'Privacy', testId: 'privacy-open', onSelect: openPrivacy },
     ...(install.kind === 'prompt'
       ? [{
@@ -360,19 +409,50 @@ export function App() {
       <p className="sr-only" aria-live="polite">
         {live}
       </p>
-      {confirming === 'reset' ? (
+      {pendingPlan ? (
         <ConfirmDialog
           titleId="new-match-title"
-          title="New match?"
-          body="The score is reset. Team names go back to Team A and Team B."
-          confirmLabel="Reset"
-          confirmTestId="confirm-reset"
-          onCancel={() => setConfirming(null)}
+          title={newMatchCopy(pendingPlan).title}
+          body={newMatchCopy(pendingPlan).body}
+          confirmLabel={newMatchCopy(pendingPlan).confirmLabel}
+          confirmTestId={newMatchCopy(pendingPlan).confirmTestId}
+          cancelTestId="cancel-new-match"
+          check={pendingPlan.showReconnect ? {
+            label: 'Reconnect players from last match',
+            checked: reconnectChoice,
+            testId: 'reconnect-players',
+            onChange: setReconnectChoice,
+          } : undefined}
+          onCancel={() => setPendingPlan(null)}
           onConfirm={() => {
-            room.disconnect();
-            match.newMatch();
-            setConfirming(null);
+            const plan = pendingPlan;
+            const at = Date.now();
+            const by = plan.kind === 'leave' ? deviceId(localStorage) : 'host';
+            const commit = commitNewMatch(plan, at, by);
+            const previous = commit.endOnServer && room.status === 'live' && room.host
+              ? room.finishShared(commit.events[0] ?? { type: 'match/end', at, by })
+              : null;
+            if (!commit.endOnServer) room.disconnect();
+            let shared = match.log;
+            for (const event of commit.events) shared = appendEvent(shared, event);
+            match.recordAll(commit.events);
+            if (plan.showReconnect && reconnectChoice && previous) {
+              room.share(shared, { previousHostToken: previous, carry: true });
+            }
+            setPendingPlan(null);
           }}
+        />
+      ) : null}
+      {room.offer ? (
+        <ConfirmDialog
+          titleId="join-new-title"
+          title="Join new match?"
+          body="You were in the last match. Join this one with one tap."
+          confirmLabel="Join"
+          confirmTestId="join-new-match"
+          cancelTestId="dismiss-join"
+          onCancel={room.dismissOffer}
+          onConfirm={room.acceptOffer}
         />
       ) : null}
       {confirming === 'end' ? (

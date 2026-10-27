@@ -34,6 +34,29 @@ describe('scoring without undo', () => {
     expect(matchWinner(state.sets)).toBe('a');
   });
 
+  it('corrects a finished 6:0 set to 5:1 without dropping the earlier events', () => {
+    let state = createMatch(T0);
+    const events = [];
+    for (let i = 0; i < 6; i += 1) {
+      const event = { type: 'game/increment' as const, team: 'a' as const, at: T0 + i + 1, by: 'host' };
+      events.push(event);
+      state = matchReducer(state, event);
+    }
+    expect(state.activeSet).toBe(1);
+    expect(state.sets[0]).toEqual({ a: 6, b: 0 });
+    const taken = { type: 'game/decrement' as const, team: 'a' as const, at: T0 + 7, by: 'p2' };
+    const given = { type: 'game/increment' as const, team: 'b' as const, at: T0 + 8, by: 'p2' };
+    state = matchReducer(state, taken);
+    expect(state.activeSet).toBe(0);
+    expect(state.sets[0]).toEqual({ a: 5, b: 0 });
+    state = matchReducer(state, given);
+    expect(state.sets[0]).toEqual({ a: 5, b: 1 });
+    const log = [...events, taken, given];
+    expect(log).toHaveLength(8);
+    expect(log.filter((event) => event.type === 'game/increment')).toHaveLength(7);
+    expect(replayScore(createMatch(T0), log).sets[0]).toEqual({ a: 5, b: 1 });
+  });
+
   it('uses minus as the correction and ignores a score that is not a padel set', () => {
     let state = createMatch(T0);
     state = matchReducer(state, { type: 'game/increment', team: 'a', at: T0 + 1 });

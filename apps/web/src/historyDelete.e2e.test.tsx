@@ -148,7 +148,7 @@ describe('delete a match from History', () => {
     expect(localStorage.getItem(STORAGE_KEY)).not.toContain(PAST);
 
     await press('new-match');
-    await press('confirm-reset');
+    await press('finish-and-new');
     await press('open-matches');
     expect(document.body.textContent).not.toContain('Lobos');
     expect(deleteButton()?.getAttribute('data-match-id')).toBe(LIVE);

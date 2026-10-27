@@ -2,6 +2,7 @@ export {
   RULES_SUMMARY,
   canDecrement,
   canIncrement,
+  canTakeGame,
   celebrationWinner,
   displayGames,
   gamesPlayed,

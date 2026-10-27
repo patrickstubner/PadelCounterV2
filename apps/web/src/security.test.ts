@@ -82,8 +82,8 @@ describe('shipped source stays local and text-only', () => {
     };
     expect(manifest.lang).toBe('en');
     expect(manifest.description).toBe('Game counter for padel. The score stays on this device until you share it.');
-    expect(manifest.name).toBe('Padel Counter');
-    expect(manifest.short_name).toBe('Padel Counter');
+    expect(manifest.name).toBe('Padel Counter V2');
+    expect(manifest.short_name).toBe('Padel Counter V2');
     expect(manifest.display).toBe('standalone');
     expect(manifest.theme_color).toBe('#0a1a3f');
     expect(manifest.background_color).toBe('#0a1a3f');
@@ -118,7 +118,11 @@ describe('shipped source stays local and text-only', () => {
     expect(html).toContain('favicon.ico');
     expect(html).toContain('apple-mobile-web-app-capable');
     expect(html).toContain('apple-mobile-web-app-status-bar-style" content="black-translucent"');
-    expect(html).toContain('apple-mobile-web-app-title" content="Padel Counter"');
+    expect(html).toContain('apple-mobile-web-app-title" content="Padel Counter V2"');
+    expect(html).toContain("media-src 'none'");
+    const fanfare = readFileSync(join(repoRoot, 'src/domain/fanfare.ts'), 'utf8');
+    expect(fanfare).toContain('AudioContext');
+    expect(fanfare).not.toMatch(/\.mp3|\.wav|\.ogg/);
     const buildConfig = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');
     expect(buildConfig).toContain("'**/icon-1024.png'");
     expect(html).toContain('content="#0a1a3f"');

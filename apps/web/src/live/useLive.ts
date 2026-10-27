@@ -1,20 +1,31 @@
 import { useRef, useState, type MutableRefObject } from 'react';
-import { isRoomCode, ROOM_MESSAGES, type MatchLog } from '@padel/core';
+import { isRoomCode, ROOM_MESSAGES, type MatchEvent, type MatchLog } from '@padel/core';
+import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
-import type { MatchEvent } from '../domain/types';
 import { interpretMessage, joinLink, socketUrl } from './protocol';
+
+export interface ShareOptions {
+  readonly previousHostToken?: string;
+  readonly carry?: boolean;
+}
 
 export interface LiveController {
   readonly configured: boolean;
   readonly status: 'off' | 'connecting' | 'live';
+  readonly host: boolean;
   readonly players: number;
   readonly qr: string | null;
   readonly error: string | null;
-  readonly share: (log: MatchLog) => void;
+  readonly offer: string | null;
+  readonly share: (log: MatchLog, options?: ShareOptions) => void;
   readonly rotate: () => void;
-  readonly connect: (matchId: string, token: string) => void;
+  readonly connect: (token: string) => void;
   readonly disconnect: () => void;
+  readonly acceptOffer: () => void;
+  readonly dismissOffer: () => void;
+  /** Sends the end event, then drops this phone's socket. Returns the host token when this phone created the match. */
+  readonly finishShared: (event: MatchEvent) => string | null;
 }
 
 async function errorText(response: Response): Promise<string> {
@@ -27,6 +38,15 @@ async function errorText(response: Response): Promise<string> {
   return ROOM_MESSAGES.offline;
 }
 
+function thisDevice(): string {
+  try {
+    if (typeof localStorage === 'undefined') return 'd00000000';
+    return deviceId(localStorage);
+  } catch {
+    return 'd00000000';
+  }
+}
+
 export function useLive(
   liveRef: MutableRefObject<LiveSend | null>,
   replaceLog: (log: MatchLog) => void,
@@ -34,90 +54,137 @@ export function useLive(
 ): LiveController {
   const api = String(import.meta.env.PUBLIC_API_URL ?? '').replace(/\/$/, '');
   const [status, setStatus] = useState<'off' | 'connecting' | 'live'>('off');
+  const [host, setHost] = useState(true);
   const [players, setPlayers] = useState(0);
   const [qr, setQr] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [offer, setOffer] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const hostRef = useRef<{ matchId: string; token: string } | null>(null);
   const replaceRef = useRef(replaceLog);
   const applyRef = useRef(applyLive);
   const readyRef = useRef(false);
+  const generation = useRef(0);
+  const offerRef = useRef<string | null>(null);
   replaceRef.current = replaceLog;
   applyRef.current = applyLive;
 
+  const rememberOffer = (token: string | null) => {
+    offerRef.current = token;
+    setOffer(token);
+  };
+
   const disconnect = () => {
+    generation.current += 1;
     liveRef.current = null;
     readyRef.current = false;
     socketRef.current?.close();
     socketRef.current = null;
     hostRef.current = null;
     setStatus('off');
+    setHost(true);
     setQr(null);
     setPlayers(0);
+    rememberOffer(null);
   };
 
-  const open = (matchId: string, token: string, replaceLog: (log: MatchLog) => void) => {
-    if (!api) {
-      setError(ROOM_MESSAGES.not_configured);
-      return;
-    }
-    replaceRef.current = replaceLog;
-    readyRef.current = false;
-    socketRef.current?.close();
-    setStatus('connecting');
-    setError(null);
-    const ws = new WebSocket(socketUrl(api, matchId));
-    socketRef.current = ws;
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type: 'hello', protocol: 1, token }));
-    };
-    ws.onmessage = (event) => {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(String(event.data)) as unknown;
-      } catch {
+  const open = (token: string) => {
+    const mine = generation.current + 1;
+    generation.current = mine;
+    void (async () => {
+      if (!api) {
+        setError(ROOM_MESSAGES.not_configured);
         return;
       }
-      const notice = interpretMessage(parsed);
-      if (notice.kind === 'error') {
-        setError(notice.message);
-        if (!notice.close) return;
+      readyRef.current = false;
+      socketRef.current?.close();
+      setStatus('connecting');
+      setError(null);
+      let ticket: string | undefined;
+      try {
+        const response = await fetch(`${api}/join`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+        });
+        if (generation.current !== mine) return;
+        if (!response.ok) {
+          setError(await errorText(response));
+          setStatus('off');
+          return;
+        }
+        const body = (await response.json()) as { ticket?: unknown };
+        if (typeof body.ticket !== 'string') {
+          setError(ROOM_MESSAGES.offline);
+          setStatus('off');
+          return;
+        }
+        ticket = body.ticket;
+      } catch {
+        if (generation.current !== mine) return;
+        setError(ROOM_MESSAGES.offline);
+        setStatus('off');
+        return;
+      }
+      if (!ticket || generation.current !== mine) return;
+      const ws = new WebSocket(socketUrl(api, ticket));
+      socketRef.current = ws;
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'hello', protocol: 1, token, device: thisDevice() }));
+      };
+      ws.onmessage = (event) => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(String(event.data)) as unknown;
+        } catch {
+          return;
+        }
+        const notice = interpretMessage(parsed);
+        if (notice.kind === 'join_offer') {
+          rememberOffer(notice.token);
+          return;
+        }
+        if (notice.kind === 'error') {
+          setError(notice.message);
+          if (!notice.close) return;
+          liveRef.current = null;
+          readyRef.current = false;
+          setStatus('off');
+          ws.close();
+          return;
+        }
+        if (notice.kind === 'presence') {
+          setPlayers(notice.players);
+          return;
+        }
+        if (notice.kind === 'delta') {
+          if (readyRef.current && !notice.duplicate) applyRef.current(notice.event);
+          setPlayers(notice.players);
+          return;
+        }
+        if (notice.kind === 'log') {
+          replaceRef.current(notice.log);
+          readyRef.current = true;
+          setHost(notice.host);
+          setPlayers(notice.players);
+          setStatus('live');
+          liveRef.current = (courtEvent: MatchEvent) => {
+            if (ws.readyState !== WebSocket.OPEN) return false;
+            ws.send(JSON.stringify({ type: 'event', eventId: createMatchId(), event: courtEvent }));
+            return true;
+          };
+        }
+      };
+      ws.onerror = () => {
+        setError(ROOM_MESSAGES.offline);
+      };
+      ws.onclose = () => {
+        if (socketRef.current !== ws) return;
         liveRef.current = null;
         readyRef.current = false;
         setStatus('off');
-        ws.close();
-        return;
-      }
-      if (notice.kind === 'presence') {
-        setPlayers(notice.players);
-        return;
-      }
-      if (notice.kind === 'delta') {
-        if (readyRef.current && !notice.duplicate) applyRef.current(notice.event);
-        setPlayers(notice.players);
-        return;
-      }
-      if (notice.kind === 'log') {
-        replaceRef.current(notice.log);
-        readyRef.current = true;
-        setPlayers(notice.players);
-        setStatus('live');
-        liveRef.current = (courtEvent: MatchEvent) => {
-          if (ws.readyState !== WebSocket.OPEN) return false;
-          ws.send(JSON.stringify({ type: 'event', eventId: createMatchId(), event: courtEvent }));
-          return true;
-        };
-      }
-    };
-    ws.onerror = () => {
-      setError(ROOM_MESSAGES.offline);
-    };
-    ws.onclose = () => {
-      if (socketRef.current !== ws) return;
-      liveRef.current = null;
-      readyRef.current = false;
-      setStatus('off');
-    };
+        setHost(true);
+      };
+    })();
   };
 
   const publishQr = async (matchId: string, hostToken: string) => {
@@ -140,20 +207,46 @@ export function useLive(
       return;
     }
     const page = typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href;
-    setQr(joinLink(page, matchId, body.token));
+    setQr(joinLink(page, body.token));
   };
 
   return {
     configured: api.length > 0,
     status,
+    host,
     players,
     qr,
     error,
+    offer,
     disconnect,
-    connect: (matchId, token) => {
-      open(matchId, token, replaceRef.current);
+    acceptOffer: () => {
+      const token = offerRef.current;
+      rememberOffer(null);
+      if (token) open(token);
     },
-    share: (log) => {
+    dismissOffer: () => rememberOffer(null),
+    finishShared: (event) => {
+      const previous = hostRef.current?.token ?? null;
+      const ws = socketRef.current;
+      liveRef.current = null;
+      readyRef.current = false;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'event', eventId: createMatchId(), event }));
+      }
+      generation.current += 1;
+      ws?.close();
+      socketRef.current = null;
+      hostRef.current = null;
+      setStatus('off');
+      setHost(true);
+      setQr(null);
+      setPlayers(0);
+      return previous;
+    },
+    connect: (token) => {
+      open(token);
+    },
+    share: (log, options) => {
       void (async () => {
         if (!api) {
           setError(ROOM_MESSAGES.not_configured);
@@ -165,7 +258,12 @@ export function useLive(
           const response = await fetch(`${api}/matches`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ log }),
+            body: JSON.stringify({
+              log,
+              ...(options?.previousHostToken
+                ? { previousHostToken: options.previousHostToken, carry: options.carry === true }
+                : {}),
+            }),
           });
           if (!response.ok) {
             setError(await errorText(response));
@@ -179,7 +277,22 @@ export function useLive(
             return;
           }
           hostRef.current = { matchId: body.matchId, token: body.hostToken };
-          open(body.matchId, body.hostToken, replaceRef.current);
+          open(body.hostToken);
+          if (options?.carry && options.previousHostToken) {
+            try {
+              const carried = await fetch(`${api}/matches/${body.matchId}/carry`, {
+                method: 'POST',
+                headers: {
+                  'content-type': 'application/json',
+                  authorization: `Bearer ${body.hostToken}`,
+                },
+                body: JSON.stringify({ confirm: true, previousHostToken: options.previousHostToken }),
+              });
+              if (!carried.ok) setError(await errorText(carried));
+            } catch {
+              setError(ROOM_MESSAGES.offline);
+            }
+          }
           await publishQr(body.matchId, body.hostToken);
         } catch {
           setError(ROOM_MESSAGES.offline);
@@ -188,9 +301,9 @@ export function useLive(
       })();
     },
     rotate: () => {
-      const host = hostRef.current;
-      if (!host) return;
-      void publishQr(host.matchId, host.token);
+      const current = hostRef.current;
+      if (!current) return;
+      void publishQr(current.matchId, current.token);
     },
   };
 }

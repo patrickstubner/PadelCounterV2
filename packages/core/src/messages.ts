@@ -12,6 +12,9 @@ export const ROOM_MESSAGES = {
   unavailable: 'This match is not available.',
   not_configured: 'Live sharing is not configured in this build.',
   offline: 'The live server did not answer. The score on this device is unchanged.',
+  daily_limit: 'This device has already started 10 live matches today.',
+  closed: 'This match is closed. It can no longer be scored.',
+  reconnect_unavailable: 'The previous players can no longer be reconnected. Share a new code.',
 } as const;
 
 export type RoomCode = keyof typeof ROOM_MESSAGES;

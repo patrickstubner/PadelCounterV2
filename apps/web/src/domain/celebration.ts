@@ -6,7 +6,7 @@ import { celebrationWinner } from './rules';
 import { isTimestamp } from './types';
 
 /** Separate from the match log so a remembered celebration cannot fail log parsing. */
-export const CELEBRATED_KEY = 'padel-counter-v2.celebrated';
+export const CELEBRATED_KEY = 'pcv2:celebrated';
 
 const MAX_RAW_LENGTH = 200;
 

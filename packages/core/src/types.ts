@@ -49,7 +49,9 @@ export interface MatchState {
   readonly ended: boolean;
 }
 
-export type MatchEvent =
+type Actor = { readonly by?: string };
+
+export type MatchEvent = (
   | { readonly type: 'game/increment'; readonly team: TeamId; readonly at: number }
   | { readonly type: 'game/decrement'; readonly team: TeamId; readonly at: number }
   | { readonly type: 'set/select'; readonly index: SetIndex; readonly at: number }
@@ -63,7 +65,9 @@ export type MatchEvent =
       readonly at: number;
     }
   | { readonly type: 'match/end'; readonly at: number }
-  | { readonly type: 'match/resume'; readonly at: number };
+  | { readonly type: 'match/resume'; readonly at: number }
+) &
+  Actor;
 
 export function isTeamId(value: unknown): value is TeamId {
   return value === 'a' || value === 'b';

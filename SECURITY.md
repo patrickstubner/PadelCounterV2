@@ -26,11 +26,11 @@ At most 4 admitted player sockets are allowed, including the creator. The Durabl
 
 - Join tokens are 16 random bytes, unpadded base64url (`/^[A-Za-z0-9_-]{22}$/`). Only the SHA-256 hex digest is stored. Lookup of that digest uses a length-checked comparison that does not return on the first differing character. The raw token is returned once in the create or invite response and is not written to the worker logs by this code.
 - Player invite lifetime is 2 hours. The host credential lifetime is 12 hours. A new player code revokes older non-host codes. Sockets that are already open stay open.
-- The token is not placed in the query string. The QR target is `…/#/join/<matchId>?t=<token>`. The page strips the token into `sessionStorage` (`padel-counter-v2.join`) and replaces the fragment. The host token is kept in a ref in the creating tab and is not written to `localStorage`.
+- The token is not placed in the query string. The QR target is `…/#/join?t=<token>`. The match id is not in that link. The page strips the token into `sessionStorage` (`pcv2:join`) and replaces the fragment. The host token is kept in a ref in the creating tab and is not written to `localStorage`. A browser WebSocket cannot set `Authorization`, so `POST /join` exchanges the bearer token for a 30-second single-use ticket and the socket is `GET /ws/<ticket>`. The ticket is not the match id and not the long-lived token. `GET /matches/:id/ws` is not a route.
 - The WebSocket URL has no token. The first message is `{ type: 'hello', protocol: 1, token }`. The socket attachment stores the role and the host flag, not the raw token.
 - Hello and each later action run on the Durable Object. A spectator credential cannot pass `canPerform`. `undo` and unknown event types fail parsing. `match/new` and `match/reset` are not applied on a live room. The server replaces `event.at` with its own clock. A game that the reducer refuses (for example 7–4, or minus at zero) is not stored. A repeated event id is acknowledged and not appended twice. The event table is insert-only.
-- HTTP routes are `GET /health`, `POST /matches`, `POST /matches/:id/invites`, and `GET /matches/:id/ws`. `POST /auth/*` returns 501 `{ error: 'not_available' }`. Delete, `/create`, and `/invite` are not public routes. The worker calls those internal paths itself on the Durable Object stub.
-- CORS allows `https://patrickstubner.github.io` only, plus `http://localhost:<port>` and `http://127.0.0.1:<port>` when `ENVIRONMENT` is `development`. Staging and production set `ENVIRONMENT` to `staging` and `production`. Responses vary on `Origin` and do not echo a rejected origin. Credentials (cookies) are not allowed. The browser must send `Authorization: Bearer <token>` on invite. A WebSocket upgrade with a missing or foreign `Origin` is rejected.
+- HTTP routes are `GET /health`, `POST /matches`, `POST /matches/:id/invites`, `POST /matches/:id/carry`, `POST /join`, and `GET /ws/<ticket>`. `POST /auth/*` returns 501 `{ error: 'not_available' }`. Delete, `/create`, `/invite`, `/discard`, `/reconnect-info`, `/carry-invite`, and `/notify` are not public routes. The worker calls those internal paths itself on the Durable Object stub.
+- CORS allows the origin `https://patrickstubner.github.io` only, plus `http://localhost:<port>` and `http://127.0.0.1:<port>` when `ENVIRONMENT` is `development`. Staging and production set `ENVIRONMENT` to `staging` and `production`. There is no custom domain. CORS cannot see the path, so `/PadelCounter/` and `/PadelCounterV2/` are not separated by the allowlist. The token is what protects a match. Responses vary on `Origin` and do not echo a rejected origin. Credentials (cookies) are not allowed. The browser must send `Authorization: Bearer <token>` on invite, join, and carry. A WebSocket upgrade with a missing or foreign `Origin` is rejected.
 - The worker generates the match id. The id inside the client log is rewritten to that id before it is stored. Team renames are passed through `sanitizeTeamName` before they are stored, so the stored name is at most 20 characters.
 - A live change is broadcast as one event. The full log is sent on the opening snapshot only. An invalid event or a rate limit sends `{ type: 'error', code }` and leaves the socket open. The socket is closed for admission failures (`bad_token`, `expired`, `revoked`, `spectator_not_available`, `upgrade_required`, `match_full`, `unavailable`).
 - Court CSP: `default-src 'self'`, no `unsafe-inline`, no `unsafe-eval`. `connect-src` gains the API origin only when `PUBLIC_API_URL` is an `https` `*.workers.dev` URL at build time. CI leaves it empty, and `verify-build` fails if `index.html` then contains any http(s) URL. The QR is drawn as SVG rectangles from the module matrix. There is no `innerHTML` and no `dangerouslySetInnerHTML`. The accessible name of the QR does not include the token.
@@ -38,7 +38,12 @@ At most 4 admitted player sockets are allowed, including the creator. The Durabl
 - Every `/matches*` request (create, invite, and the websocket upgrade) shares a limit of 20 per minute per `CF-Connecting-IP` inside one isolate. The check runs before any Durable Object is named. Each admitted socket is limited to 10 messages per second, and a ping uses that same budget. A websocket is forwarded only when D1 already has the match id, so an unknown id does not create SQLite storage. Tables are created in the create handler, not when the object wakes. Create writes that id to D1 before it writes the Durable Object. If the object write fails, the worker deletes the D1 row and calls `storage.deleteAll()` on the object. `/discard` is not a public route.
 - Un-helloed sockets are closed after 5 seconds. One room accepts at most 16 of them, and one client address accepts at most 8. Admitted sockets count toward neither cap. Eight is enough for four phones on one court Wi-Fi to each hold a handshake and one reconnect. A seventeenth silent socket is refused even when it comes from a new address.
 - Body size is capped (about 96 KB for a match log, 8 KB for a socket message). SQL uses bound parameters. Parsed objects are copied onto a null-prototype object before fields are read. Team names are length-limited and rendered as React text.
-- Storage keys are `padel-counter-v2.log`, `padel-counter-v2.matches`, and `padel-counter-v2.celebrated`. The service worker cache id is `padel-counter-v2`. The pages base is `/PadelCounterV2/`. v1 keys and the v1 service-worker scope are not reused.
+- Storage keys use the prefix `pcv2:` (`pcv2:log`, `pcv2:matches`, `pcv2:celebrated`, `pcv2:join`, `pcv2:device`, `pcv2:fanfare`). The app does not read or write v1 keys (`padel-counter.v1`, `padel-counter.matches`, `padel-counter.celebrated`). The service worker cache id stays `padel-counter-v2`. The pages base is `/PadelCounterV2/`. The installed name is Padel Counter V2.
+- A win plays one short fanfare from Web Audio oscillators. There is no audio file, so there is no extra licence and the CSP is unchanged (`media-src 'none'` stays). The menu toggle defaults to on and is stored at `pcv2:fanfare`. If the browser refuses playback, the app stays silent.
+- `POST /matches` allows 10 creates per UTC day for one `CF-Connecting-IP`, counted in D1 (`create_quota`) after hashing the address. The 11th create from that address is `429 daily_limit`. A different address can still create. Phones that share a court NAT share that budget. If create fails, the quota is released. A unique match-id collision is retried up to three times. The response is not 201 when every attempt fails.
+- The live room stops accepting scores one day after the last event (`closed`). D1 keeps the match as history for 730 days from `last_activity`, then a scheduled job discards the Durable Object and deletes the row. The one-day close does not delete the row. The cron is on production and staging only.
+- A host who starts a new match while one is open must confirm. Finish & new sends `match/end` the same way End match does, so the match stays in history and the creator can reopen it. Inside one hour, and only when the host confirms, previously connected devices are offered `Join new match?`. The invite is bound to those device ids, is host-initiated, and token expiry and revocation are checked on every event. Anyone who does not confirm stays out. After one hour there is no reconnect offer. A non-host who starts a new match leaves the shared match on that phone only and does not send `match/end`.
+- End match is allowed at any score. Reopen is `match/resume`, not a general undo. The creator can always reopen. The person who ended it can reopen too, unless the creator was the one who ended it. The server checks this. Minus can correct a finished set (6:0 back to 5:1). The event log is append-only and keeps `by`.
 - `.dev.vars`, `.env`, and `.env.*` are gitignored. `.dev.vars.example` contains `ENVIRONMENT=development` and no secret. Wrangler database ids in the repo are placeholders, not live databases. `env.dev` is named `padel-counter-dev`, so a local deploy cannot overwrite the production worker name.
 - CI runs lint, typecheck, unit tests, the production web build, a wrangler dry-run, and `pnpm audit --audit-level=moderate`. Deploy jobs do nothing until Cloudflare credentials exist, and Pages does not run until the repository variable `DEPLOY_PAGES` is `true`.
 
@@ -55,51 +60,48 @@ At most 4 admitted player sockets are allowed, including the creator. The Durabl
 | Low | Host token dies with the tab | The creating phone cannot mint a new code after refresh, because the host token is memory-only. That avoids a long-lived secret on disk. Someone who can read the tab’s JS heap during the session can still read it. | Keep it out of `localStorage`. When login exists, mint codes from the session instead of a 12-hour bearer token. |
 | Low | D1 holds only the match id | Live scoring still does not read the event log from D1. D1 is the index that must contain a match id before a websocket or invite is forwarded. The checked-in database ids are documentation placeholders. A deploy with those ids will fail at migration time, which is preferable to writing to the wrong database. | Replace the ids before the first real deploy. Apply `migrations/0001_init.sql` as part of that deploy. Do not treat the placeholders as secrets. |
 | Low | Parser is hand-rolled | Bounds, types, plausible set scores, and a null-prototype copy are checked. There is no second schema library. A new event field can be forgotten. | Add a schema library when the event list grows. Until then, extend `parseStoredEvent` and the core tests together. Unknown types, including `undo`, already return null. |
-| Info | No login, no shared delete | `POST /auth/*` is a stub. Deleting a match in the UI removes it from this browser only. The later rule (only the creator and Patrick may delete a shared match; others may only hide it) is not enforceable yet because the server has no delete route. | See P1-02 and P1-04. Decision: Patrick |
-| Info | Retention is not implemented | A two-year retention period was discussed. No scheduled job deletes old matches. | See P1-02. Do not describe retention as active. Decision: Patrick |
-| Open | P1-02 Retention and deletion | Nothing deletes a match on the server. The UI delete removes it from this device only. A two-year retention period was discussed and there is no scheduled job. Later, only the creator and Patrick may delete a shared match. Other players may only hide it. | Decision: Patrick |
-| Open | P1-03 Kick on new QR / expiry | A new QR revokes the previous join token. Phones that are already connected stay connected. An expired token cannot reconnect. An open socket is not closed when the 2-hour player token or the 12-hour host credential expires. | Decision: Patrick |
-| Open | P1-04 Create without login | `POST /matches` needs no account. Possession of a valid player token is enough to score. Login (Google, Facebook, GitHub, and passkeys) is not in this version. `POST /auth/*` returns 501. | Decision: Patrick |
-| Open | P1-06 Custom domain | The worker is `padel-counter.<account>.workers.dev`. There is no custom domain. The pages origin stays `https://patrickstubner.github.io`. The architecture note does not require a custom domain. | Decision: Patrick |
-| Open | P1-10 Deploy approval | Production deploy is `workflow_dispatch` on `main` and skips when the Cloudflare secrets are missing. The workflow file does not require a GitHub environment reviewer. Adding yourself as a required reviewer on the `production` environment, if the plan allows it, is an account setting. It is not a check in this repository. | Decision: Patrick |
+| Info | No login, no shared delete | `POST /auth/*` is a stub. Deleting a match in the UI removes it from this browser only. Only the creator and Patrick may delete a shared match later. Others may only hide it. There is still no server delete route. | Login stays out of this pull request. |
+| Info | P1-02 Retention | Resolved. Scoring stops one day after the last event. D1 history is deleted after two years by the scheduled job. UI delete is still this device only. | Keep both periods on the Privacy page. |
+| Info | P1-03 New match while one is open | Resolved. The host confirms Finish & new. Reconnect is optional, host-only, device-bound, and only within one hour. A non-host leaves locally. | Do not end a match silently. |
+| Info | P1-04 Create without login | Resolved. Ten creates per address per UTC day, enforced in D1. Login is still later. `POST /auth/*` returns 501. | Keep the isolate limit as a second line. |
+| Info | P1-06 Custom domain | Resolved. No custom domain. The app stays at `https://patrickstubner.github.io/PadelCounterV2/` beside v1. CORS allows that origin only. | The path is not a CORS boundary. |
+| Info | P1-10 Deploy approval | Resolved in the workflow shape. Production uses the `production` environment, checks out `github.sha`, and ships the worker and Pages together. | Required reviewers are a GitHub environment setting. Turn that on before the first real deploy. YAML cannot force the reviewer. |
 | Info | Code scanning is not in CI | Adding CodeQL while the repository has code scanning turned off fails the workflow. | Enable code scanning, then add a pinned CodeQL workflow. |
 | Info | Dependencies | Direct pins include React 19.3.0, `lottie-web` 5.13.0, `qrcode` 1.5.4, TypeScript 6.0.3, Vitest 5.0.4, ESLint 10.12.0, Wrangler 4.153.0, `@cloudflare/workers-types` 5.20261027.1, Rsbuild 2.2.13, and `happy-dom` 21.0.4 (tests only). TypeScript 7 and a newer ESLint exist upstream; this tree stays on the v1 TypeScript and ESLint pins on purpose. `happy-dom` 20.14.6 was the v1 pin and is inside GHSA-834v-8h66-3h79, so the test runner is on 21.0.4. `glob` 11.1.0 is a deprecated transitive of the existing Workbox pin. | Keep `pnpm audit` at moderate or higher in CI. Review Dependabot PRs. Do not bump TypeScript or the lottie player without re-running the court tests and the lottie source check. |
 
-No critical or high issue was left open in this review. The medium items are the lack of login on create, and the fact that the QR code itself is the capability. Both match the scope Patrick set for this pull request. P1-02, P1-03, P1-04, P1-06, and P1-10 are open product decisions. They are not implemented here.
+No critical or high issue was left open in this review. The medium items are the lack of login on create, and the fact that the QR code itself is the capability. Both match the scope Patrick set for this pull request. P1-02, P1-03, P1-04, P1-06, and P1-10 are resolved below.
 
-## Open decisions
-
-These stay open. Each one is waiting on Patrick. This pull request does not implement them.
+## Resolved product decisions
 
 ### P1-02 Retention and deletion
 
-Decision: Patrick
+The live room stops taking scores one day after the last event. After that the server answers `closed` and nobody can change the games. D1 keeps the match as history for two years (730 days from `last_activity`). A scheduled job then discards the Durable Object and deletes the row. The one-day close is not a delete. The Privacy page states both periods. Deleting a match in the UI still removes it from this device only. Later, only the match creator and Patrick may delete a shared match, and other players may only hide it. There is no server delete route in this pull request.
 
-Two-year retention was discussed and is not implemented. There is no scheduled job. Deleting a match in the UI removes it from this device only. Later, only the match creator and Patrick may delete a shared match, and other players may only hide it. There is no server delete route. Do not describe retention as active.
+### P1-03 New match while one is open
 
-### P1-03 Kick on new QR / expiry
+The host sees “Finish current match and start a new one?” with “Finish & new” and “Cancel”. The match is never ended silently. Finish & new sends `match/end`, so the match goes to history and the creator can reopen it. When the last event is at most one hour old, the same dialog shows “Reconnect players from last match”, preselected when someone else was connected. Only those device ids get “Join new match?”. One tap joins. Anyone who does not confirm stays out. The invite is host-initiated, bound to those devices, and expiry and revocation are checked on every event. After one hour the toggle is absent and a new QR is required. A non-host who starts a new match creates their own match on that phone. The host’s open match is unchanged, and the phone does not send `match/end`.
 
-Decision: Patrick
-
-A new QR revokes the previous join token, and phones that are already connected stay connected. An expired token cannot open a new socket. An open socket is not closed when the 2-hour player token or the 12-hour host credential expires. Whether rotating a code, or reaching expiry, should disconnect current phones is undecided.
+A new QR still revokes the previous join token. Phones that are already connected stay connected. An expired or revoked token cannot score. An open socket is not closed when the 2-hour player token or the 12-hour host credential expires.
 
 ### P1-04 Create without login
 
-Decision: Patrick
-
-`POST /matches` needs no account. Possession of a valid, unexpired player token is enough to score. Login with Google, Facebook, GitHub, and passkeys is out of this version. `POST /auth/*` returns 501 `{ error: 'not_available' }`.
+`POST /matches` needs no account. One address may create 10 matches per UTC day. The counter is the SHA-256 of `CF-Connecting-IP` in D1, not a client device id and not the per-isolate map. The 11th create is `429 daily_limit`. A different address is allowed. A shared court NAT shares the 10. A failed create releases the count. Login with Google, Facebook, GitHub, and passkeys is out of this version. `POST /auth/*` returns 501 `{ error: 'not_available' }`.
 
 ### P1-06 Custom domain
 
-Decision: Patrick
-
-The worker hostname is `padel-counter.<account>.workers.dev`. There is no custom domain. The pages origin stays `https://patrickstubner.github.io`. The architecture note does not require a custom domain. Whether to add one is undecided.
+There is no custom domain. v2 is served at `https://patrickstubner.github.io/PadelCounterV2/` next to v1. CORS allows only the origin `https://patrickstubner.github.io`. The path is not visible to CORS, so the token is what stops a request from being useful. Local storage uses `pcv2:` and does not touch v1 keys. The visible name is Padel Counter V2.
 
 ### P1-10 Deploy approval
 
-Decision: Patrick
+Production deploy is `workflow_dispatch` on `main` and uses the GitHub environment `production`. The job checks out `github.sha` and fails if `HEAD` is anything else. The worker and GitHub Pages of that same commit ship together. Pages runs only after that job. Required reviewers cannot be forced from YAML. Patrick has to turn on a required reviewer for the `production` environment before a real deploy. Until the Cloudflare secrets exist, the job skips and stays green, and Pages does not run.
 
-Production deploy runs only from `workflow_dispatch` on `main`, and the job skips when the Cloudflare secrets are missing. The workflow file does not require a GitHub environment reviewer. Patrick can add himself as a required reviewer on the `production` environment if the plan allows protection rules. That approval is an account setting, not a code check.
+### P1-17, P1-18, and P1-19
+
+P1-17. The join link does not contain the match id. `POST /join` returns a 30-second single-use ticket. `GET /ws/<ticket>` resolves the match. Knowing a match id does not open a socket.
+
+P1-18. A unique id collision on create retries with a new id, up to three times. A failed attempt does not return 201. D1 is still written before the Durable Object. On failure the row is removed and `/discard` runs `storage.deleteAll()`.
+
+P1-19. A real deploy requires the edge rate-limit rule. The production workflow input `edge_rate_limit_confirmed` must be true, and the repository variable `EDGE_RATE_LIMIT_RULE` must be `confirmed`, once Cloudflare credentials exist. Staging uses that variable the same way. The isolate limit of 20 per minute is not a substitute. If the secrets are missing, the job still skips successfully so an unconfigured repository stays green.
 
 ## Required before the first deploy
 
@@ -107,12 +109,12 @@ Do not run the production or staging worker deploy until a Cloudflare edge rate 
 
 Create the rule in the Cloudflare dashboard (Security → WAF → Rate limiting rules) on the hostname that will serve the worker, before that hostname receives real clients.
 
-- Expression: `starts_with(http.request.uri.path, "/matches")`. That prefix covers create (`/matches`), invite (`/matches/:id/invites`), and the websocket (`/matches/:id/ws`).
+- Expression: `starts_with(http.request.uri.path, "/matches")` or a rule that also covers `POST /join` and `GET /ws/`. The `/matches` prefix covers create, invite, and carry. The join ticket and the websocket are separate paths, so add the same IP block, 60 per minute, for `/join` and `/ws` if the dashboard needs one expression per rule. The old `/matches/:id/ws` route is gone.
 - Characteristic: IP.
 - Action: Block.
 - Threshold: 60 requests per minute per IP. That is higher than the isolate limit so four phones behind one court NAT can connect, rotate a code, and reconnect.
 
-If the dashboard can attach the rule only to a zone, and not to `*.workers.dev`, that is the P1-06 decision. The rule still has to be saved before the first deploy that real clients will use.
+There is no custom domain. If the dashboard can attach the rule only to a zone, and not to `*.workers.dev`, do not send real clients to the worker until the rule can be saved. A configured deploy fails unless `EDGE_RATE_LIMIT_RULE` is `confirmed` and, for production, the workflow input `edge_rate_limit_confirmed` is true. Add yourself as a required reviewer on the GitHub environment `production`. The workflow cannot do that for you.
 
 ## Review follow-up, 2026-10-27
 
@@ -129,7 +131,7 @@ A review of pull request 1 at `ea24348` asked for the following. They are in the
 A re-review of `3cfe79a` asked for the following. They are in the tree this note now describes.
 
 - P1-13. Pending sockets are capped at 8 per client address and 16 per room. Admitted sockets count toward neither. The 5-second alarm is unchanged. Four players on one Wi-Fi can each hold a handshake and one reconnect. A seventeenth silent socket is refused from any address.
-- P1-14. P1-02, P1-03, P1-04, P1-06, and P1-10 are listed above as open findings. Decision: Patrick
+- P1-14. P1-02, P1-03, P1-04, P1-06, and P1-10 are resolved in “Resolved product decisions”.
 - P1-15. Create inserts the match id into D1 before it writes the Durable Object. If that write fails or throws, the worker deletes the D1 row and `POST`s `/discard`, which runs `storage.deleteAll()`. `/discard` is not a public route. The response is not 201.
 - P1-16. The edge rate limiting rule on `/matches*` is required before the first worker deploy. It is documented in this file and in the README. It is not a setting this repository can apply by itself.
 

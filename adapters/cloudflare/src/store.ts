@@ -21,7 +21,15 @@ const CREATE_INVITES = `CREATE TABLE IF NOT EXISTS invites (
   role TEXT NOT NULL,
   host INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  device_id TEXT
+)`;
+
+const CREATE_JOINED = `CREATE TABLE IF NOT EXISTS joined (
+  token_hash TEXT NOT NULL,
+  player_id TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  PRIMARY KEY (token_hash, device_id)
 )`;
 
 const CREATE_EVENTS = `CREATE TABLE IF NOT EXISTS events (
@@ -34,6 +42,7 @@ export function migrate(sql: RoomSql): void {
   sql.exec(CREATE_META);
   sql.exec(CREATE_INVITES);
   sql.exec(CREATE_EVENTS);
+  sql.exec(CREATE_JOINED);
 }
 
 /** Tables are created on match create, not when a socket wakes the object. */
@@ -74,7 +83,7 @@ export function loadRoom(sql: RoomSql): RoomRecord | null {
   }
 
   const invites: InviteRow[] = [];
-  for (const invite of sql.exec('SELECT token_hash, role, host, expires_at, revoked_at FROM invites').toArray()) {
+  for (const invite of sql.exec('SELECT token_hash, role, host, expires_at, revoked_at, device_id FROM invites').toArray()) {
     const tokenHash = text(invite.token_hash);
     const role = invite.role === 'player' || invite.role === 'spectator' ? invite.role : null;
     const expiresAt = integer(invite.expires_at);
@@ -87,6 +96,7 @@ export function loadRoom(sql: RoomSql): RoomRecord | null {
       host: invite.host === 1,
       expiresAt,
       revokedAt,
+      deviceId: text(invite.device_id),
     });
   }
 
@@ -117,13 +127,39 @@ export function insertRoom(sql: RoomSql, record: RoomRecord, now: number): void 
 
 export function insertInvite(sql: RoomSql, invite: InviteRow): void {
   sql.exec(
-    'INSERT INTO invites (token_hash, role, host, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO invites (token_hash, role, host, expires_at, revoked_at, device_id) VALUES (?, ?, ?, ?, ?, ?)',
     invite.tokenHash,
     invite.role,
     invite.host ? 1 : 0,
     invite.expiresAt,
     invite.revokedAt,
+    invite.deviceId ?? null,
   );
+}
+
+export function insertJoined(sql: RoomSql, tokenHash: string, playerId: string, deviceId: string): void {
+  sql.exec(
+    'INSERT INTO joined (token_hash, player_id, device_id) VALUES (?, ?, ?) ON CONFLICT(token_hash, device_id) DO NOTHING',
+    tokenHash,
+    playerId,
+    deviceId,
+  );
+}
+
+export function readJoined(sql: RoomSql): { tokenHash: string; playerId: string; deviceId: string | null }[] {
+  try {
+    return sql
+      .exec('SELECT token_hash, player_id, device_id FROM joined')
+      .toArray()
+      .flatMap((row) => {
+        const tokenHash = text(row.token_hash);
+        const playerId = text(row.player_id);
+        if (!tokenHash || !playerId) return [];
+        return [{ tokenHash, playerId, deviceId: text(row.device_id) }];
+      });
+  } catch {
+    return [];
+  }
 }
 
 export function revokePlayerInvites(sql: RoomSql, now: number): void {

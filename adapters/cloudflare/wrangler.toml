@@ -42,6 +42,9 @@ migrations_dir = "migrations"
 [env.staging]
 name = "padel-counter-staging"
 
+[env.staging.triggers]
+crons = ["17 3 * * *"]
+
 [env.staging.vars]
 ENVIRONMENT = "staging"
 
@@ -61,6 +64,9 @@ migrations_dir = "migrations"
 
 [env.production]
 name = "padel-counter"
+
+[env.production.triggers]
+crons = ["17 3 * * *"]
 
 [env.production.vars]
 ENVIRONMENT = "production"

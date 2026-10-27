@@ -862,6 +862,16 @@ button:disabled { cursor: not-allowed; }
 
 .dialog p { margin: 0 0 1rem; line-height: 1.4; color: #f3f3f3; }
 
+.dialog-check {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  margin: 0 0 1rem;
+  font-weight: 700;
+}
+
+.history-who { color: #c9d4ea; font-weight: 700; }
+
 .dialog-actions { display: flex; gap: 0.6rem; }
 
 .dialog-actions button {

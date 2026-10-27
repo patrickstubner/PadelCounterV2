@@ -1,11 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
-import { connectionCloses, isJoinToken, isRole, isRoomCode, parseMatchLog, type Credential, type Role } from '@padel/core';
+import { connectionCloses, isJoinToken, isRole, isRoomCode, lastChangeAt, parseMatchLog, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER } from './match-index';
 import { takeLiveMessage } from './rate';
-import { applyPlay, createRoom, eventDelta, helloPayload, issueInvite } from './room';
-import { insertEvent, insertInvite, insertRoom, openRoomForCreate, readRoom, revokePlayerInvites, type RoomSql } from './store';
-import { sha256Hex } from './tokens';
+import { applyLiveEvent, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite } from './room';
+import { insertEvent, insertInvite, insertJoined, insertRoom, openRoomForCreate, readJoined, readRoom, revokePlayerInvites, type RoomSql } from './store';
+import { safeEqualHex, sha256Hex } from './tokens';
 
 interface PendingState {
   readonly admitted: false;
@@ -18,6 +18,9 @@ interface AdmittedState {
   readonly credential: Credential;
   readonly stamps: readonly number[];
   readonly ip: string;
+  readonly actor: string;
+  readonly tokenHash: string;
+  readonly deviceId: string | null;
 }
 
 type SocketState = PendingState | AdmittedState;
@@ -52,6 +55,9 @@ export class MatchRoom extends DurableObject {
         await this.ctx.storage.deleteAll();
         return json(200, { ok: true });
       }
+      if (request.method === 'POST' && url.pathname === '/reconnect-info') return this.reconnectInfo(request);
+      if (request.method === 'POST' && url.pathname === '/carry-invite') return this.carryInvite(request);
+      if (request.method === 'POST' && url.pathname === '/notify') return this.notify(request);
       if (request.method === 'POST' && url.pathname === '/create') return this.create(request);
       if (request.method === 'POST' && url.pathname === '/invite') return this.invite(request);
       return json(404, { error: 'not_found' });
@@ -146,20 +152,25 @@ export class MatchRoom extends DurableObject {
       return;
     }
     const tokenHash = await sha256Hex(record.token);
+    const deviceId = typeof record.device === 'string' && /^d[a-f0-9]{8}$/.test(record.device) ? record.device : null;
     const connected = this.ctx.getWebSockets().filter((socket) => {
       if (socket === ws) return false;
       return this.readState(socket)?.admitted === true;
     }).length;
-    const result = helloPayload(room, tokenHash, connected, Date.now());
+    const result = helloPayload(room, tokenHash, connected, Date.now(), deviceId);
     if (!result.ok) {
       this.reject(ws, result.code);
       return;
     }
+    const actor = this.assignActor(result.credential.host, tokenHash, deviceId);
     const next: AdmittedState = {
       admitted: true,
       credential: result.credential,
       stamps: [],
       ip: pending && !pending.admitted ? pending.ip : 'missing',
+      actor,
+      tokenHash,
+      deviceId,
     };
     ws.serializeAttachment(next);
     ws.send(JSON.stringify(result.payload));
@@ -177,7 +188,12 @@ export class MatchRoom extends DurableObject {
       this.reject(ws, 'not_applied');
       return;
     }
-    const result = applyPlay(room, state.credential, record.eventId, record.event, Date.now());
+    const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, state.tokenHash));
+    if (!invite) {
+      this.reject(ws, 'bad_token');
+      return;
+    }
+    const result = applyLiveEvent(room, invite, state.actor, record.eventId, record.event, Date.now());
     if (!result.ok) {
       this.reject(ws, result.code);
       return;
@@ -242,6 +258,94 @@ export class MatchRoom extends DurableObject {
     return json(201, { role: 'player' satisfies Role, expiresAt: issued.expiresAt });
   }
 
+  private assignActor(host: boolean, tokenHash: string, deviceId: string | null): string {
+    if (host) {
+      if (deviceId) insertJoined(this.sql(), tokenHash, 'host', deviceId);
+      return 'host';
+    }
+    const joined = readJoined(this.sql());
+    const existing = deviceId
+      ? joined.find((row) => row.tokenHash === tokenHash && row.deviceId === deviceId)
+      : undefined;
+    if (existing) return existing.playerId;
+    const used = new Set(joined.map((row) => row.playerId));
+    for (const socket of this.ctx.getWebSockets()) {
+      const state = this.readState(socket);
+      if (state?.admitted) used.add(state.actor);
+    }
+    const playerId = ['p2', 'p3', 'p4'].find((id) => !used.has(id)) ?? 'p4';
+    if (deviceId) insertJoined(this.sql(), tokenHash, playerId, deviceId);
+    return playerId;
+  }
+
+  private async requireHost(hostToken: unknown): Promise<ReturnType<typeof readRoom>> {
+    if (!isJoinToken(hostToken)) return null;
+    const room = readRoom(this.sql());
+    if (!room) return null;
+    const hostHash = await sha256Hex(hostToken);
+    const now = Date.now();
+    const host = room.invites.find((row) => row.host && safeEqualHex(row.tokenHash, hostHash));
+    if (!host || host.revokedAt !== null || now >= host.expiresAt) return null;
+    return room;
+  }
+
+  private async reconnectInfo(request: Request): Promise<Response> {
+    const body = await readBody(request, 2000);
+    const hostToken = body && typeof body === 'object' ? (body as { hostToken?: unknown }).hostToken : undefined;
+    const room = await this.requireHost(hostToken);
+    if (!room) return json(401, { error: 'bad_token' });
+    const joined = readJoined(this.sql());
+    return json(200, {
+      lastChangeAt: lastChangeAt(room.base.createdAt, room.events.map((item) => item.event.at)),
+      joinedHashes: [...new Set(joined.filter((row) => row.playerId !== 'host' && row.deviceId).map((row) => row.tokenHash))],
+      invites: invitesForCarry(room.invites, joined),
+    });
+  }
+
+  private async carryInvite(request: Request): Promise<Response> {
+    const body = await readBody(request, 2000);
+    const fields = body && typeof body === 'object'
+      ? (body as { hostToken?: unknown; token?: unknown; deviceId?: unknown; expiresAt?: unknown })
+      : {};
+    if (!isJoinToken(fields.token) || typeof fields.expiresAt !== 'number' || !Number.isInteger(fields.expiresAt)) {
+      return json(400, { error: 'invalid_match' });
+    }
+    if (typeof fields.deviceId !== 'string' || !/^d[a-f0-9]{8}$/.test(fields.deviceId)) {
+      return json(400, { error: 'invalid_match' });
+    }
+    const room = await this.requireHost(fields.hostToken);
+    if (!room) return json(401, { error: 'bad_token' });
+    insertInvite(this.sql(), {
+      tokenHash: await sha256Hex(fields.token),
+      role: 'player',
+      host: false,
+      expiresAt: fields.expiresAt,
+      revokedAt: null,
+      deviceId: fields.deviceId,
+    });
+    return json(201, { ok: true });
+  }
+
+  private async notify(request: Request): Promise<Response> {
+    const body = await readBody(request, 8000);
+    const fields = body && typeof body === 'object' ? (body as { hostToken?: unknown; offers?: unknown }) : {};
+    const room = await this.requireHost(fields.hostToken);
+    if (!room) return json(401, { error: 'bad_token' });
+    const offers = Array.isArray(fields.offers) ? fields.offers : [];
+    for (const offer of offers) {
+      if (!offer || typeof offer !== 'object') continue;
+      const row = offer as { deviceId?: unknown; token?: unknown };
+      if (!isJoinToken(row.token) || typeof row.deviceId !== 'string') continue;
+      const payload = JSON.stringify({ type: 'join_offer', token: row.token });
+      for (const socket of this.ctx.getWebSockets()) {
+        const state = this.readState(socket);
+        if (state?.admitted !== true || state.deviceId !== row.deviceId) continue;
+        socket.send(payload);
+      }
+    }
+    return json(200, { ok: true });
+  }
+
   private admittedCount(): number {
     return this.ctx.getWebSockets().filter((socket) => this.readState(socket)?.admitted === true).length;
   }
@@ -263,6 +367,7 @@ export class MatchRoom extends DurableObject {
     const state = ws.deserializeAttachment() as SocketState | null;
     if (!state || (state.admitted !== true && state.admitted !== false)) return null;
     if (typeof state.ip !== 'string') return null;
+    if (state.admitted && (typeof state.actor !== 'string' || typeof state.tokenHash !== 'string')) return null;
     return state;
   }
 

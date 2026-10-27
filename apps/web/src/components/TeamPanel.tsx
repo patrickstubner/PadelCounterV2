@@ -1,4 +1,4 @@
-import { canDecrement, canIncrement, displayGames, isUpcomingSet, serveChoice, setWinner } from '../domain/rules';
+import { canIncrement, canTakeGame, displayGames, isUpcomingSet, serveChoice, setWinner } from '../domain/rules';
 import type { MatchState, SetIndex, TeamId } from '../domain/types';
 import { BallIcon, MinusIcon, PlusIcon } from './icons';
 import { SetScore } from './SetScore';
@@ -22,7 +22,7 @@ export function TeamPanel({ team, state, onIncrement, onDecrement, onRename, onS
   const active = state.sets[state.activeSet];
   const locked = state.ended;
   const plusDisabled = locked || !canIncrement(active, team);
-  const minusDisabled = locked || !canDecrement(active, team);
+  const minusDisabled = locked || !canTakeGame(state, team);
   const activeWinner = setWinner(active.a, active.b);
   const asking = state.serveAsk === team && state.serve === null;
   const serving = state.serve?.team === team || asking;

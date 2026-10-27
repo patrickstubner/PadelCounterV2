@@ -31,7 +31,7 @@ describe('sqlite tables', () => {
   it('creates tables when a match is created', () => {
     const { sql, queries } = memory();
     expect(openRoomForCreate(sql)).toBeNull();
-    expect(queries.filter((query) => query.startsWith('CREATE TABLE'))).toHaveLength(3);
+    expect(queries.filter((query) => query.startsWith('CREATE TABLE'))).toHaveLength(4);
     expect(loadRoom(sql)).toBeNull();
   });
 });

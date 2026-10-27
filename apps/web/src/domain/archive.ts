@@ -5,7 +5,7 @@ import { parseStoredEvent } from './persistence';
 import { celebrationWinner, isPlausibleSetScore } from './rules';
 import { isTimestamp, type MatchEvent, type MatchState, type SetScore, type TeamId } from './types';
 
-export const ARCHIVE_KEY = 'padel-counter-v2.matches';
+export const ARCHIVE_KEY = 'pcv2:matches';
 export const ARCHIVE_SCHEMA = 1 as const;
 export const MAX_ARCHIVED_MATCHES = 100;
 export const MAX_ARCHIVE_RAW = 1_500_000;

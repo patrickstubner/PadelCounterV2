@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createMatch, matchReducer } from '@padel/core';
-import { MAX_PLAYERS, ROOM_MESSAGES } from '@padel/core';
-import { admit, applyPlay, createRoom, eventDelta, helloPayload, issueInvite, type RoomRecord } from './room';
+import { createMatch, matchReducer, MAX_PLAYERS, ROOM_CLOSE_MS, ROOM_MESSAGES } from '@padel/core';
+import { admit, applyLiveEvent, applyPlay, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, type InviteRow, type RoomRecord } from './room';
 
 const NOW = 1_700_000_000_000;
 const HOST = 'a'.repeat(64);
@@ -156,5 +155,92 @@ describe('role checks', () => {
     });
     expect(Object.keys(delta)).not.toContain('log');
     expect(JSON.stringify(delta)).not.toContain('"log"');
+  });
+});
+
+describe('event gate', () => {
+  function invite(patch: Partial<InviteRow> = {}): InviteRow {
+    return {
+      tokenHash: INVITE,
+      role: 'player',
+      host: false,
+      expiresAt: NOW + 60_000,
+      revokedAt: null,
+      ...patch,
+    };
+  }
+
+  const eventId = '00000000-0000-4000-8000-0000000000e1';
+  const raw = { type: 'game/increment', team: 'a', at: 1 };
+
+  it('rejects an expired or revoked token on every event', () => {
+    const record = withInvite(started());
+    const expired = applyLiveEvent(record, invite({ expiresAt: NOW }), 'p2', eventId, raw, NOW);
+    expect(expired.ok).toBe(false);
+    if (!expired.ok) expect(expired.code).toBe('expired');
+    const revoked = applyLiveEvent(record, invite({ revokedAt: NOW - 1 }), 'p2', eventId, raw, NOW);
+    expect(revoked.ok).toBe(false);
+    if (!revoked.ok) expect(revoked.code).toBe('revoked');
+  });
+
+  it('lets the creator reopen after anyone ends, and only the creator after the creator ends', () => {
+    const record = withInvite(started());
+    const ended = applyLiveEvent(record, invite({ host: true, tokenHash: HOST }), 'host', eventId, { type: 'match/end', at: 1 }, NOW);
+    expect(ended.ok).toBe(true);
+    if (!ended.ok) return;
+    expect(ended.record.base.ended || ended.event.event.type === 'match/end').toBe(true);
+    const joiner = applyLiveEvent(
+      ended.record,
+      invite(),
+      'p2',
+      '00000000-0000-4000-8000-0000000000e2',
+      { type: 'match/resume', at: 1 },
+      NOW,
+    );
+    expect(joiner.ok).toBe(false);
+    if (!joiner.ok) expect(joiner.code).toBe('forbidden');
+    const host = applyLiveEvent(
+      ended.record,
+      invite({ host: true, tokenHash: HOST }),
+      'host',
+      '00000000-0000-4000-8000-0000000000e3',
+      { type: 'match/resume', at: 1 },
+      NOW,
+    );
+    expect(host.ok).toBe(true);
+  });
+
+  it('refuses a score one day after the last change', () => {
+    const record = withInvite(started());
+    const closed = applyLiveEvent(
+      record,
+      invite({ expiresAt: NOW + ROOM_CLOSE_MS + 60_000 }),
+      'p2',
+      eventId,
+      raw,
+      NOW + ROOM_CLOSE_MS,
+    );
+    expect(closed.ok).toBe(false);
+    if (!closed.ok) expect(closed.code).toBe('closed');
+  });
+
+  it('offers reconnect only to devices that joined', () => {
+    const record = withInvite(started());
+    const joinedToken = record.invites.find((row) => !row.host)?.tokenHash ?? '';
+    const listed = invitesForCarry(record.invites, [
+      { tokenHash: joinedToken, deviceId: 'd11111111' },
+      { tokenHash: joinedToken, deviceId: 'd22222222' },
+      { tokenHash: 'e'.repeat(64), deviceId: 'd33333333' },
+    ]);
+    expect(listed.filter((row) => !row.host).map((row) => row.deviceId)).toEqual(['d11111111', 'd22222222']);
+  });
+
+  it('refuses a reconnect invite from a different device', () => {
+    const record: RoomRecord = {
+      ...started(),
+      invites: [...started().invites, invite({ deviceId: 'dabcdef01' })],
+    };
+    expect(admit(record, INVITE, 0, NOW, 'dabcdef01').ok).toBe(true);
+    expect(admit(record, INVITE, 0, NOW, 'd00000000').ok).toBe(false);
   });
 });

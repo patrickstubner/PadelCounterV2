@@ -1,6 +1,6 @@
 {
-  "name": "Padel Counter",
-  "short_name": "Padel Counter",
+  "name": "Padel Counter V2",
+  "short_name": "Padel Counter V2",
   "description": "Game counter for padel. The score stays on this device until you share it.",
   "id": "./",
   "start_url": "./",

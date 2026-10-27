@@ -1,7 +1,7 @@
 import { createMatchId, isUuid } from './id';
 import type { MatchLog } from './parse';
 import { sanitizeTeamName } from './names';
-import { gamesPlayed, isPlausibleSetScore, matchWinner, rotateServe, setWinner } from './rules';
+import { canDecrement, gamesPlayed, isPlausibleSetScore, matchWinner, rotateServe, setWinner } from './rules';
 import { SCHEMA_VERSION, isNewMatchEvent, isPlayerSlot, isSetIndex, isTeamId, isTimestamp, type MatchEvent, type MatchState, type Server, type SetIndex, type SetScore, type TeamId } from './types';
 
 export function createMatch(
@@ -70,7 +70,12 @@ function nextSetIndex(index: SetIndex): SetIndex {
 }
 
 function applyGame(state: MatchState, team: TeamId, at: number, delta: 1 | -1): MatchState {
-  const index = state.activeSet;
+  let index: SetIndex = state.activeSet;
+  if (delta === -1 && state.sets[index][team] <= 0 && index > 0) {
+    const previous = (index - 1) as SetIndex;
+    const earlier = state.sets[previous];
+    if (earlier && canDecrement(earlier, team)) index = previous;
+  }
   const current = state.sets[index];
   const nextScore: SetScore = {
     a: team === 'a' ? current.a + delta : current.a,
@@ -80,9 +85,9 @@ function applyGame(state: MatchState, team: TeamId, at: number, delta: 1 | -1): 
 
   const wasWon = setWinner(current.a, current.b) !== null;
   const sets = replaceSet(state, index, nextScore);
-  let activeSet = index;
+  let activeSet: SetIndex = index;
   const nowWon = setWinner(nextScore.a, nextScore.b) !== null;
-  if (!wasWon && nowWon && index < 2 && matchWinner(sets) === null) {
+  if (delta === 1 && !wasWon && nowWon && index < 2 && matchWinner(sets) === null) {
     const later = index === 0 ? [sets[1], sets[2]] : [sets[2]];
     const restEmpty = later.every((set) => set.a === 0 && set.b === 0);
     if (restEmpty) activeSet = nextSetIndex(index);

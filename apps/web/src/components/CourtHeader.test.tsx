@@ -18,7 +18,7 @@ const actions: readonly CourtAction[] = [
 describe('court header', () => {
   it('puts the set name in the header and keeps the menu closed', () => {
     const html = renderToStaticMarkup(<CourtHeader setLabel="Set 2" onBrand={() => undefined} actions={actions} layout="menu" />);
-    expect(html).toContain('>Padel Counter<');
+    expect(html).toContain('>Padel Counter V2<');
     expect(html).toContain('data-testid="active-set"');
     expect(html).toContain('>Set 2<');
     expect(html).toContain('aria-label="Menu"');

@@ -1,5 +1,6 @@
 import { isUuid } from './id';
 import { isValidStoredName, sanitizeTeamName } from './names';
+import { withActor } from './policy';
 import { isPlausibleSetScore } from './rules';
 import {
   SCHEMA_VERSION,
@@ -114,29 +115,49 @@ export function parseStoredEvent(value: unknown): MatchEvent | null {
 
   switch (record.type) {
     case 'game/increment':
-    case 'game/decrement':
+    case 'game/decrement': {
       if (!isTeamId(record.team)) return null;
-      return { type: record.type, team: record.team, at: record.at };
-    case 'set/select':
+      const event = { type: record.type, team: record.team, at: record.at };
+      return withActor(event, record.by);
+    }
+    case 'set/select': {
       if (!isSetIndex(record.index)) return null;
-      return { type: 'set/select', index: record.index, at: record.at };
-    case 'team/rename':
+      const event = { type: 'set/select' as const, index: record.index, at: record.at };
+      return withActor(event, record.by);
+    }
+    case 'team/rename': {
       if (!isTeamId(record.team) || typeof record.name !== 'string') return null;
-      return { type: 'team/rename', team: record.team, name: sanitizeTeamName(record.name, record.team), at: record.at };
+      const event = {
+        type: 'team/rename' as const,
+        team: record.team,
+        name: sanitizeTeamName(record.name, record.team),
+        at: record.at,
+      };
+      return withActor(event, record.by);
+    }
     case 'match/reset':
-    case 'match/new':
+    case 'match/new': {
       if (typeof record.matchId !== 'string' || !isUuid(record.matchId)) return null;
-      return { type: record.type, matchId: record.matchId.toLowerCase(), at: record.at };
-    case 'match/end':
-      return { type: 'match/end', at: record.at };
-    case 'match/resume':
-      return { type: 'match/resume', at: record.at };
-    case 'serve/set':
+      const event = { type: record.type, matchId: record.matchId.toLowerCase(), at: record.at };
+      return withActor(event, record.by);
+    }
+    case 'match/end': {
+      const event = { type: 'match/end' as const, at: record.at };
+      return withActor(event, record.by);
+    }
+    case 'match/resume': {
+      const event = { type: 'match/resume' as const, at: record.at };
+      return withActor(event, record.by);
+    }
+    case 'serve/set': {
       if (record.team === null && record.player === null) {
-        return { type: 'serve/set', team: null, player: null, at: record.at };
+        const cleared = { type: 'serve/set' as const, team: null, player: null, at: record.at };
+        return withActor(cleared, record.by);
       }
       if (!isTeamId(record.team) || !isPlayerSlot(record.player)) return null;
-      return { type: 'serve/set', team: record.team, player: record.player, at: record.at };
+      const event = { type: 'serve/set' as const, team: record.team, player: record.player, at: record.at };
+      return withActor(event, record.by);
+    }
     default:
       return null;
   }

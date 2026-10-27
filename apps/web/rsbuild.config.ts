@@ -93,7 +93,7 @@ export default defineConfig({
   },
   html: {
     template: './src/index.html',
-    title: 'Padel Counter',
+    title: 'Padel Counter V2',
     mountId: 'root',
     templateParameters: {
       connectSrc,

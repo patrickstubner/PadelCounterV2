@@ -70,8 +70,8 @@ describe('history page', () => {
         mode="list"
         live={{ nameA: 'Team A', nameB: 'Team B', gameA: 0, gameB: 0, setsLabel: '0:0', detail: 'Set 1' }}
         rows={[
-          { at: T0 + 2_000, label: 'Team B won the game', score: [{ a: 1, b: 1, aChanged: false, bChanged: true }] },
-          { at: T0 + 1_000, label: 'Lobos won the game', score: [{ a: 1, b: 0, aChanged: true, bChanged: false }] },
+          { at: T0 + 2_000, label: 'Team B won the game', who: null, score: [{ a: 1, b: 1, aChanged: false, bChanged: true }] },
+          { at: T0 + 1_000, label: 'Lobos won the game', who: null, score: [{ a: 1, b: 0, aChanged: true, bChanged: false }] },
         ]}
         played={past ? [past] : []}
         selected={null}

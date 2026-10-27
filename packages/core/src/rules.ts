@@ -107,6 +107,16 @@ export function canDecrement(score: SetScore, team: TeamId): boolean {
   return isPlausibleSetScore(next.a, next.b);
 }
 
+/** Minus on the active set, or on the set that just ended when the next one is still empty. */
+export function canTakeGame(state: MatchState, team: TeamId): boolean {
+  if (state.ended) return false;
+  const active = state.sets[state.activeSet];
+  if (canDecrement(active, team)) return true;
+  if (state.activeSet === 0 || active[team] !== 0) return false;
+  const previous = state.sets[state.activeSet - 1];
+  return previous ? canDecrement(previous, team) : false;
+}
+
 export function isUpcomingSet(state: MatchState, index: SetIndex): boolean {
   if (index <= state.activeSet) return false;
   const set = state.sets[index];

@@ -7,16 +7,22 @@ const TOKEN = 'abcdefghijklmnopqrstuv';
 
 describe('join links', () => {
   it('keeps the code in the fragment and parses only a 128-bit token', () => {
-    const link = joinLink('https://patrickstubner.github.io/PadelCounterV2/', ID, TOKEN);
-    expect(link).toBe(`https://patrickstubner.github.io/PadelCounterV2/#/join/${ID}?t=${TOKEN}`);
+    const link = joinLink('https://patrickstubner.github.io/PadelCounterV2/', TOKEN);
+    expect(link).toBe(`https://patrickstubner.github.io/PadelCounterV2/#/join?t=${TOKEN}`);
+    expect(link).not.toContain(ID);
     expect(link.split('#')[0]).not.toContain(TOKEN);
-    expect(parseJoinHash(`#/join/${ID}?t=${TOKEN}`)).toEqual({ matchId: ID, token: TOKEN });
-    expect(parseJoinHash(`#/join/${ID}?t=short`)).toBeNull();
-    expect(parseJoinHash('#/join/not-a-match?t=' + TOKEN)).toBeNull();
-    expect(socketUrl('http://localhost:8787', ID)).toBe(`ws://localhost:8787/matches/${ID}/ws`);
-    expect(socketUrl('https://padel-counter.example.workers.dev/', ID)).toBe(
-      `wss://padel-counter.example.workers.dev/matches/${ID}/ws`,
+    expect(parseJoinHash(`#/join?t=${TOKEN}`)).toEqual({ token: TOKEN });
+    expect(parseJoinHash(`#/join/${ID}?t=${TOKEN}`)).toBeNull();
+    expect(parseJoinHash('#/join?t=short')).toBeNull();
+    expect(socketUrl('http://localhost:8787', TOKEN)).toBe(`ws://localhost:8787/ws/${TOKEN}`);
+    expect(socketUrl('https://padel-counter.example.workers.dev/', TOKEN)).toBe(
+      `wss://padel-counter.example.workers.dev/ws/${TOKEN}`,
     );
+  });
+
+  it('accepts a one-tap reconnect offer and ignores a forged token', () => {
+    expect(interpretMessage({ type: 'join_offer', token: TOKEN })).toEqual({ kind: 'join_offer', token: TOKEN });
+    expect(interpretMessage({ type: 'join_offer', token: 'short' })).toEqual({ kind: 'ignore' });
   });
 
   it('shows the fixed full-match sentence and ignores a forged message', () => {

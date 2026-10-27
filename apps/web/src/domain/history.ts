@@ -1,3 +1,4 @@
+import { whoLabel } from '@padel/core';
 import { currentMatchEvents } from './archive';
 import { describeEvent, type MatchLog } from './log';
 import { createMatch, matchReducer } from './reducer';
@@ -13,6 +14,7 @@ export interface HistorySetMark {
 export interface HistoryRow {
   readonly at: number;
   readonly label: string;
+  readonly who: string | null;
   /** Complete set score after the event. Only the number that changed is marked. */
   readonly score: readonly HistorySetMark[];
 }
@@ -57,7 +59,7 @@ export function colonSetScore(sets: readonly [SetScore, SetScore, SetScore]): st
 
 function rowLabel(event: MatchEvent, state: MatchState): string {
   if (event.type === 'game/increment') return `${state.teams[event.team].name} won the game`;
-  if (event.type === 'game/decrement') return `${state.teams[event.team].name} game removed`;
+  if (event.type === 'game/decrement') return `${state.teams[event.team].name} game taken back`;
   return describeEvent(event);
 }
 
@@ -72,6 +74,7 @@ export function historyRows(start: MatchState, events: readonly MatchEvent[]): H
     rows.push({
       at: event.at,
       label: rowLabel(event, after),
+      who: whoLabel(event.by),
       score: markedSets(before, after),
     });
   }

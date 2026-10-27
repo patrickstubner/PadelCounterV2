@@ -31,6 +31,7 @@ export {
   RULES_SUMMARY,
   canDecrement,
   canIncrement,
+  canTakeGame,
   celebrationWinner,
   displayGames,
   gamesPlayed,
@@ -67,3 +68,24 @@ export {
 export type { JoinDecision } from './join';
 export { ROOM_MESSAGES, connectionCloses, isRoomCode } from './messages';
 export type { RoomCode } from './messages';
+export {
+  HISTORY_RETAIN_MS,
+  HOST_ACTOR,
+  MATCHES_PER_DAY,
+  RECONNECT_WINDOW_MS,
+  ROOM_CLOSE_MS,
+  actorId,
+  canReopen,
+  carryTokenHashes,
+  credentialAllowsEvent,
+  historyExpired,
+  isOpenMatch,
+  lastChangeAt,
+  offerReconnect,
+  planNewMatch,
+  quotaDay,
+  roomAcceptsScore,
+  whoLabel,
+  withActor,
+} from './policy';
+export type { CarryInvite, NewMatchPlan } from './policy';

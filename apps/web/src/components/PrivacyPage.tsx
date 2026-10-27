@@ -28,6 +28,12 @@ export function PrivacyPage({ onBack }: PrivacyPageProps) {
           advertising scripts.
         </p>
         <p>
+          A live match stops taking scores one day after the last change. Nobody can change the games after that.
+        </p>
+        <p>
+          The match stays on the server as history for two years, then it is deleted automatically.
+        </p>
+        <p>
           Login, hiding a match from a shared history, and deleting a match for everyone are not in this
           version. Deleting a finished match here removes it from this device only.
         </p>

@@ -1,6 +1,6 @@
 import { rememberMatch, snapshotMatch, type ArchivedMatch } from './archive';
 import { appendEvent, omitMatch, replay, undoLog, type LogAction, type MatchLog } from './log';
-import { isNewMatchEvent } from './types';
+import { isNewMatchEvent, type MatchEvent } from './types';
 
 export interface Session {
   readonly log: MatchLog;
@@ -10,7 +10,8 @@ export interface Session {
 export type SessionAction =
   | LogAction
   | { readonly type: 'delete-match'; readonly id: string }
-  | { readonly type: 'replace'; readonly log: MatchLog };
+  | { readonly type: 'replace'; readonly log: MatchLog }
+  | { readonly type: 'record-all'; readonly events: readonly MatchEvent[] };
 
 export function sessionReducer(session: Session, action: SessionAction): Session {
   if (action.type === 'replace') {
@@ -29,6 +30,13 @@ export function sessionReducer(session: Session, action: SessionAction): Session
       log: omitMatch(session.log, action.id),
       archive: session.archive.filter((match) => match.id !== action.id),
     };
+  }
+
+  if (action.type === 'record-all') {
+    return action.events.reduce(
+      (current, event) => sessionReducer(current, { type: 'record', event }),
+      session,
+    );
   }
 
   if (action.type === 'undo') {

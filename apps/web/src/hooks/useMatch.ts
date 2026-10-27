@@ -50,6 +50,7 @@ export function useMatch() {
     rename: (team: TeamId, name: string) => publish({ type: 'team/rename', team, name, at: at() }),
     selectSet: (index: SetIndex) => publish({ type: 'set/select', index, at: at() }),
     newMatch: () => record({ type: 'match/new', matchId: createMatchId(), at: at() }),
+    recordAll: (events: readonly MatchEvent[]) => dispatch({ type: 'record-all', events }),
     endMatch: () => publish({ type: 'match/end', at: at() }),
     resumeMatch: () => publish({ type: 'match/resume', at: at() }),
     chooseServe: (team: TeamId) => {
