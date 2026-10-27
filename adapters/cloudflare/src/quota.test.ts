@@ -287,6 +287,11 @@ describe('create quota', () => {
     expect(today).not.toBe(tomorrow);
     expect(today).not.toBe(await sha256Hex(address));
     expect(today).not.toBe(await quotaMac('test-quota-hmac-key', 'device', address, '2026-10-27'));
+    const socket = await quotaMac('test-quota-hmac-key', 'socket-ip', address, 'socket');
+    expect(socket).toBe(await quotaMac('test-quota-hmac-key', 'socket-ip', address, 'socket'));
+    expect(socket).not.toBe(await quotaMac('test-quota-hmac-key', 'socket-ip', '203.0.113.11', 'socket'));
+    expect(socket).not.toBe(await sha256Hex(address));
+    expect(socket).not.toContain(address);
   });
 
   it('deletes quota rows older than two days and expired tickets', async () => {

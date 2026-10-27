@@ -2,6 +2,7 @@ import { createMatch } from '@padel/core';
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
+import { quotaMac } from './tokens';
 
 const ORIGIN = 'https://patrickstubner.github.io';
 const HOST_DEVICE = 'd11111111';
@@ -158,5 +159,39 @@ describe('live match in workerd', () => {
     const snapshot = await carried.messages.waitFor((message) => message.type === 'snapshot');
     expect(snapshot.host).toBe(false);
     expect(snapshot.role).toBe('player');
+  });
+
+  it('stores an HMAC of the client address on the socket, not the address', async () => {
+    const created = await createLive('d33333333');
+    const address = '198.51.100.77';
+    const ticket = await ticketFor(created.hostToken, 'd33333333');
+    const response = await exports.default.fetch(
+      new Request(`https://padel.example/ws/${ticket}`, {
+        headers: { upgrade: 'websocket', origin: ORIGIN, 'cf-connecting-ip': address },
+      }),
+    );
+    const ws = response.webSocket;
+    if (!ws) throw new Error(`websocket upgrade failed: ${response.status}`);
+    ws.accept();
+    const room = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(created.matchId));
+    const readIps = () =>
+      runInDurableObject(room, (_instance, state) =>
+        state.getWebSockets().map((socket) => {
+          const attachment = socket.deserializeAttachment() as { ip?: unknown } | null;
+          return typeof attachment?.ip === 'string' ? attachment.ip : '';
+        }),
+      );
+    const expected = await quotaMac('test-quota-hmac-key', 'socket-ip', address, 'socket');
+    const pending = await readIps();
+    expect(pending).toContain(expected);
+    expect(JSON.stringify(pending)).not.toContain(address);
+
+    const messages = inbox(ws);
+    ws.send(JSON.stringify({ type: 'hello', protocol: 1, token: created.hostToken, device: 'd33333333' }));
+    await messages.waitFor((message) => message.type === 'snapshot');
+    const admitted = await readIps();
+    expect(admitted).toContain(expected);
+    expect(JSON.stringify(admitted)).not.toContain(address);
+    ws.close();
   });
 });
