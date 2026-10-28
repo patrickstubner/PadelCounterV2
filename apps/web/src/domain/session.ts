@@ -11,7 +11,8 @@ export type SessionAction =
   | LogAction
   | { readonly type: 'delete-match'; readonly id: string }
   | { readonly type: 'replace'; readonly log: MatchLog }
-  | { readonly type: 'record-all'; readonly events: readonly MatchEvent[] };
+  | { readonly type: 'record-all'; readonly events: readonly MatchEvent[] }
+  | { readonly type: 'revert'; readonly event: MatchEvent };
 
 export function sessionReducer(session: Session, action: SessionAction): Session {
   if (action.type === 'replace') {
@@ -37,6 +38,19 @@ export function sessionReducer(session: Session, action: SessionAction): Session
       (current, event) => sessionReducer(current, { type: 'record', event }),
       session,
     );
+  }
+
+  if (action.type === 'revert') {
+    const index = session.log.events.lastIndexOf(action.event);
+    if (index < 0) return session;
+    return {
+      log: {
+        schemaVersion: session.log.schemaVersion,
+        base: session.log.base,
+        events: [...session.log.events.slice(0, index), ...session.log.events.slice(index + 1)],
+      },
+      archive: session.archive,
+    };
   }
 
   if (action.type === 'undo') {

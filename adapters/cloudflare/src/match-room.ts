@@ -9,6 +9,8 @@ import { quotaMac, safeEqualHex, sha256Hex } from './tokens';
 
 /** Fixed scope. A minute in the MAC would split one address across two pending caps. */
 const SOCKET_IP_SCOPE = 'socket';
+/** Hibernation tag so a broadcast can see every court socket after the isolate wakes. */
+const COURT_TAG = 'court';
 
 interface PendingState {
   readonly admitted: false;
@@ -78,7 +80,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
 
   async alarm(): Promise<void> {
     const now = Date.now();
-    for (const ws of this.ctx.getWebSockets()) {
+    for (const ws of this.ctx.getWebSockets(COURT_TAG)) {
       const state = this.readState(ws);
       if (!state || state.admitted) continue;
       if (expiredHello([this.view(state)], now).length === 0) continue;
@@ -97,7 +99,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    this.ctx.acceptWebSocket(server);
+    this.ctx.acceptWebSocket(server, [COURT_TAG]);
     const openedAt = Date.now();
     server.serializeAttachment({ admitted: false, ip: ipMac, openedAt } satisfies PendingState);
     await this.armAlarm(openedAt);
@@ -134,7 +136,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const budget = takeLiveMessage(state.stamps, record.type, Date.now());
     ws.serializeAttachment({ ...state, stamps: budget.stamps });
     if (!budget.ok) {
-      this.reject(ws, budget.code);
+      this.reject(ws, budget.code, record.eventId);
       return;
     }
     if (budget.command === 'ping') {
@@ -165,7 +167,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
     const tokenHash = await sha256Hex(record.token);
     const deviceId = typeof record.device === 'string' && /^d[a-f0-9]{8}$/.test(record.device) ? record.device : null;
-    const connected = this.ctx.getWebSockets().filter((socket) => {
+    const connected = this.ctx.getWebSockets(COURT_TAG).filter((socket) => {
       if (socket === ws) return false;
       return this.readState(socket)?.admitted === true;
     }).length;
@@ -201,37 +203,26 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       return;
     }
     if (typeof record.eventId !== 'string') {
-      this.reject(ws, 'not_applied');
+      this.reject(ws, 'not_applied', record.eventId);
       return;
     }
     const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, state.tokenHash));
     if (!invite) {
-      this.reject(ws, 'bad_token');
+      this.reject(ws, 'bad_token', record.eventId);
       return;
     }
     const result = applyLiveEvent(room, invite, state.actor, record.eventId, record.event, Date.now());
     if (!result.ok) {
-      this.reject(ws, result.code);
+      this.reject(ws, result.code, record.eventId);
       return;
     }
     if (!result.duplicate) {
       try {
         const sql = this.sql();
         insertEvent(sql, result.event);
-        const at = result.event.event.at;
         ensureActivityColumn(sql);
-        const last = readActivityTouch(sql);
-        if (last !== null && shouldTouchActivity(last, at)) {
-          markActivityTouch(sql, at);
-          try {
-            await touchMatchActivity(this.env.DB, room.base.matchId, at);
-          } catch (error) {
-            markActivityTouch(sql, last);
-            throw error;
-          }
-        }
       } catch {
-        this.reject(ws, 'unavailable');
+        this.reject(ws, 'unavailable', record.eventId);
         return;
       }
     }
@@ -243,9 +234,37 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         players: this.admittedCount(),
       }),
     );
-    for (const socket of this.ctx.getWebSockets()) {
+    this.broadcast(payload, ws);
+    try {
+      ws.send(payload);
+    } catch {
+      // The sender already showed the point. The ack is only for reconciliation.
+    }
+    if (!result.duplicate) {
+      const at = result.event.event.at;
+      const sql = this.sql();
+      const last = readActivityTouch(sql);
+      if (last !== null && shouldTouchActivity(last, at)) {
+        markActivityTouch(sql, at);
+        try {
+          await touchMatchActivity(this.env.DB, room.base.matchId, at);
+        } catch {
+          markActivityTouch(sql, last);
+        }
+      }
+    }
+  }
+
+  /** Deliver to admitted court sockets. One closed peer must not stop the rest. */
+  private broadcast(payload: string, except?: WebSocket): void {
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      if (except && socket === except) continue;
       if (this.readState(socket)?.admitted !== true) continue;
-      socket.send(payload);
+      try {
+        socket.send(payload);
+      } catch {
+        // The Hibernation API can still list a socket that has already closed.
+      }
     }
   }
 
@@ -293,7 +312,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   private assignActor(host: boolean, tokenHash: string, deviceId: string | null): string | null {
     const joined = readJoined(this.sql());
     const connected: { actor: string; deviceId: string | null }[] = [];
-    for (const socket of this.ctx.getWebSockets()) {
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
       const state = this.readState(socket);
       if (state?.admitted) connected.push({ actor: state.actor, deviceId: state.deviceId });
     }
@@ -363,30 +382,42 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       const row = offer as { deviceId?: unknown; token?: unknown };
       if (!isJoinToken(row.token) || typeof row.deviceId !== 'string') continue;
       const payload = JSON.stringify({ type: 'join_offer', token: row.token });
-      for (const socket of this.ctx.getWebSockets()) {
+      for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
         const state = this.readState(socket);
         if (state?.admitted !== true || state.deviceId !== row.deviceId) continue;
-        socket.send(payload);
+        try {
+          socket.send(payload);
+        } catch {
+          // A closed peer must not stop the offer.
+        }
       }
     }
     return json(200, { ok: true });
   }
 
   private admittedCount(): number {
-    return this.ctx.getWebSockets().filter((socket) => this.readState(socket)?.admitted === true).length;
+    return this.ctx.getWebSockets(COURT_TAG).filter((socket) => this.readState(socket)?.admitted === true).length;
   }
 
   private broadcastPresence(): void {
-    const payload = JSON.stringify({ type: 'presence', players: this.admittedCount() });
-    for (const socket of this.ctx.getWebSockets()) {
-      if (this.readState(socket)?.admitted !== true) continue;
-      socket.send(payload);
-    }
+    this.broadcast(JSON.stringify({ type: 'presence', players: this.admittedCount() }));
   }
 
-  private reject(ws: WebSocket, code: string): void {
-    ws.send(JSON.stringify({ type: 'error', code }));
-    if (isRoomCode(code) && connectionCloses(code)) ws.close(1008, code.slice(0, 120));
+  private reject(ws: WebSocket, code: string, eventId?: unknown): void {
+    const id = typeof eventId === 'string' ? eventId.trim().toLowerCase() : '';
+    const body = id.length > 0 && id.length <= 80 ? { type: 'error', code, eventId: id } : { type: 'error', code };
+    try {
+      ws.send(JSON.stringify(body));
+    } catch {
+      // The peer is already gone.
+    }
+    if (isRoomCode(code) && connectionCloses(code)) {
+      try {
+        ws.close(1008, code.slice(0, 120));
+      } catch {
+        // The peer is already gone.
+      }
+    }
   }
 
   private readState(ws: WebSocket): SocketState | null {
@@ -403,7 +434,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
 
   private views(): SocketView[] {
     const views: SocketView[] = [];
-    for (const socket of this.ctx.getWebSockets()) {
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
       const state = this.readState(socket);
       if (state) views.push(this.view(state));
     }

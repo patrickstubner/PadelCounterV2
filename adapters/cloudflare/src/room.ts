@@ -5,6 +5,7 @@ import {
   MAX_EVENTS,
   MAX_PLAYER_ACTOR,
   ROOM_MESSAGES,
+  canonicalEventId,
   actionForEvent,
   actorId,
   canPerform,
@@ -262,10 +263,9 @@ export function applyPlay(
 ):
   | { readonly ok: true; readonly record: RoomRecord; readonly event: StoredEvent; readonly duplicate: boolean }
   | RoomFailure {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventId)) {
-    return fail('not_applied');
-  }
-  const existing = record.events.find((item) => item.eventId === eventId);
+  const canonical = canonicalEventId(eventId);
+  if (!canonical) return fail('not_applied');
+  const existing = record.events.find((item) => item.eventId === canonical);
   if (existing) return { ok: true, record, event: existing, duplicate: true };
 
   const parsed = parseStoredEvent(rawEvent);
@@ -279,7 +279,7 @@ export function applyPlay(
   const current = replayScore(record.base, record.events.map((item) => item.event));
   const next = replayScore(current, [stamped]);
   if (next === current) return fail('not_applied');
-  const event: StoredEvent = { eventId, event: stamped };
+  const event: StoredEvent = { eventId: canonical, event: stamped };
   return { ok: true, duplicate: false, event, record: { ...record, events: [...record.events, event] } };
 }
 

@@ -64,6 +64,7 @@ export function useMatch() {
     },
     replaceLog: (next: MatchLog) => dispatch({ type: 'replace', log: next }),
     applyLive: (event: MatchEvent) => dispatch({ type: 'record', event }),
+    revertLive: (event: MatchEvent) => dispatch({ type: 'revert', event }),
     deleteMatch: (id: string) => {
       if (state.matchId === id) return;
       if (!session.archive.some((match) => match.id === id)) return;

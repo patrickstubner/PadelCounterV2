@@ -16,7 +16,7 @@ export type {
   TeamId,
 } from './types';
 
-export { createMatchId, isUuid } from './id';
+export { canonicalEventId, createMatchId, isUuid } from './id';
 export {
   DEFAULT_TEAM_NAMES,
   MAX_TEAM_NAME_LENGTH,

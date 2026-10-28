@@ -237,7 +237,7 @@ describe('connect overlay and scanned join', () => {
     expect(document.querySelector('[data-testid="connect-dialog"]')).toBeNull();
     expect(window.location.href).not.toContain(TOKEN);
     expect(window.location.hash).toBe('');
-    expect(sessionStorage.getItem(JOIN_KEY)).toBeNull();
+    expect(sessionStorage.getItem(JOIN_KEY)).toContain(TOKEN);
     expect(document.body.textContent).not.toContain(TOKEN);
     const join = fetchCalls.find((call) => call.url === `${API}/join`);
     expect(join?.init?.method).toBe('POST');

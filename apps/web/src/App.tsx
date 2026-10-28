@@ -66,7 +66,7 @@ function useUpdateReady(): boolean {
 
 export function App() {
   const match = useMatch();
-  const room = useLive(match.liveRef, match.replaceLog, match.applyLive);
+  const room = useLive(match.liveRef, match.replaceLog, match.applyLive, match.revertLive);
   const install = useInstallOffer();
   useWakeLock();
   const updateReady = useUpdateReady();
@@ -90,13 +90,16 @@ export function App() {
   const [connectOpen, setConnectOpen] = useState(false);
   const joinStarted = useRef(false);
   const applyJoin = useCallback((attempt: { readonly ok: true; readonly token: string } | { readonly ok: false; readonly invalid: boolean }) => {
-    if (attempt.ok) room.connect(attempt.token);
-    else if (attempt.invalid) room.rejectToken();
-    else return;
+    if (attempt.ok) {
+      room.connect(attempt.token);
+      return;
+    }
+    if (!attempt.invalid) return;
+    room.rejectToken();
     try {
       forgetJoinToken(window.sessionStorage);
     } catch {
-      // The token is already in memory. The address bar is cleared by readJoinToken.
+      // The address bar is already clear.
     }
   }, [room]);
   useEffect(() => {
@@ -110,13 +113,8 @@ export function App() {
     applyJoin(readJoinToken(window.location, window.history, readSession()));
   }, [applyJoin]);
   useEffect(() => {
-    if (room.status !== 'live' || typeof window === 'undefined') return;
+    if (room.status !== 'live') return;
     releaseHeldJoin();
-    try {
-      forgetJoinToken(window.sessionStorage);
-    } catch {
-      // Storage may be blocked. The address bar is already clear.
-    }
   }, [room.status]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -289,8 +287,19 @@ export function App() {
   }
 
   const showConnect = !room.joining && (room.status !== 'live' || room.host);
+  const leaveLive = () => {
+    room.disconnect();
+    try {
+      forgetJoinToken(sessionStorage);
+    } catch {
+      // Storage may be blocked. The in-memory token is already cleared.
+    }
+  };
   const actions: readonly CourtAction[] = [
     ...(showConnect ? [{ id: 'connect', label: 'Connect players', testId: 'connect-open', onSelect: openConnect }] : []),
+    ...(room.status === 'live' && !room.host
+      ? [{ id: 'leave', label: 'Leave live match', testId: 'leave-live-menu', onSelect: leaveLive }]
+      : []),
     { id: 'history', label: 'History', testId: 'history-open', onSelect: openMatches },
     state.ended
       ? { id: 'resume', label: 'Resume', testId: 'resume-match', emphasized: true, onSelect: match.resumeMatch }
@@ -348,7 +357,7 @@ export function App() {
   ];
 
   return (
-    <div className="app">
+    <div className={room.courtTone === 'local' ? 'app' : `app is-${room.courtTone}`}>
       <CourtHeader setLabel={`Set ${state.activeSet + 1}`} onBrand={openMatches} actions={actions} />
       {showVictory && screen.view === 'court' && celebrated ? (
         <Victory
@@ -391,6 +400,9 @@ export function App() {
               {pick}
             </p>
           ) : null}
+          {room.courtTone === 'offline' ? (
+            <p className="offline-label" data-testid="court-offline">Offline</p>
+          ) : null}
           {room.joining && room.status === 'connecting' ? (
             <p className="join-status" data-testid="join-status">Connecting to the match…</p>
           ) : null}
@@ -399,6 +411,9 @@ export function App() {
               <p>Could not join this match.</p>
               <p>{room.joinError}</p>
             </div>
+          ) : null}
+          {room.status === 'disconnected' ? (
+            <p className="live-error" role="status" data-testid="live-disconnected">Disconnected.</p>
           ) : null}
           {room.error ? (
             <p className="live-error" role="alert" data-testid="live-error">{room.error}</p>
@@ -422,6 +437,15 @@ export function App() {
       </footer>
       <p className="sr-only" aria-live="polite">
         {live}
+      </p>
+      <p className="sr-only" role="status" data-testid="court-connection">
+        {room.courtTone === 'offline'
+          ? 'Live match offline. Points stay on this phone until the connection returns.'
+          : room.courtTone === 'online'
+            ? 'Live match connected.'
+            : room.status === 'disconnected'
+              ? 'Disconnected from the live match.'
+              : ''}
       </p>
       {pendingPlan ? (
         <ConfirmDialog
@@ -473,7 +497,7 @@ export function App() {
         <ConnectPage
           configured={room.configured}
           host={room.host}
-          status={room.status}
+          status={room.status === 'disconnected' ? 'off' : room.status}
           players={room.players}
           qr={room.qr}
           error={room.error}

@@ -49,6 +49,8 @@ button:disabled { cursor: not-allowed; }
   height: 100dvh;
   display: flex;
   flex-direction: column;
+  background: #000000;
+  transition: background-color 0.45s ease;
   user-select: none;
   -webkit-user-select: none;
   padding:
@@ -66,6 +68,7 @@ button:disabled { cursor: not-allowed; }
   gap: 0.75rem;
   padding: 0.35rem 0.7rem;
   background: #000000;
+  transition: background-color 0.45s ease;
 }
 
 .top {
@@ -505,6 +508,7 @@ button:disabled { cursor: not-allowed; }
   justify-content: center;
   gap: 0.12rem;
   background: #000000;
+  transition: background-color 0.45s ease;
   min-height: 0;
   z-index: 1;
   padding: 0 0.4rem;
@@ -512,6 +516,39 @@ button:disabled { cursor: not-allowed; }
 
 .mid:empty {
   padding: 0;
+}
+
+/* Local stays #000000. Online #163056 and offline #3a1016 are separate dark hues.
+   White and #a3a3a3 on both are at least 5.2:1. Disabled glyphs use #d0d0d0 (11.9:1 on #141414). */
+.app.is-online,
+.app.is-online .top,
+.app.is-online .foot,
+.app.is-online .mid {
+  background: #163056;
+}
+
+.app.is-offline,
+.app.is-offline .top,
+.app.is-offline .foot,
+.app.is-offline .mid {
+  background: #3a1016;
+}
+
+.app.is-online .step:disabled,
+.app.is-online .text-btn:disabled,
+.app.is-online .undo-btn:disabled,
+.app.is-offline .step:disabled,
+.app.is-offline .text-btn:disabled,
+.app.is-offline .undo-btn:disabled {
+  color: #d0d0d0;
+}
+
+.offline-label {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #ffffff;
 }
 
 .serve-line,
