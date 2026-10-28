@@ -257,10 +257,19 @@ Production deploy aborted with `production environment needs a required reviewer
 
 ## Review 14, 2026-10-28
 
-- A connected phone can rename a team. The server stores `team/rename` in the match log, so the name is in the history, and it broadcasts `{ type: 'team_renamed', team, name, seq }`. The name is trimmed, at most 24 characters, and is refused when it contains a control character. The court renders that name as text. A later `seq` wins. Renames are limited to 3 per second on one connection. A match that is not live still renames only on that phone, with the existing 20-character field.
+- A connected phone can rename a team. The server stores `team/rename` in the match log, so the name is in the history, and it broadcasts `{ type: 'team_renamed', team, name, seq }`. The name is trimmed, at most 24 characters, and is refused when it contains a control character. The court renders that name as text. A later `seq` wins. Renames are limited to 3 per second on one connection. A match that is not live still renames only on that phone. Review 15 uses the same 24-character limit there.
 - `slow_down` waits at least two seconds, and that wait is used once. The next retry uses the normal backoff. A successful reconnect clears the previous error. Repeated `online` events inside two seconds do not each open a socket.
 - A join fragment in the host tab does not replace the host token in `sessionStorage`. Reloading the tab does not extend `expiresAt`.
 - The dialog and the README say that New code disconnects the phones that joined with the current code.
+
+## Review 15, 2026-10-28
+
+- A `team_renamed` frame is applied whenever its server sequence is newer, including when the event id is this phone’s own. Two phones that rename at the same time end on the name the server stored last.
+- Team names use one limit, `MAX_TEAM_NAME_LENGTH` (24), on the court, in the archive, and in the worker. D1 does not store team names. A played match with a 24-character name stays in History after a reload.
+- `{ type: 'event', event: { type: 'team/rename' } }` is refused. Renames go through `team_renamed`, which keeps the 3-per-second limit and rejects a name instead of shortening it.
+- A name is refused when it is only a blank filler (`U+3164`, `U+115F`, `U+2800`), only variation selectors, or more than two combining marks.
+- A successful New code clears the error that an earlier attempt left on the court.
+- The match still holds at most 500 events. Three connections renaming at the limit can fill that in about a minute, the same way repeated score taps can. After that the room refuses further changes. New code still disconnects phones that joined with the old code. This is noted, not changed.
 
 ## Out of scope
 

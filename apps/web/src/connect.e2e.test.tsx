@@ -24,6 +24,7 @@ let joinMode: 'ok' | 'expired' | 'bad' = 'ok';
 let createMode: 'ok' | 'down' = 'ok';
 let snapshot: unknown = null;
 let snapshotHost = false;
+let inviteFails = 0;
 
 class FakeSocket {
   static readonly CONNECTING = 0;
@@ -98,6 +99,10 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     return Response.json({ matchId: MATCH, hostToken: HOST }, { status: 201 });
   }
   if (url.endsWith('/invites')) {
+    if (inviteFails > 0) {
+      inviteFails -= 1;
+      return Response.json({ error: 'offline' }, { status: 503 });
+    }
     return Response.json({ token: INVITE, role: 'player', matchId: MATCH, expiresAt: Date.now() + 3_600_000 }, { status: 201 });
   }
   return Response.json({ error: 'not_found' }, { status: 404 });
@@ -158,6 +163,7 @@ describe('connect overlay and scanned join', () => {
     createMode = 'ok';
     snapshot = null;
     snapshotHost = false;
+    inviteFails = 0;
     localStorage.clear();
     sessionStorage.clear();
     window.history.replaceState(null, '', '/');

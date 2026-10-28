@@ -115,13 +115,13 @@ describe('matchReducer', () => {
       name: '12345678901234567890EXTRA',
       at: T0 + 6,
     });
-    expect(state.teams.b.name).toHaveLength(20);
-    expect(state.teams.b.name).toBe('12345678901234567890');
+    expect(state.teams.b.name).toHaveLength(24);
+    expect(state.teams.b.name).toBe('12345678901234567890EXTR');
     state = play(state, 'a', 1);
     const kept = matchReducer(state, { type: 'match/reset', matchId: NEXT, at: T0 + 20 });
     expect(kept.matchId).toBe(NEXT);
     expect(kept.teams.a.name).toBe('SonneTeam');
-    expect(kept.teams.b.name).toBe('12345678901234567890');
+    expect(kept.teams.b.name).toBe('12345678901234567890EXTR');
     const reset = matchReducer(state, { type: 'match/new', matchId: NEXT, at: T0 + 21 });
     expect(reset.matchId).toBe(NEXT);
     expect(reset.revision).toBe(0);

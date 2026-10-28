@@ -88,7 +88,7 @@ describe('scoring without undo', () => {
     expect(parseMatchLog(tampered)).toBeNull();
   });
 
-  it('stores a rename only after sanitizeTeamName, capped at 20 characters', () => {
+  it('stores a rename only after sanitizeTeamName, capped at 24 characters', () => {
     const event = parseStoredEvent({
       type: 'team/rename',
       team: 'a',
@@ -97,8 +97,8 @@ describe('scoring without undo', () => {
     });
     expect(event).toMatchObject({ type: 'team/rename', team: 'a' });
     if (!event || event.type !== 'team/rename') return;
-    expect(event.name).toBe('Lobos extra characte');
-    expect([...event.name].length).toBeLessThanOrEqual(20);
+    expect(event.name).toBe('Lobos extra characters b');
+    expect([...event.name].length).toBeLessThanOrEqual(24);
     expect(event.name).not.toContain('\u0007');
   });
 });
@@ -148,6 +148,12 @@ describe('live team names', () => {
     expect(parseLiveTeamName('Lobos\n')).toBeNull();
     expect(parseLiveTeamName('')).toBeNull();
     expect(parseLiveTeamName(12)).toBeNull();
+    expect(parseLiveTeamName('\u3164')).toBeNull();
+    expect(parseLiveTeamName('\u115F')).toBeNull();
+    expect(parseLiveTeamName('\u2800\u2800')).toBeNull();
+    expect(parseLiveTeamName('\uFE0F\uFE0F')).toBeNull();
+    expect(parseLiveTeamName(`A${'\u0301'.repeat(8)}`)).toBeNull();
+    expect(parseLiveTeamName('A\u0301')).toBe('Á');
     const kept = matchReducer(createMatch(T0), { type: 'team/rename', team: 'a', name: full, at: T0 + 1 });
     expect(kept.teams.a.name).toBe(full);
     const local = matchReducer(createMatch(T0), {
@@ -156,7 +162,7 @@ describe('live team names', () => {
       name: `  ${'W'.repeat(30)}\u0007`,
       at: T0 + 1,
     });
-    expect([...local.teams.b.name].length).toBeLessThanOrEqual(20);
+    expect([...local.teams.b.name].length).toBeLessThanOrEqual(24);
     expect(local.teams.b.name).not.toContain('\u0007');
   });
 });

@@ -1,9 +1,10 @@
 import type { TeamId } from './types';
 
-export const MAX_TEAM_NAME_LENGTH = 20;
+/** One cap for the court, the archive, the worker, and any stored name. D1 does not keep names. */
+export const MAX_TEAM_NAME_LENGTH = 24;
 
-/** Live names are checked on the server. A local rename still uses {@link MAX_TEAM_NAME_LENGTH}. */
-export const MAX_LIVE_TEAM_NAME_LENGTH = 24;
+/** Same limit as {@link MAX_TEAM_NAME_LENGTH}. Kept so older imports stay valid. */
+export const MAX_LIVE_TEAM_NAME_LENGTH = MAX_TEAM_NAME_LENGTH;
 
 /**
  * HTML `maxLength` counts UTF-16 code units. A code point is at most two units,
@@ -20,6 +21,18 @@ export const DEFAULT_TEAM_NAMES: Readonly<Record<TeamId, string>> = {
 export const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 
 const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/** Fillers that look blank. A name that contains one is refused. */
+const INVISIBLE_NAME = /[\u115F\u1160\u3164\uFFA0\u2800]/g;
+
+const COMBINING_MARK = /\p{M}/gu;
+
+const MAX_COMBINING_MARKS = 2;
+
+function isVariationSelector(value: string): boolean {
+  const point = value.codePointAt(0) ?? 0;
+  return (point >= 0xfe00 && point <= 0xfe0f) || (point >= 0xe0100 && point <= 0xe01ef);
+}
 
 export function codePointLength(value: string): number {
   return Array.from(value).length;
@@ -39,6 +52,16 @@ function stripUnpairedSurrogates(value: string): string {
   return value.replace(UNPAIRED_SURROGATE, '');
 }
 
+function limitCombining(value: string): string {
+  let kept = 0;
+  return Array.from(value).filter((char) => {
+    if (isVariationSelector(char)) return true;
+    if (!/\p{M}/u.test(char)) return true;
+    kept += 1;
+    return kept <= MAX_COMBINING_MARKS;
+  }).join('');
+}
+
 /** Draft text for the name field: code-point cap, no lone surrogates. */
 export function clampTeamNameDraft(value: string): string {
   return stripUnpairedSurrogates(limitCodePoints(value, MAX_TEAM_NAME_LENGTH));
@@ -56,7 +79,14 @@ export function parseLiveTeamName(input: unknown): string | null {
   if (UNSAFE_CHARS.test(normalized) || UNPAIRED_SURROGATE.test(normalized)) return null;
   const trimmed = normalized.trim();
   const length = codePointLength(trimmed);
-  if (length === 0 || length > MAX_LIVE_TEAM_NAME_LENGTH) return null;
+  if (length === 0 || length > MAX_TEAM_NAME_LENGTH) return null;
+  INVISIBLE_NAME.lastIndex = 0;
+  if (INVISIBLE_NAME.test(trimmed)) return null;
+  const withoutVariation = Array.from(trimmed).filter((char) => !isVariationSelector(char)).join('').trim();
+  if (codePointLength(withoutVariation) === 0) return null;
+  COMBINING_MARK.lastIndex = 0;
+  const marks = trimmed.match(COMBINING_MARK)?.filter((mark) => !isVariationSelector(mark)) ?? [];
+  if (marks.length > MAX_COMBINING_MARKS) return null;
   return trimmed;
 }
 
@@ -73,7 +103,10 @@ export function storedTeamName(input: string, team: TeamId): string {
 }
 
 export function sanitizeTeamName(input: string, team: TeamId): string {
-  const stripped = stripUnsafe(input.normalize('NFC').replace(/\u00A0/g, ' ')).trim();
+  INVISIBLE_NAME.lastIndex = 0;
+  const stripped = limitCombining(stripUnsafe(input.normalize('NFC').replace(/\u00A0/g, ' '))
+    .replace(INVISIBLE_NAME, ''))
+    .trim();
   const shortened = limitCodePoints(stripped, MAX_TEAM_NAME_LENGTH).trim();
   // A lone surrogate at the end can sit behind a space that trim has not seen yet.
   const cleaned = stripUnpairedSurrogates(shortened).trim();
@@ -82,11 +115,5 @@ export function sanitizeTeamName(input: string, team: TeamId): string {
 
 /** Fail closed for values already stored: do not trim or slice tampered data. */
 export function isValidStoredName(value: unknown): value is string {
-  if (typeof value !== 'string') return false;
-  if (codePointLength(value) === 0 || codePointLength(value) > MAX_TEAM_NAME_LENGTH) return false;
-  if (value !== value.normalize('NFC') || value !== value.trim()) return false;
-  UNSAFE_CHARS.lastIndex = 0;
-  UNPAIRED_SURROGATE.lastIndex = 0;
-  if (UNSAFE_CHARS.test(value) || UNPAIRED_SURROGATE.test(value)) return false;
-  return true;
+  return typeof value === 'string' && parseLiveTeamName(value) === value;
 }

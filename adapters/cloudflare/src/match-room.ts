@@ -274,6 +274,11 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       this.reject(ws, 'not_applied', record.eventId);
       return;
     }
+    const rawEvent = record.event;
+    if (typeof rawEvent === 'object' && rawEvent !== null && (rawEvent as { type?: unknown }).type === 'team/rename') {
+      this.reject(ws, 'not_applied', record.eventId);
+      return;
+    }
     const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, state.tokenHash));
     if (!invite) {
       this.reject(ws, 'bad_token', record.eventId);

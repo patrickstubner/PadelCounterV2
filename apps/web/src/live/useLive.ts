@@ -549,10 +549,8 @@ export function useLive(
           queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
           if (notice.seq <= nameSeq.current) return;
           nameSeq.current = notice.seq;
-          if (!seenRef.current.has(notice.eventId)) {
-            seenRef.current.add(notice.eventId);
-            applyRef.current({ type: 'team/rename', team: notice.team, name: notice.name, at: Date.now() });
-          }
+          seenRef.current.add(notice.eventId);
+          applyRef.current({ type: 'team/rename', team: notice.team, name: notice.name, at: Date.now() });
           return;
         }
         if (notice.kind === 'log') {
@@ -812,6 +810,8 @@ export function useLive(
       ? body.expiresAt
       : Date.now() + JOIN_TOKEN_TTL_MS;
     rememberInvite(body.token, expiresAt);
+    setError(null);
+    setJoinError(null);
     const page = typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href;
     setQr(joinLink(page, body.token));
   };

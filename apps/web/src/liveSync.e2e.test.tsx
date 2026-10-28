@@ -23,6 +23,7 @@ class FakeSocket {
   static dropped = false;
   /** Later hellos stay quiet unless a test needs the court to become live again. */
   static snapshotMode: 'first' | 'every' = 'first';
+  static echoRename = true;
   url: string;
   readyState = 0;
   onopen: ((event: Event) => void) | null = null;
@@ -63,6 +64,7 @@ class FakeSocket {
       return;
     }
     if (parsed.type === 'team_renamed') {
+      if (!FakeSocket.echoRename) return;
       queueMicrotask(() => {
         this.onmessage?.({
           data: JSON.stringify({ ...parsed, seq: (parsed as { seq?: number }).seq ?? 1 }),
@@ -133,6 +135,7 @@ describe('live socket reconnect', () => {
     FakeSocket.eventMode = 'echo';
     FakeSocket.dropped = false;
     FakeSocket.snapshotMode = 'first';
+    FakeSocket.echoRename = true;
     joins = 0;
     visible = 'visible';
     localStorage.clear();
@@ -496,5 +499,56 @@ describe('live socket reconnect', () => {
     });
     expect(document.body.textContent).toContain('Name A · Lobos');
     expect(document.body.textContent).not.toContain('<b>');
+  });
+
+  it('applies this phone’s own rename when a later sequence confirms it', async () => {
+    FakeSocket.echoRename = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: TICKET }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('.team-a .team-name')?.click();
+    });
+    const input = document.querySelector<HTMLInputElement>('.team-name-input');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'Mine');
+      input?.dispatchEvent(new Event('input', { bubbles: true }));
+      input?.blur();
+    });
+    expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Mine');
+    const socket = FakeSocket.sockets.at(-1);
+    const sent = socket?.sent.map((line) => JSON.parse(line) as { type?: string; eventId?: string; name?: string })
+      .find((item) => item.type === 'team_renamed');
+    expect(sent?.eventId).toBeTruthy();
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          type: 'team_renamed',
+          eventId: '00000000-0000-4000-8000-0000000000e1',
+          team: 'A',
+          name: 'Theirs',
+          seq: 1,
+        }),
+      });
+    });
+    expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Theirs');
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          type: 'team_renamed',
+          eventId: sent?.eventId,
+          team: 'A',
+          name: 'Mine',
+          seq: 2,
+        }),
+      });
+    });
+    expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Mine');
   });
 });
