@@ -81,7 +81,11 @@ pnpm exec wrangler secret put QUOTA_HMAC_KEY --env staging
 pnpm exec wrangler secret put QUOTA_HMAC_KEY --env production
 ```
 
-Use the same value on both workers if both should accept the same phones, or two values if the environments must not share counters. The worker refuses a create and a join with `503 not_configured` until the secret exists. `.dev.vars.example` names the key and has no value. Local `wrangler dev` reads `.dev.vars`, which is gitignored.
+Use the same value on both workers if both should accept the same phones, or two values if the environments must not share counters. The value must be at least 32 characters. The worker refuses a create and a join with `503 not_configured` until the secret exists. `.dev.vars.example` names the key and has no value. Local `wrangler dev` reads `.dev.vars`, which is gitignored.
+
+Also store that same value as the GitHub environment secret `QUOTA_HMAC_KEY` on `staging` and on `production`. The deploy check reads only its length. It exits if the value is missing or shorter than 32 characters, and it does not print the value.
+
+Replacing `QUOTA_HMAC_KEY` makes every open short code and every quota counter stop matching, because those rows are an HMAC of this secret. After a rotation, set the new value with `wrangler secret put` and update the GitHub environment secret to the same value. Phones need a new QR code or a new short code. Do not write the old value or the new value into a log, a workflow output, or this file.
 
 ## 7. GitHub environment secrets
 

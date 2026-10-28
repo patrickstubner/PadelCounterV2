@@ -20,7 +20,7 @@ There is no account. A phone that holds a valid, unexpired player token can read
 
 The role is `'player' | 'spectator'` and is stored with the token hash. `canPerform` denies every action to a spectator, including a forged `host: true`. `decideJoin` rejects a spectator even when the room is empty. `issueInvite` refuses to create a spectator token. Spectator QR codes are not built. The checks exist so a later read-only code can be added without a new permission model.
 
-At most 4 admitted player sockets are allowed, including the creator. The Durable Object counts sockets that have already completed hello, excluding the socket being admitted, and calls `decideJoin`. The fifth socket is sent `{ type: 'error', code: 'match_full' }` and closed. The sentence the UI shows is the fixed string “This match already has 4 players.” Disconnecting frees a place. The same QR token may be used by more than one phone; the cap is connections, not token redemptions.
+At most 4 admitted player sockets are allowed, including the creator. The Durable Object counts sockets that have already completed hello, excluding the socket being admitted, and calls `decideJoin`. The fifth socket is sent `{ type: 'error', code: 'match_full' }` and closed. The sentence the UI shows is the fixed string “This match is full.” Disconnecting frees a place. The same QR token may be used by more than one phone; the cap is connections, not token redemptions.
 
 ## Controls in this scaffold
 
@@ -285,6 +285,15 @@ Production deploy aborted with `production environment needs a required reviewer
 - The code is 8 symbols from a 31-character alphabet with no 0, O, 1, I, or L, shown as `XXXX-XXXX`. `31^8 = 852,891,037,441` (about 2^39.6). A random byte is used only when it is below 248, so the symbol is not biased. The code lasts as long as the player invite, 2 hours, which is 120 minutes. Every attempt, hit or miss, is counted before the code is read. One IPv4 address, or one IPv6 /64, may make 10 attempts per minute. Over those 2 hours that is 1,200 guesses. `1200 / 31^8` is about `1.4e-9`. Ten is under the isolate route cap of 20, so a court can still join, and past that cap the answer is 429 for every code, including a valid one, so the status does not reveal a hit. A global counter records attempts and alarms at 10,000 per minute. It does not reject, so one network cannot lock the code for everyone. `POST /join` with a code returns the player token and the websocket ticket together, so a join is two limited requests (the code, then the socket) rather than three. The code is stored as an HMAC of the server secret, not a plain SHA-256. The raw code and the secret are not written to a log. D1 stores that HMAC, plus the hash of the current player invite and the match id. The code is not derived from the token or the match id.
 - Typing the code mints at most 8 device tokens for that match. The same device replaces its previous token instead of adding another, and that mint uses the same per-device join quota as a bearer join. The 4 player cap is unchanged. New code, and End match, revoke the short code and the player invites. A phone still on an older build can join with the QR link.
 - Creating a live match runs the log through replay and then `parseLiveTeamName`. A name that came from a rename is included. Extra marks beyond four on one character are removed before the match is stored, so the snapshot does not keep the stack. A name that already fits is unchanged.
+
+## Review 18, 2026-10-28
+
+- A device token is granted inside one Durable Object transaction, and the D1 insert is one statement that checks the count of eight. Parallel redeems cannot add a ninth active token.
+- When this network has used its code attempts, the 429 says to use the QR link. That limit is unchanged.
+- The global counter is recorded in D1. When it reaches 10,000 in a minute the worker logs the fixed line `short code attempts recorded`. The line has no address and no code.
+- A successful code or scan removes the Join match history entry, so Back does not open the dialog again.
+- The deploy check refuses `QUOTA_HMAC_KEY` when it is missing or shorter than 32 characters, and it does not print the value. Replacing that secret invalidates open short codes and quota counters. `docs/DEPLOY.md` says so.
+- A code token that finds the court already full is revoked, so the slot can be used again. The phone is told “This match is full.”
 
 ## Out of scope
 

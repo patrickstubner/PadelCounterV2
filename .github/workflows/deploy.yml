@@ -57,6 +57,7 @@ jobs:
           ACCOUNT_FROM_VARS: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          QUOTA_HMAC_KEY: ${{ secrets.QUOTA_HMAC_KEY }}
         run: |
           account="${CLOUDFLARE_ACCOUNT_ID:-$ACCOUNT_FROM_VARS}"
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$account" ]; then
@@ -113,6 +114,7 @@ jobs:
           ACCOUNT_FROM_VARS: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          QUOTA_HMAC_KEY: ${{ secrets.QUOTA_HMAC_KEY }}
         run: |
           account="${CLOUDFLARE_ACCOUNT_ID:-$ACCOUNT_FROM_VARS}"
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$account" ]; then

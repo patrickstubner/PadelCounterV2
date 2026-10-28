@@ -460,7 +460,7 @@ describe('short match codes', () => {
     }
     const blocked = await redeem(invited.code, 'd01010101', samePrefix);
     expect(blocked.status).toBe(429);
-    expect(((await blocked.json()) as { error?: string }).error).toBe('slow_down');
+    expect(await blocked.json()).toEqual({ error: 'code_limited', message: ROOM_MESSAGES.code_limited });
     const other = await redeem(invited.code, 'd01010101', '2001:db8:9:9::1');
     expect(other.status).toBe(201);
   });
@@ -510,6 +510,56 @@ describe('short match codes', () => {
       'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL',
     ).bind(invited.matchId).first();
     expect(minted?.n).toBe(MAX_MINTED_TOKENS);
+  });
+
+  it('keeps the token cap when many devices redeem at the same time', async () => {
+    const invited = await issuedCode('dbb000001');
+    const many = await Promise.all(Array.from({ length: 20 }, (_, n) => {
+      const device = `d${(n + 1).toString(16).padStart(8, 'b')}`;
+      return redeem(invited.code, device);
+    }));
+    const statuses = many.map((response) => response.status);
+    expect(statuses.filter((status) => status === 201)).toHaveLength(MAX_MINTED_TOKENS);
+    const minted = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL',
+    ).bind(invited.matchId).first();
+    expect(minted?.n).toBe(MAX_MINTED_TOKENS);
+  });
+
+  it('keeps one row when one device redeems many times at once', async () => {
+    const invited = await issuedCode('dcc000001');
+    const same = await Promise.all(Array.from({ length: 8 }, () => redeem(invited.code, 'dcccccccc')));
+    expect(same.filter((response) => response.status === 201).length).toBeGreaterThan(0);
+    const one = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
+    ).bind(invited.matchId, 'dcccccccc').first();
+    expect(one?.n).toBe(1);
+  });
+
+  it('frees a code token when the court is full', async () => {
+    const invited = await issuedCode('daa000001');
+    await connect(invited.hostToken, 'daa000001');
+    await connect(invited.token, 'daa000002');
+    await connect(invited.token, 'daa000003');
+    await connect(invited.token, 'daa000004');
+    const redeemed = await redeem(invited.code, 'daa000005');
+    expect(redeemed.status).toBe(201);
+    const body = (await redeemed.json()) as { token: string; ticket: string };
+    const response = await call(`/ws/${body.ticket}`, { headers: { upgrade: 'websocket' } });
+    const ws = response.webSocket;
+    if (!ws) throw new Error('socket missing');
+    ws.accept();
+    const messages = inbox(ws);
+    ws.send(JSON.stringify({ type: 'hello', protocol: 1, token: body.token, device: 'daa000005' }));
+    const refused = await messages.waitFor((message) => message.type === 'error');
+    expect(refused.code).toBe('match_full');
+    expect(ROOM_MESSAGES.match_full).toBe('This match is full.');
+    const left = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
+    ).bind(invited.matchId, 'daa000005').first();
+    expect(left?.n).toBe(0);
+    const again = await redeem(invited.code, 'daa000006');
+    expect(again.status).toBe(201);
   });
 
   it('revokes the code and the invite when the match ends', async () => {

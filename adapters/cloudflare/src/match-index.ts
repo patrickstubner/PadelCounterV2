@@ -1,6 +1,7 @@
 import {
   CODE_ALARM_GLOBAL,
   CODE_ATTEMPTS_PER_PREFIX,
+  MAX_MINTED_TOKENS,
   HISTORY_RETAIN_MS,
   JOINS_PER_DEVICE,
   JOINS_PER_NETWORK,
@@ -31,6 +32,11 @@ const FIND_MINTED =
   'SELECT token_hash, expires_at FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL AND expires_at > ?';
 const COUNT_MINTED =
   'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND expires_at > ?';
+const REVOKE_DEVICE =
+  'UPDATE credentials SET revoked_at = ? WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL';
+const INSERT_MINTED =
+  'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at, device_id) SELECT ?, ?, 0, ?, NULL, ? WHERE (SELECT COUNT(*) FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND expires_at > ? AND device_id != ?) < ?';
+const SELECT_JOIN = 'SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?';
 const REVOKE_SHARED_CREDS =
   'UPDATE credentials SET revoked_at = ? WHERE match_id = ? AND host = 0 AND revoked_at IS NULL';
 const FIND_CREDENTIAL =
@@ -104,7 +110,8 @@ export interface MatchIndex {
   takeJoinDevice(deviceHash: string, now: number): Promise<{ ok: true } | { ok: false; reason: 'device' }>;
   noteJoinFailure(ipHash: string, now: number): Promise<{ ok: true } | { ok: false; reason: 'network' }>;
   takeCodeAttempt(ipHash: string, now: number): Promise<{ ok: true } | { ok: false }>;
-  noteCodeAlarm(globalHash: string, now: number): Promise<void>;
+  noteCodeAlarm(globalHash: string, now: number): Promise<boolean>;
+  claimMinted(row: CredentialRow, now: number): Promise<boolean>;
   findJoinCode(codeHash: string): Promise<JoinCodeRow | null>;
   countMinted(matchId: string, now: number): Promise<number>;
   findMinted(matchId: string, deviceId: string, now: number): Promise<{ tokenHash: string } | null>;
@@ -224,7 +231,28 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
         await db.prepare(UPSERT_JOIN).bind(globalHash, window, CODE_ALARM_GLOBAL).run();
       } catch (error) {
         if (!isQuotaCap(error)) throw error;
+        return false;
       }
+      const row = await db.prepare(SELECT_JOIN).bind(globalHash, window).first();
+      return integer(row?.n) === CODE_ALARM_GLOBAL;
+    },
+    async claimMinted(row, now) {
+      if (!row.deviceId) return false;
+      const results = await db.batch([
+        db.prepare(REVOKE_DEVICE).bind(now, row.matchId, row.deviceId),
+        db.prepare(INSERT_MINTED).bind(
+          row.tokenHash,
+          row.matchId,
+          row.expiresAt,
+          row.deviceId,
+          row.matchId,
+          now,
+          row.deviceId,
+          MAX_MINTED_TOKENS,
+        ),
+      ]);
+      const inserted = (results as readonly { meta?: { changes?: number } }[] | undefined)?.[1];
+      return (inserted?.meta?.changes ?? 0) > 0;
     },
     async findJoinCode(codeHash) {
       const row = await db.prepare(FIND_CODE).bind(codeHash).first();

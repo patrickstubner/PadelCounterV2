@@ -2,7 +2,6 @@ import {
   HOST_TOKEN_TTL_MS,
   JOIN_TOKEN_TTL_MS,
   ROOM_MESSAGES,
-  MAX_MINTED_TOKENS,
   assignMatchId,
   joinCodeCompact,
   joinWindow,
@@ -423,10 +422,12 @@ function joinCodeRejected(): Response {
 
 function codeLimited(): Response {
   return Response.json(
-    { error: 'slow_down', message: ROOM_MESSAGES.slow_down },
+    { error: 'code_limited', message: ROOM_MESSAGES.code_limited },
     { status: 429, headers: { 'cache-control': 'no-store' } },
   );
 }
+
+const CODE_ALARM_LOG = 'short code attempts recorded';
 
 async function redeemJoinCode(request: Request, env: ServerEnv, device: string, rawCode: string): Promise<Response> {
   const secret = env.QUOTA_HMAC_KEY;
@@ -437,7 +438,8 @@ async function redeemJoinCode(request: Request, env: ServerEnv, device: string, 
   const prefix = networkPrefix(clientAddress(request));
   const ipHash = await quotaMac(secret, 'code-ip', prefix, window);
   const attempt = await index.takeCodeAttempt(ipHash, now);
-  await index.noteCodeAlarm(await quotaMac(secret, 'code-global', 'all', window), now);
+  const alarmed = await index.noteCodeAlarm(await quotaMac(secret, 'code-global', 'all', window), now);
+  if (alarmed) console.log(CODE_ALARM_LOG);
   if (!attempt.ok) return codeLimited();
   const normalized = normalizeJoinCode(rawCode);
   const codeHash = await quotaMac(secret, 'join-code', normalized ? joinCodeCompact(normalized) : 'invalid', 'code');
@@ -466,30 +468,30 @@ async function redeemJoinCode(request: Request, env: ServerEnv, device: string, 
       { status: 429, headers: { 'cache-control': 'no-store' } },
     );
   }
-  const existing = await index.findMinted(credential.matchId, device, now);
-  const minted = await index.countMinted(credential.matchId, now);
-  if (!existing && minted >= MAX_MINTED_TOKENS) return joinCodeRejected();
-  if (existing) await index.revokeCredential(existing.tokenHash, now);
   const token = randomToken();
+  const tokenHash = await sha256Hex(token);
   const stub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(credential.matchId));
   const added = await stub.fetch('https://match.internal/player-invite', {
     method: 'POST',
-    body: JSON.stringify({
-      token,
-      deviceId: device,
-      expiresAt: credential.expiresAt,
-      ...(existing ? { replaceHash: existing.tokenHash } : {}),
-    }),
+    body: JSON.stringify({ token, deviceId: device, expiresAt: credential.expiresAt }),
   });
+  if (added.status === 409) return joinCodeRejected();
   if (!added.ok) return Response.json({ error: 'unavailable' }, { status: 503 });
-  await index.insertCredential({
-    tokenHash: await sha256Hex(token),
+  const claimed = await index.claimMinted({
+    tokenHash,
     matchId: credential.matchId,
     host: false,
     expiresAt: credential.expiresAt,
     revokedAt: null,
     deviceId: device,
-  });
+  }, now);
+  if (!claimed) {
+    await stub.fetch('https://match.internal/revoke-minted', {
+      method: 'POST',
+      body: JSON.stringify({ tokenHash }),
+    });
+    return joinCodeRejected();
+  }
   const ticket = randomToken();
   const ticketExpiresAt = now + TICKET_TTL_MS;
   await index.putTicket(await sha256Hex(ticket), credential.matchId, ticketExpiresAt);

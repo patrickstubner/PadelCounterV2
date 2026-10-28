@@ -193,6 +193,23 @@ export function markActivityTouch(sql: RoomSql, now: number): void {
   sql.exec('UPDATE meta SET activity_touch = ? WHERE id = 1', now);
 }
 
+/** One grant for a device token. The count and the insert stay in the caller's transaction. */
+export function grantMintedInvite(sql: RoomSql, invite: InviteRow, now: number, max: number): 'granted' | 'full' {
+  const rows = sql.exec(
+    'SELECT token_hash, device_id FROM invites WHERE host = 0 AND revoked_at IS NULL AND device_id IS NOT NULL AND expires_at > ?',
+    now,
+  ).toArray();
+  const deviceId = invite.deviceId ?? '';
+  const mine = rows.filter((row) => row.device_id === deviceId && typeof row.token_hash === 'string');
+  const others = rows.length - mine.length;
+  if (mine.length === 0 && others >= max) return 'full';
+  for (const row of mine) {
+    sql.exec('UPDATE invites SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL', now, row.token_hash);
+  }
+  insertInvite(sql, invite);
+  return 'granted';
+}
+
 export function revokeInviteHash(sql: RoomSql, tokenHash: string, now: number): void {
   sql.exec('UPDATE invites SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL', now, tokenHash);
 }

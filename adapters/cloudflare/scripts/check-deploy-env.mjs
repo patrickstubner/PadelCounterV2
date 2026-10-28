@@ -98,6 +98,12 @@ if (name !== 'production' && name !== 'staging') {
   process.exit(1);
 }
 
+const quotaKey = process.env.QUOTA_HMAC_KEY ?? '';
+if (quotaKey.length < 32) {
+  console.error('QUOTA_HMAC_KEY is missing or shorter than 32 characters');
+  process.exit(1);
+}
+
 const body = await loadEnvironment(name);
 if (name === 'production') {
   const policies = await loadBranchPolicies(name);

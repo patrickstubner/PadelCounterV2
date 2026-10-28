@@ -33,7 +33,7 @@ describe('four player limit', () => {
     expect(fifth.ok).toBe(false);
     if (!fifth.ok) {
       expect(fifth.code).toBe('match_full');
-      expect(fifth.message).toBe('This match already has 4 players.');
+      expect(fifth.message).toBe('This match is full.');
       expect(fifth.payload.message).toBe(ROOM_MESSAGES.match_full);
     }
   });

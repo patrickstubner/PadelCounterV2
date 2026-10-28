@@ -1,10 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
-import { connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
+import { MAX_MINTED_TOKENS, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
 import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange } from './room';
-import { ensureActivityColumn, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, revokeInviteHash, revokePlayerInvites, type RoomSql } from './store';
+import { ensureActivityColumn, grantMintedInvite, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, revokeInviteHash, revokePlayerInvites, type RoomSql } from './store';
 import { quotaMac, safeEqualHex, sha256Hex } from './tokens';
 
 /** Fixed scope. A minute in the MAC would split one address across two pending caps. */
@@ -74,6 +74,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       if (request.method === 'POST' && url.pathname === '/create') return this.create(request);
       if (request.method === 'POST' && url.pathname === '/invite') return this.invite(request);
       if (request.method === 'POST' && url.pathname === '/player-invite') return this.playerInvite(request);
+      if (request.method === 'POST' && url.pathname === '/revoke-minted') return this.revokeMinted(request);
       return json(404, { error: 'not_found' });
     } catch {
       return json(500, { error: 'unavailable' });
@@ -185,6 +186,18 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }).length;
     const result = helloPayload(room, tokenHash, connected, Date.now(), deviceId);
     if (!result.ok) {
+      if (result.code === 'match_full') {
+        const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, tokenHash));
+        if (invite?.deviceId) {
+          const now = Date.now();
+          revokeInviteHash(this.sql(), tokenHash, now);
+          try {
+            await d1MatchIndex(this.env.DB).revokeCredential(tokenHash, now);
+          } catch {
+            // The room invite is already revoked, so this phone cannot take the slot.
+          }
+        }
+      }
       this.reject(ws, result.code);
       return;
     }
@@ -443,18 +456,28 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       return json(400, { error: 'invalid_match' });
     }
     if (!readRoom(this.sql())) return json(404, { error: 'unavailable' });
-    if (typeof fields.replaceHash === 'string' && /^[0-9a-f]{64}$/.test(fields.replaceHash)) {
-      revokeInviteHash(this.sql(), fields.replaceHash, Date.now());
-    }
-    insertInvite(this.sql(), {
-      tokenHash: await sha256Hex(fields.token),
+    const expiresAt = fields.expiresAt;
+    const deviceId = fields.deviceId;
+    const tokenHash = await sha256Hex(fields.token);
+    const decision = this.ctx.storage.transactionSync(() => grantMintedInvite(this.sql(), {
+      tokenHash,
       role: 'player',
       host: false,
-      expiresAt: fields.expiresAt,
+      expiresAt,
       revokedAt: null,
-      deviceId: fields.deviceId,
-    });
+      deviceId,
+    }, Date.now(), MAX_MINTED_TOKENS));
+    if (decision === 'full') return json(409, { error: 'join_code' });
     return json(201, { ok: true });
+  }
+
+  private async revokeMinted(request: Request): Promise<Response> {
+    const body = await readBody(request, 200);
+    const tokenHash = body && typeof body === 'object' ? (body as { tokenHash?: unknown }).tokenHash : undefined;
+    if (typeof tokenHash !== 'string' || !/^[0-9a-f]{64}$/.test(tokenHash)) return json(400, { error: 'invalid_match' });
+    if (!readRoom(this.sql())) return json(404, { error: 'unavailable' });
+    revokeInviteHash(this.sql(), tokenHash, Date.now());
+    return json(200, { ok: true });
   }
 
   private async carryInvite(request: Request): Promise<Response> {

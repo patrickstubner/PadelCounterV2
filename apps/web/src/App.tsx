@@ -551,11 +551,11 @@ export function App() {
           pageHref={typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href}
           onCode={(code) => {
             void room.joinByCode(code).then((ok) => {
-              if (ok) setJoinOpen(false);
+              if (ok) closeJoin();
             });
           }}
           onToken={(token) => {
-            setJoinOpen(false);
+            closeJoin();
             room.connect(token);
           }}
           onClose={closeJoin}
