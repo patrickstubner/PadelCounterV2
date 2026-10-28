@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { sendMatchCode } from '../live/protocol';
 import { QrCode } from './QrCode';
 
 interface ConnectPageProps {
@@ -7,6 +8,7 @@ interface ConnectPageProps {
   readonly status: 'off' | 'connecting' | 'live';
   readonly players: number;
   readonly qr: string | null;
+  readonly code: string | null;
   readonly error: string | null;
   readonly onShare: () => void;
   readonly onRotate: () => void;
@@ -26,6 +28,7 @@ export function ConnectPage({
   status,
   players,
   qr,
+  code,
   error,
   onShare,
   onRotate,
@@ -35,6 +38,7 @@ export function ConnectPage({
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const [sent, setSent] = useState<'copied' | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -124,6 +128,27 @@ export function ConnectPage({
             <QrCode text={qr} />
             <p data-testid="qr-note">This code works for 2 hours.</p>
             <p data-testid="new-code-note">New code turns this code off and disconnects the phones that joined with it.</p>
+            {code ? (
+              <>
+                <p className="match-code" data-testid="match-code">{code}</p>
+                <button
+                  type="button"
+                  className="text-btn"
+                  data-testid="share-code"
+                  onClick={() => {
+                    void sendMatchCode(code, {
+                      share: typeof navigator.share === 'function' ? (data) => navigator.share(data) : undefined,
+                      clipboard: typeof navigator.clipboard?.writeText === 'function' ? navigator.clipboard : undefined,
+                    }).then((result) => {
+                      setSent(result === 'copied' ? 'copied' : null);
+                    });
+                  }}
+                >
+                  Send code
+                </button>
+                {sent === 'copied' ? <p data-testid="code-copied">Copied.</p> : null}
+              </>
+            ) : null}
           </>
         ) : null}
         <div className="connect-actions">

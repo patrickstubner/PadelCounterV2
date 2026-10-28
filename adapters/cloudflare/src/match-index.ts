@@ -1,4 +1,6 @@
 import {
+  CODE_FAILS_GLOBAL,
+  CODE_FAILS_PER_IP,
   HISTORY_RETAIN_MS,
   JOINS_PER_DEVICE,
   JOINS_PER_NETWORK,
@@ -34,6 +36,13 @@ const INSERT_TICKET = 'INSERT INTO tickets (ticket_hash, match_id, expires_at) V
 const DELETE_TICKET = 'DELETE FROM tickets WHERE ticket_hash = ? RETURNING match_id, expires_at';
 const DELETE_TICKETS = 'DELETE FROM tickets WHERE match_id = ?';
 const DELETE_EXPIRED_TICKETS = 'DELETE FROM tickets WHERE expires_at <= ?';
+const INSERT_CODE =
+  'INSERT INTO join_codes (code_hash, match_id, token_hash, expires_at, revoked_at) VALUES (?, ?, ?, ?, NULL)';
+const FIND_CODE =
+  'SELECT code_hash, match_id, token_hash, expires_at, revoked_at FROM join_codes WHERE code_hash = ?';
+const REVOKE_CODES = 'UPDATE join_codes SET revoked_at = ? WHERE match_id = ? AND revoked_at IS NULL';
+const DELETE_CODES = 'DELETE FROM join_codes WHERE match_id = ?';
+const DELETE_EXPIRED_CODES = 'DELETE FROM join_codes WHERE expires_at <= ?';
 const TOUCH_MATCH = 'UPDATE matches SET last_activity = ? WHERE id = ?';
 
 /** D1 history clock. The room writes this at most once per match per minute. */
@@ -67,6 +76,14 @@ export interface CredentialRow {
   readonly revokedAt: number | null;
 }
 
+export interface JoinCodeRow {
+  readonly codeHash: string;
+  readonly matchId: string;
+  readonly tokenHash: string;
+  readonly expiresAt: number;
+  readonly revokedAt: number | null;
+}
+
 export type QuotaReason = 'device' | 'network';
 
 export interface MatchIndex {
@@ -78,6 +95,9 @@ export interface MatchIndex {
   releaseCreateQuota(deviceHash: string, ipHash: string, now: number): Promise<void>;
   takeJoinDevice(deviceHash: string, now: number): Promise<{ ok: true } | { ok: false; reason: 'device' }>;
   noteJoinFailure(ipHash: string, now: number): Promise<{ ok: true } | { ok: false; reason: 'network' }>;
+  noteCodeFailure(ipHash: string, globalHash: string, now: number): Promise<{ ok: true } | { ok: false }>;
+  findJoinCode(codeHash: string): Promise<JoinCodeRow | null>;
+  putJoinCode(matchId: string, now: number, row: JoinCodeRow): Promise<void>;
   insertCredential(row: CredentialRow): Promise<void>;
   findCredential(tokenHash: string): Promise<CredentialRow | null>;
   replacePlayerCredential(matchId: string, now: number, row: CredentialRow): Promise<void>;
@@ -124,6 +144,7 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
     async remove(id) {
       await db.prepare(DELETE_CREDENTIALS).bind(id).run();
       await db.prepare(DELETE_TICKETS).bind(id).run();
+      await db.prepare(DELETE_CODES).bind(id).run();
       await db.prepare(DELETE_MATCH).bind(id).run();
     },
     async touchActivity(id, now) {
@@ -173,6 +194,42 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
         if (!isQuotaCap(error)) throw error;
         return { ok: false, reason: 'network' };
       }
+    },
+    async noteCodeFailure(ipHash, globalHash, now) {
+      const window = joinWindow(now);
+      try {
+        await db.batch([
+          db.prepare(UPSERT_JOIN).bind(ipHash, window, CODE_FAILS_PER_IP),
+          db.prepare(UPSERT_JOIN).bind(globalHash, window, CODE_FAILS_GLOBAL),
+        ]);
+        return { ok: true };
+      } catch (error) {
+        if (!isQuotaCap(error)) throw error;
+        return { ok: false };
+      }
+    },
+    async findJoinCode(codeHash) {
+      const row = await db.prepare(FIND_CODE).bind(codeHash).first();
+      if (!row || typeof row.code_hash !== 'string' || typeof row.match_id !== 'string' || typeof row.token_hash !== 'string') {
+        return null;
+      }
+      const expiresAt = integer(row.expires_at);
+      if (expiresAt === null) return null;
+      const revokedAt = row.revoked_at === null ? null : integer(row.revoked_at);
+      if (row.revoked_at !== null && revokedAt === null) return null;
+      return {
+        codeHash: row.code_hash,
+        matchId: row.match_id,
+        tokenHash: row.token_hash,
+        expiresAt,
+        revokedAt,
+      };
+    },
+    async putJoinCode(matchId, now, row) {
+      await db.batch([
+        db.prepare(REVOKE_CODES).bind(now, matchId),
+        db.prepare(INSERT_CODE).bind(row.codeHash, row.matchId, row.tokenHash, row.expiresAt),
+      ]);
     },
     async insertCredential(row) {
       await db
@@ -230,6 +287,7 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
       await db.batch([
         db.prepare(DELETE_OLD_QUOTA).bind(quotaDay(now - QUOTA_RETAIN_MS)),
         db.prepare(DELETE_EXPIRED_TICKETS).bind(now),
+        db.prepare(DELETE_EXPIRED_CODES).bind(now),
         db.prepare(DELETE_OLD_JOIN).bind(joinWindow(now - QUOTA_RETAIN_MS)),
       ]);
     },

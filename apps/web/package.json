@@ -1,6 +1,6 @@
 {
   "name": "@padel/web",
-  "version": "2.1.4",
+  "version": "2.2.0",
   "private": true,
   "description": "Padel Counter v2 court. Offline on this device, with a live QR share.",
   "license": "UNLICENSED",
@@ -16,6 +16,7 @@
   "dependencies": {
     "@padel/core": "workspace:*",
     "lottie-web": "5.13.0",
+    "qr": "0.7.2",
     "qrcode": "1.5.4",
     "react": "19.3.0",
     "react-dom": "19.3.0"

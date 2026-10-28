@@ -278,6 +278,14 @@ Production deploy aborted with `production environment needs a required reviewer
 - A local name that is only variation selectors becomes Team A or Team B. The server already refuses that name.
 - A phone still on 2.1.3 sends a live rename as `{ type: 'event', event: { type: 'team/rename' } }`. The server refuses that path. That phone can rename a team in a live match only after it updates.
 
+## Review 17, 2026-10-28
+
+- Join match can read a QR code with the camera. The camera starts only after Use camera. The stream stops when the dialog closes, when a code is read, and when the page is hidden. The browser’s BarcodeDetector is used when it exists. Otherwise the decoder is `qr` 0.7.2 (Paul Miller, MIT OR Apache-2.0, no dependencies). Snyk lists no known vulnerabilities for 0.7.2. It runs on the main thread from canvas pixels, so `media-src` stays `none` and `worker-src` stays `'self'`. A scanned value is kept only when it is a join link for this origin and this path, with the token in the fragment. Anything else shows “That code did not work.”
+- The host also sees a short code such as `K7M-42Q` and can send that text with the Web Share API. If sharing is missing, the same text is copied. The QR link remains.
+- The code is 6 symbols from a 31-character alphabet with no 0, O, 1, I, or L. `31^6 = 887,503,681` (about 2^29.7). A random byte is used only when it is below 248, so the symbol is not biased. The code lasts as long as the player invite, 2 hours, which is 120 minutes. Failed guesses are limited to 10 per minute for one address and 60 per minute for every address together. Over those 2 hours that is 1,200 guesses from one address and 7,200 guesses from every address. `1200 / 31^6` is about `1.4e-6`. `7200 / 31^6` is about `8.1e-6`. `POST /join` still has the Workers binding and the isolate limit in front of that. A wrong, expired, or revoked code returns the same sentence. The comparison is a full SHA-256 compare that does not stop at the first difference. The raw code is not written to a log. D1 stores only the hash, plus the hash of the current player invite and the match id. The code is not derived from the token or the match id.
+- Typing the code mints a new player token for that phone, with the same expiry, role player, and the same match. The 4 player cap is unchanged. New code revokes the short code and the tokens minted from it. A phone still on an older build can join with the QR link.
+- Creating a live match checks each base name with the same per-base mark rule as a rename. A stack of marks is refused. A name already stored on the phone is not rewritten by that check.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.

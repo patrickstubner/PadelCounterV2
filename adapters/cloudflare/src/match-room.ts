@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, replayScore, type Credential, type Role } from '@padel/core';
+import { acceptsLiveBaseName, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, replayScore, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
@@ -73,6 +73,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       if (request.method === 'POST' && url.pathname === '/notify') return this.notify(request);
       if (request.method === 'POST' && url.pathname === '/create') return this.create(request);
       if (request.method === 'POST' && url.pathname === '/invite') return this.invite(request);
+      if (request.method === 'POST' && url.pathname === '/player-invite') return this.playerInvite(request);
       return json(404, { error: 'not_found' });
     } catch {
       return json(500, { error: 'unavailable' });
@@ -348,6 +349,9 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const log = parseMatchLog((body as { log?: unknown }).log);
     const hostToken = (body as { hostToken?: unknown }).hostToken;
     if (!log || !isJoinToken(hostToken)) return json(400, { error: 'invalid_match' });
+    if (!acceptsLiveBaseName(log.base.teams.a.name) || !acceptsLiveBaseName(log.base.teams.b.name)) {
+      return json(400, { error: 'invalid_match' });
+    }
     const now = Date.now();
     const created = createRoom(log, await sha256Hex(hostToken), now);
     insertRoom(this.sql(), created.record);
@@ -418,6 +422,29 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       joinedHashes: [...new Set(joined.filter((row) => row.playerId !== 'host' && row.deviceId).map((row) => row.tokenHash))],
       invites: invitesForCarry(room.invites, joined),
     });
+  }
+
+  private async playerInvite(request: Request): Promise<Response> {
+    const body = await readBody(request, 2000);
+    const fields = body && typeof body === 'object'
+      ? (body as { token?: unknown; deviceId?: unknown; expiresAt?: unknown })
+      : {};
+    if (!isJoinToken(fields.token) || typeof fields.expiresAt !== 'number' || !Number.isInteger(fields.expiresAt)) {
+      return json(400, { error: 'invalid_match' });
+    }
+    if (typeof fields.deviceId !== 'string' || !/^d[a-f0-9]{8}$/.test(fields.deviceId)) {
+      return json(400, { error: 'invalid_match' });
+    }
+    if (!readRoom(this.sql())) return json(404, { error: 'unavailable' });
+    insertInvite(this.sql(), {
+      tokenHash: await sha256Hex(fields.token),
+      role: 'player',
+      host: false,
+      expiresAt: fields.expiresAt,
+      revokedAt: null,
+      deviceId: fields.deviceId,
+    });
+    return json(201, { ok: true });
   }
 
   private async carryInvite(request: Request): Promise<Response> {

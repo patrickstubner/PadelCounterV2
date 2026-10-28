@@ -22,7 +22,7 @@ export async function hmacSha256Hex(secret: string, message: string): Promise<st
  */
 export async function quotaMac(
   secret: string,
-  kind: 'device' | 'ip' | 'join-device' | 'join-ip' | 'rate-ip' | 'socket-ip',
+  kind: 'device' | 'ip' | 'join-device' | 'join-ip' | 'rate-ip' | 'socket-ip' | 'code-ip' | 'code-global',
   subject: string,
   day: string,
 ): Promise<string> {

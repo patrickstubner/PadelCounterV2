@@ -24,6 +24,7 @@ export {
   UNSAFE_CHARS,
   MAX_LIVE_TEAM_NAME_LENGTH,
   clampTeamNameDraft,
+  acceptsLiveBaseName,
   codePointLength,
   isValidStoredName,
   liveTeamSide,
@@ -60,6 +61,16 @@ export { MAX_EVENTS, MAX_RAW_LENGTH, parseMatchLog, parseStoredEvent } from './p
 export type { MatchLog } from './parse';
 export { actionForEvent, canPerform, isRole } from './access';
 export type { Credential, MatchAction, Role } from './access';
+export {
+  CODE_FAILS_GLOBAL,
+  CODE_FAILS_PER_IP,
+  JOIN_CODE_ALPHABET,
+  JOIN_CODE_LENGTH,
+  JOIN_CODE_SPACE,
+  joinCodeCompact,
+  normalizeJoinCode,
+  randomJoinCode,
+} from './joinCode';
 export {
   HOST_TOKEN_TTL_MS,
   JOIN_TOKEN_BYTES,

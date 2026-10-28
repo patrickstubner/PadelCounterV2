@@ -30,7 +30,7 @@ export interface InviteRow {
   readonly host: boolean;
   readonly expiresAt: number;
   readonly revokedAt: number | null;
-  /** Set only for a reconnect invite. A QR invite leaves this empty. */
+  /** Set when this invite belongs to one phone. A shared QR invite leaves this empty. */
   readonly deviceId?: string | null;
 }
 

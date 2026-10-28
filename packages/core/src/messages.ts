@@ -3,6 +3,7 @@ export const ROOM_MESSAGES = {
   match_full: 'This match already has 4 players.',
   expired: 'This code has expired. Ask for a new one.',
   bad_token: 'This code is not valid.',
+  join_code: 'That code did not work.',
   revoked: 'This code is no longer valid. Ask for a new one.',
   spectator_not_available: 'View-only links are not available yet.',
   forbidden: 'You cannot change the score from this connection.',

@@ -125,6 +125,11 @@ export function sanitizeTeamName(input: string, team: TeamId): string {
   return cleaned;
 }
 
+/** A base name for a new live match. The per-base mark rule applies here, as it does for a rename. */
+export function acceptsLiveBaseName(value: unknown): value is string {
+  return typeof value === 'string' && parseLiveTeamName(value) === value;
+}
+
 /**
  * Fail closed for values already stored: do not trim, slice, or rewrite them.
  * The filler and mark rules apply to a new name only, so this stays as loose as the check on main.

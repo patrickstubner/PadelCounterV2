@@ -58,6 +58,8 @@ describe('shipped source stays local and text-only', () => {
     expect(html).not.toContain(`${PAGE_BASE}/`);
     expect(html).toContain('<html lang="en">');
     expect(html).toContain('Content-Security-Policy');
+    expect(html).toContain("media-src 'none'");
+    expect(html).toContain("worker-src 'self'");
     expect(html).not.toContain('unsafe-inline');
     expect(html).not.toContain('unsafe-eval');
     const rsbuild = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');

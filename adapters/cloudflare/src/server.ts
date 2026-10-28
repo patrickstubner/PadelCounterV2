@@ -2,22 +2,26 @@ import {
   HOST_TOKEN_TTL_MS,
   JOIN_TOKEN_TTL_MS,
   ROOM_MESSAGES,
+  acceptsLiveBaseName,
   assignMatchId,
+  joinCodeCompact,
   joinWindow,
   carryTokenHashes,
   createMatchId,
   isJoinToken,
   isRoomCode,
+  normalizeJoinCode,
   offerReconnect,
   parseMatchLog,
   quotaDay,
+  randomJoinCode,
   type Role,
 } from '@padel/core';
 import { corsHeaders, isAllowedOrigin } from './cors';
 import { clientAddress, clientIpHeaders, d1MatchIndex, isIdConflict, type D1Like, type MatchIndex } from './match-index';
 import { takeJoinFailure, takeMatchRoute } from './rate';
 import { classifyPath, limitsMatchRoute, matchIdFrom, ticketFrom } from './routes';
-import { quotaMac, randomToken, sha256Hex } from './tokens';
+import { quotaMac, randomToken, safeEqualHex, sha256Hex } from './tokens';
 
 export interface RoomNamespace {
   idFromName(name: string): unknown;
@@ -146,6 +150,9 @@ async function createMatch(request: Request, env: ServerEnv): Promise<Response> 
   const record = body as { log?: unknown; device?: unknown; previousHostToken?: unknown; carry?: unknown };
   const parsed = parseMatchLog(record.log);
   if (!parsed) return Response.json({ error: 'invalid_match' }, { status: 400 });
+  if (!acceptsLiveBaseName(parsed.base.teams.a.name) || !acceptsLiveBaseName(parsed.base.teams.b.name)) {
+    return Response.json({ error: 'invalid_match' }, { status: 400 });
+  }
   if (typeof record.device !== 'string' || !DEVICE_ID.test(record.device)) {
     return Response.json({ error: 'invalid_match' }, { status: 400 });
   }
@@ -285,15 +292,34 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
   const payload = (await stored.json()) as { expiresAt?: number };
   const expiresAt = payload.expiresAt ?? Date.now() + JOIN_TOKEN_TTL_MS;
   const index = d1MatchIndex(env.DB);
-  await index.replacePlayerCredential(matchId, Date.now(), {
-    tokenHash: await sha256Hex(inviteToken),
+  const inviteHash = await sha256Hex(inviteToken);
+  const now = Date.now();
+  await index.replacePlayerCredential(matchId, now, {
+    tokenHash: inviteHash,
     matchId,
     host: false,
     expiresAt,
     revokedAt: null,
   });
+  let code: string | null = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const next = randomJoinCode();
+    try {
+      await index.putJoinCode(matchId, now, {
+        codeHash: await sha256Hex(joinCodeCompact(next)),
+        matchId,
+        tokenHash: inviteHash,
+        expiresAt,
+        revokedAt: null,
+      });
+      code = next;
+      break;
+    } catch (error) {
+      if (!isIdConflict(error) || attempt === 4) throw error;
+    }
+  }
   return Response.json(
-    { matchId, token: inviteToken, role: 'player', expiresAt },
+    { matchId, token: inviteToken, role: 'player', expiresAt, ...(code ? { code } : {}) },
     { status: 201, headers: { 'cache-control': 'no-store' } },
   );
 }
@@ -339,6 +365,8 @@ async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
   if (typeof device !== 'string' || !DEVICE_ID.test(device)) {
     return Response.json({ error: 'invalid_device', message: ROOM_MESSAGES.invalid_device }, { status: 400 });
   }
+  const rawCode = body && typeof body === 'object' ? (body as { code?: unknown }).code : undefined;
+  if (typeof rawCode === 'string' && !bearer(request)) return redeemJoinCode(request, env, device, rawCode);
   const secret = env.QUOTA_HMAC_KEY;
   if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
   const index = d1MatchIndex(env.DB);
@@ -376,6 +404,69 @@ async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
   const ticket = randomToken();
   await index.putTicket(await sha256Hex(ticket), credential.matchId, now + TICKET_TTL_MS);
   return Response.json({ ticket, expiresAt: now + TICKET_TTL_MS }, { status: 201, headers: { 'cache-control': 'no-store' } });
+}
+
+function joinCodeRejected(): Response {
+  return Response.json(
+    { error: 'join_code', message: ROOM_MESSAGES.join_code },
+    { status: 401, headers: { 'cache-control': 'no-store' } },
+  );
+}
+
+async function redeemJoinCode(request: Request, env: ServerEnv, device: string, rawCode: string): Promise<Response> {
+  const secret = env.QUOTA_HMAC_KEY;
+  if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
+  const index = d1MatchIndex(env.DB);
+  const now = Date.now();
+  const window = String(joinWindow(now));
+  const ipHash = await quotaMac(secret, 'code-ip', clientAddress(request), window);
+  const globalHash = await quotaMac(secret, 'code-global', 'all', window);
+  const normalized = normalizeJoinCode(rawCode);
+  const codeHash = await sha256Hex(normalized ? joinCodeCompact(normalized) : 'invalid');
+  const row = normalized ? await index.findJoinCode(codeHash) : null;
+  const codeMatches = safeEqualHex(row?.codeHash ?? '0'.repeat(64), codeHash);
+  const credential = row && codeMatches ? await index.findCredential(row.tokenHash) : null;
+  const live = Boolean(
+    credential &&
+    row &&
+    codeMatches &&
+    !credential.host &&
+    credential.revokedAt === null &&
+    now < credential.expiresAt &&
+    row.revokedAt === null &&
+    now < row.expiresAt &&
+    credential.matchId === row.matchId &&
+    safeEqualHex(credential.tokenHash, row.tokenHash) &&
+    (await index.find(credential.matchId)),
+  );
+  if (!live || !credential) {
+    const limited = await index.noteCodeFailure(ipHash, globalHash, now);
+    if (!limited.ok) {
+      return Response.json(
+        { error: 'slow_down', message: ROOM_MESSAGES.slow_down },
+        { status: 429, headers: { 'cache-control': 'no-store' } },
+      );
+    }
+    return joinCodeRejected();
+  }
+  const token = randomToken();
+  const stub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(credential.matchId));
+  const added = await stub.fetch('https://match.internal/player-invite', {
+    method: 'POST',
+    body: JSON.stringify({ token, deviceId: device, expiresAt: credential.expiresAt }),
+  });
+  if (!added.ok) return Response.json({ error: 'unavailable' }, { status: 503 });
+  await index.insertCredential({
+    tokenHash: await sha256Hex(token),
+    matchId: credential.matchId,
+    host: false,
+    expiresAt: credential.expiresAt,
+    revokedAt: null,
+  });
+  return Response.json(
+    { token, expiresAt: credential.expiresAt },
+    { status: 201, headers: { 'cache-control': 'no-store' } },
+  );
 }
 
 async function openSocket(request: Request, env: ServerEnv, pathname: string): Promise<Response> {
