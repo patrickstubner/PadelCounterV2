@@ -1,9 +1,25 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { isJoinToken, isRoomCode, ROOM_MESSAGES, type MatchEvent, type MatchLog } from '@padel/core';
+import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, JOIN_TOKEN_TTL_MS, ROOM_MESSAGES, type MatchEvent, type MatchLog } from '@padel/core';
 import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
-import { forgetJoinToken, interpretMessage, joinLink, shouldResumeSocket, socketUrl } from './protocol';
+import {
+  ACK_MS,
+  canonicalEventId,
+  forgetJoinToken,
+  HIDE_RECONNECT_MS,
+  interpretMessage,
+  isTerminalCode,
+  isTerminalMessage,
+  JOIN_KEY,
+  joinLink,
+  OFFLINE_COURT_MS,
+  reconnectDelayMs,
+  shouldResumeSocket,
+  socketUrl,
+  unackedAfterSnapshot,
+  type PendingLiveEvent,
+} from './protocol';
 
 export interface ShareOptions {
   readonly previousHostToken?: string;
@@ -12,7 +28,9 @@ export interface ShareOptions {
 
 export interface LiveController {
   readonly configured: boolean;
-  readonly status: 'off' | 'connecting' | 'live';
+  readonly status: 'off' | 'connecting' | 'live' | 'disconnected';
+  /** local is black, online is dark blue, offline is dark red after the debounce. */
+  readonly courtTone: 'local' | 'online' | 'offline';
   readonly host: boolean;
   readonly players: number;
   readonly qr: string | null;
@@ -56,6 +74,11 @@ function devApiOverride(): string {
   return typeof testApi === 'string' ? testApi.replace(/\/$/, '') : '';
 }
 
+interface PendingPoint extends PendingLiveEvent<MatchEvent> {
+  sentAt: number;
+  resent: boolean;
+}
+
 function apiBase(): string {
   const fromEnv = String(import.meta.env.PUBLIC_API_URL ?? '').replace(/\/$/, '');
   if (fromEnv) return fromEnv;
@@ -69,7 +92,8 @@ export function useLive(
   revertLive: (event: MatchEvent) => void,
 ): LiveController {
   const api = apiBase();
-  const [status, setStatus] = useState<'off' | 'connecting' | 'live'>('off');
+  const [status, setStatus] = useState<'off' | 'connecting' | 'live' | 'disconnected'>('off');
+  const [courtTone, setCourtTone] = useState<'local' | 'online' | 'offline'>('local');
   const [host, setHost] = useState(true);
   const [players, setPlayers] = useState(0);
   const [qr, setQr] = useState<string | null>(null);
@@ -85,46 +109,119 @@ export function useLive(
   const readyRef = useRef(false);
   const generation = useRef(0);
   const offerRef = useRef<string | null>(null);
-  const tokenRef = useRef<string | null>(null);
+  const tokenRef = useRef<{ token: string; expiresAt: number } | null>(null);
+  const matchRef = useRef('');
   const resumes = useRef(0);
   const opening = useRef(false);
+  const slowDown = useRef(false);
+  const hadLive = useRef(false);
+  const hiddenAt = useRef<number | null>(null);
+  const wakeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const offlineTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seenRef = useRef(new Set<string>());
-  const unackedRef = useRef<{ id: string; event: MatchEvent }[]>([]);
-  const queueRef = useRef<{ id: string; event: MatchEvent }[]>([]);
+  const unackedRef = useRef<PendingPoint[]>([]);
+  const queueRef = useRef<PendingPoint[]>([]);
   const wakeRef = useRef<() => void>(() => undefined);
   replaceRef.current = replaceLog;
   applyRef.current = applyLive;
   revertRef.current = revertLive;
 
+  const clearWake = () => {
+    if (wakeTimer.current !== null) {
+      clearTimeout(wakeTimer.current);
+      wakeTimer.current = null;
+    }
+  };
+
+  const dropToken = () => {
+    tokenRef.current = null;
+    try {
+      forgetJoinToken(sessionStorage);
+    } catch {
+      // Storage may be blocked.
+    }
+  };
+
+  const clearPending = () => {
+    queueRef.current = [];
+    unackedRef.current = [];
+  };
+
+  const rememberToken = (token: string, asJoin: boolean) => {
+    const now = Date.now();
+    const current = tokenRef.current;
+    if (current && current.token === token) {
+      if (current.expiresAt <= now) return null;
+      return current;
+    }
+    const next = { token, expiresAt: now + (asJoin ? JOIN_TOKEN_TTL_MS : HOST_TOKEN_TTL_MS) };
+    tokenRef.current = next;
+    try {
+      sessionStorage.setItem(JOIN_KEY, JSON.stringify(next));
+    } catch {
+      // The in-memory copy still reconnects this visit.
+    }
+    return next;
+  };
+
+  const showLocalCourt = () => {
+    hadLive.current = false;
+    if (offlineTimer.current !== null) {
+      clearTimeout(offlineTimer.current);
+      offlineTimer.current = null;
+    }
+    setCourtTone('local');
+  };
+
+  const sendPoint = (ws: WebSocket, item: PendingPoint) => {
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ws.send(JSON.stringify({ type: 'event', eventId: item.id, event: item.event }));
+    } catch {
+      return false;
+    }
+    item.sentAt = Date.now();
+    return true;
+  };
+
   const armSender = () => {
     liveRef.current = (courtEvent: MatchEvent) => {
-      const eventId = createMatchId();
+      const eventId = canonicalEventId(createMatchId());
+      const held = tokenRef.current;
+      if (!eventId || !held) return false;
+      const point: PendingPoint = {
+        id: eventId,
+        event: courtEvent,
+        token: held.token,
+        matchId: matchRef.current,
+        sentAt: Date.now(),
+        resent: false,
+      };
       seenRef.current.add(eventId);
-      unackedRef.current.push({ id: eventId, event: courtEvent });
+      unackedRef.current.push(point);
       applyRef.current(courtEvent);
       const ws = socketRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'event', eventId, event: courtEvent }));
-      } else {
-        queueRef.current.push({ id: eventId, event: courtEvent });
+      if (!ws || !sendPoint(ws, point)) {
+        queueRef.current.push(point);
+        if (hadLive.current) setStatus('connecting');
         wakeRef.current();
       }
       return true;
     };
   };
 
-  const flushQueue = (ws: WebSocket) => {
-    const pending = queueRef.current.splice(0);
-    for (const item of pending) {
-      if (seenRef.current.has(item.id)) {
-        unackedRef.current = unackedRef.current.filter((row) => row.id !== item.id);
-        continue;
-      }
-      if (ws.readyState !== WebSocket.OPEN) {
-        queueRef.current.push(item);
-        continue;
-      }
-      ws.send(JSON.stringify({ type: 'event', eventId: item.id, event: item.event }));
+  const resendOutstanding = (ws: WebSocket, matchId: string) => {
+    const token = tokenRef.current?.token ?? '';
+    const outstanding = unackedAfterSnapshot(
+      [...unackedRef.current, ...queueRef.current],
+      token,
+      matchId,
+      [...seenRef.current],
+    ).map((item): PendingPoint => ({ ...item, sentAt: Date.now(), resent: false }));
+    queueRef.current = [];
+    unackedRef.current = outstanding;
+    for (const item of outstanding) {
+      if (!sendPoint(ws, item)) queueRef.current.push(item);
     }
   };
 
@@ -134,42 +231,68 @@ export function useLive(
   };
 
   const disconnect = () => {
-    tokenRef.current = null;
-    queueRef.current = [];
+    dropToken();
+    clearPending();
+    clearWake();
+    showLocalCourt();
     generation.current += 1;
+    opening.current = false;
     liveRef.current = null;
     readyRef.current = false;
-    socketRef.current?.close();
+    const previous = socketRef.current;
     socketRef.current = null;
+    previous?.close();
     hostRef.current = null;
+    matchRef.current = '';
     setStatus('off');
     setHost(true);
     setQr(null);
     setPlayers(0);
+    setError(null);
     rememberOffer(null);
   };
 
   const open = (token: string, asJoin: boolean) => {
-    tokenRef.current = token;
-    if (opening.current) return;
+    const held = tokenRef.current;
+    if (held?.token === token && (opening.current || readyRef.current || socketRef.current)) return;
+    if (held && held.token !== token) {
+      clearPending();
+      generation.current += 1;
+      const previous = socketRef.current;
+      socketRef.current = null;
+      opening.current = false;
+      previous?.close();
+    }
+    if (!rememberToken(token, asJoin)) {
+      dropToken();
+      clearPending();
+      liveRef.current = null;
+      opening.current = false;
+      showLocalCourt();
+      setStatus('disconnected');
+      setError(ROOM_MESSAGES.expired);
+      setJoining(false);
+      return;
+    }
     opening.current = true;
     const fail = (message: string) => {
       opening.current = false;
-      setStatus('off');
+      if (message === ROOM_MESSAGES.slow_down) slowDown.current = true;
+      if (isTerminalMessage(message)) {
+        dropToken();
+        clearPending();
+        liveRef.current = null;
+        showLocalCourt();
+        setStatus('disconnected');
+        setError(message);
+        if (asJoin) setJoinError(message);
+        setJoining(false);
+        return;
+      }
+      setStatus(hadLive.current ? 'connecting' : 'off');
       if (asJoin) {
         setJoining(false);
         setJoinError(message);
-        const rejected = message === ROOM_MESSAGES.bad_token
-          || message === ROOM_MESSAGES.expired
-          || message === ROOM_MESSAGES.revoked;
-        if (rejected) {
-          tokenRef.current = null;
-          try {
-            forgetJoinToken(sessionStorage);
-          } catch {
-            // Storage may be blocked.
-          }
-        }
         return;
       }
       setError(message);
@@ -222,6 +345,7 @@ export function useLive(
         ws.send(JSON.stringify({ type: 'hello', protocol: 1, token, device: thisDevice() }));
       };
       ws.onmessage = (event) => {
+        if (socketRef.current !== ws) return;
         let parsed: unknown;
         try {
           parsed = JSON.parse(String(event.data)) as unknown;
@@ -233,24 +357,38 @@ export function useLive(
           rememberOffer(notice.token);
           return;
         }
+        if (notice.kind === 'pong') return;
         if (notice.kind === 'error') {
-          const failed = unackedRef.current.shift();
-          if (failed && !notice.close) {
-            seenRef.current.delete(failed.id);
-            revertRef.current(failed.event);
+          if (notice.code === 'slow_down') slowDown.current = true;
+          if (notice.eventId) {
+            const failed = unackedRef.current.find((item) => item.id === notice.eventId);
+            if (failed) {
+              unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
+              queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
+              seenRef.current.delete(notice.eventId);
+              revertRef.current(failed.event);
+            }
+          }
+          if (notice.code && isTerminalCode(notice.code)) {
+            dropToken();
+            clearPending();
+            liveRef.current = null;
+            readyRef.current = false;
+            opening.current = false;
+            showLocalCourt();
+            setJoining(false);
+            setStatus('disconnected');
+            setError(notice.message);
+            ws.close();
+            return;
           }
           if (asJoin && !readyRef.current) setJoinError(notice.message);
           else setError(notice.message);
           if (asJoin && !readyRef.current) setJoining(false);
           if (!notice.close) return;
           readyRef.current = false;
-          setStatus('off');
-          tokenRef.current = null;
-          try {
-            forgetJoinToken(sessionStorage);
-          } catch {
-            // Storage may be blocked. The in-memory token is already cleared.
-          }
+          opening.current = false;
+          setStatus(hadLive.current ? 'connecting' : 'off');
           ws.close();
           return;
         }
@@ -260,6 +398,7 @@ export function useLive(
         }
         if (notice.kind === 'delta') {
           unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
+          queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
           if (!seenRef.current.has(notice.eventId)) {
             seenRef.current.add(notice.eventId);
             applyRef.current(notice.event);
@@ -268,18 +407,24 @@ export function useLive(
           return;
         }
         if (notice.kind === 'log') {
+          const matchId = notice.log.base.matchId.toLowerCase();
+          matchRef.current = matchId;
+          seenRef.current = new Set(notice.eventIds.map((id) => id.toLowerCase()));
           replaceRef.current(notice.log);
-          seenRef.current = new Set(notice.eventIds);
           readyRef.current = true;
+          hadLive.current = true;
+          setCourtTone('online');
           setHost(notice.host);
           setPlayers(notice.players);
           setJoining(false);
           setJoinError(null);
           setStatus('live');
           resumes.current = 0;
+          slowDown.current = false;
           opening.current = false;
+          clearWake();
           armSender();
-          flushQueue(ws);
+          resendOutstanding(ws, matchId);
         }
       };
       ws.onerror = () => {
@@ -296,26 +441,60 @@ export function useLive(
         readyRef.current = false;
         opening.current = false;
         setJoining(false);
-        if (tokenRef.current) wakeRef.current();
+        if (!tokenRef.current) return;
+        if (hadLive.current) setStatus('connecting');
+        wakeRef.current();
       };
     })();
   };
 
   wakeRef.current = () => {
-    if (!tokenRef.current || resumes.current >= 4) return;
+    const held = tokenRef.current;
+    if (!held || wakeTimer.current !== null) return;
+    if (held.expiresAt <= Date.now()) {
+      dropToken();
+      clearPending();
+      liveRef.current = null;
+      showLocalCourt();
+      setStatus('disconnected');
+      setError(ROOM_MESSAGES.expired);
+      return;
+    }
     const ws = socketRef.current;
     const visibility = typeof document === 'undefined' ? 'visible' : document.visibilityState;
     if (!shouldResumeSocket(visibility, ws ? ws.readyState : null, opening.current)) return;
+    const delay = reconnectDelayMs(resumes.current, slowDown.current);
     resumes.current += 1;
-    const token = tokenRef.current;
-    open(token, false);
+    wakeTimer.current = setTimeout(() => {
+      wakeTimer.current = null;
+      const again = tokenRef.current;
+      if (!again) return;
+      open(again.token, false);
+    }, delay);
   };
 
   useEffect(() => {
     if (typeof document === 'undefined' || typeof window === 'undefined') return;
     const onShow = () => {
-      if (document.visibilityState === 'hidden') return;
+      if (document.visibilityState === 'hidden') {
+        hiddenAt.current = Date.now();
+        return;
+      }
+      const hiddenFor = hiddenAt.current === null ? 0 : Date.now() - hiddenAt.current;
+      hiddenAt.current = null;
       resumes.current = 0;
+      if (hiddenFor >= HIDE_RECONNECT_MS && socketRef.current && hadLive.current) {
+        const stale = socketRef.current;
+        socketRef.current = null;
+        opening.current = false;
+        readyRef.current = false;
+        setStatus('connecting');
+        try {
+          stale.close();
+        } catch {
+          // Already closed.
+        }
+      }
       wakeRef.current();
     };
     document.addEventListener('visibilitychange', onShow);
@@ -324,6 +503,73 @@ export function useLive(
       document.removeEventListener('visibilitychange', onShow);
       window.removeEventListener('pageshow', onShow);
     };
+  }, []);
+
+  useEffect(() => {
+    if (status === 'live') {
+      hadLive.current = true;
+      if (offlineTimer.current !== null) {
+        clearTimeout(offlineTimer.current);
+        offlineTimer.current = null;
+      }
+      setCourtTone('online');
+      return;
+    }
+    if (status !== 'connecting' || !hadLive.current) {
+      if (offlineTimer.current !== null) {
+        clearTimeout(offlineTimer.current);
+        offlineTimer.current = null;
+      }
+      setCourtTone('local');
+      return;
+    }
+    if (courtTone === 'offline' || offlineTimer.current !== null) return;
+    offlineTimer.current = setTimeout(() => {
+      offlineTimer.current = null;
+      setCourtTone('offline');
+    }, OFFLINE_COURT_MS);
+  }, [status, courtTone]);
+
+  useEffect(() => () => {
+    if (offlineTimer.current !== null) {
+      clearTimeout(offlineTimer.current);
+      offlineTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const timer = window.setInterval(() => {
+      const ws = socketRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const now = Date.now();
+      const stale = unackedRef.current.filter((item) => now - item.sentAt >= ACK_MS);
+      if (stale.length === 0) return;
+      const fresh = stale.filter((item) => !item.resent);
+      if (fresh.length > 0) {
+        for (const item of fresh) {
+          try {
+            ws.send(JSON.stringify({ type: 'ping' }));
+            ws.send(JSON.stringify({ type: 'event', eventId: item.id, event: item.event }));
+            item.resent = true;
+            item.sentAt = now;
+          } catch {
+            try {
+              ws.close();
+            } catch {
+              // The close handler resumes.
+            }
+          }
+        }
+        return;
+      }
+      try {
+        ws.close();
+      } catch {
+        // The close handler resumes.
+      }
+    }, 500);
+    return () => window.clearInterval(timer);
   }, []);
 
   const publishQr = async (matchId: string, hostToken: string) => {
@@ -352,6 +598,7 @@ export function useLive(
   return {
     configured: api.length > 0,
     status,
+    courtTone,
     host,
     players,
     qr,
@@ -371,8 +618,10 @@ export function useLive(
     finishShared: (event) => {
       const previous = hostRef.current?.token ?? null;
       const ws = socketRef.current;
-      tokenRef.current = null;
-      queueRef.current = [];
+      dropToken();
+      clearPending();
+      clearWake();
+      showLocalCourt();
       liveRef.current = null;
       readyRef.current = false;
       if (ws && ws.readyState === WebSocket.OPEN) {

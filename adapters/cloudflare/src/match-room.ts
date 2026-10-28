@@ -136,7 +136,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const budget = takeLiveMessage(state.stamps, record.type, Date.now());
     ws.serializeAttachment({ ...state, stamps: budget.stamps });
     if (!budget.ok) {
-      this.reject(ws, budget.code);
+      this.reject(ws, budget.code, record.eventId);
       return;
     }
     if (budget.command === 'ping') {
@@ -203,17 +203,17 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       return;
     }
     if (typeof record.eventId !== 'string') {
-      this.reject(ws, 'not_applied');
+      this.reject(ws, 'not_applied', record.eventId);
       return;
     }
     const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, state.tokenHash));
     if (!invite) {
-      this.reject(ws, 'bad_token');
+      this.reject(ws, 'bad_token', record.eventId);
       return;
     }
     const result = applyLiveEvent(room, invite, state.actor, record.eventId, record.event, Date.now());
     if (!result.ok) {
-      this.reject(ws, result.code);
+      this.reject(ws, result.code, record.eventId);
       return;
     }
     if (!result.duplicate) {
@@ -222,7 +222,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         insertEvent(sql, result.event);
         ensureActivityColumn(sql);
       } catch {
-        this.reject(ws, 'unavailable');
+        this.reject(ws, 'unavailable', record.eventId);
         return;
       }
     }
@@ -403,9 +403,21 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     this.broadcast(JSON.stringify({ type: 'presence', players: this.admittedCount() }));
   }
 
-  private reject(ws: WebSocket, code: string): void {
-    ws.send(JSON.stringify({ type: 'error', code }));
-    if (isRoomCode(code) && connectionCloses(code)) ws.close(1008, code.slice(0, 120));
+  private reject(ws: WebSocket, code: string, eventId?: unknown): void {
+    const id = typeof eventId === 'string' ? eventId.trim().toLowerCase() : '';
+    const body = id.length > 0 && id.length <= 80 ? { type: 'error', code, eventId: id } : { type: 'error', code };
+    try {
+      ws.send(JSON.stringify(body));
+    } catch {
+      // The peer is already gone.
+    }
+    if (isRoomCode(code) && connectionCloses(code)) {
+      try {
+        ws.close(1008, code.slice(0, 120));
+      } catch {
+        // The peer is already gone.
+      }
+    }
   }
 
   private readState(ws: WebSocket): SocketState | null {

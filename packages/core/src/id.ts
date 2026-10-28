@@ -14,6 +14,13 @@ export function isUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_RE.test(value);
 }
 
+/** Lowercase UUID, or null when the value is not a 128-bit id. */
+export function canonicalEventId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const id = value.trim().toLowerCase();
+  return UUID_RE.test(id) ? id : null;
+}
+
 export function createMatchId(): string {
   const source = randomSource();
   if (typeof source.randomUUID === 'function') {

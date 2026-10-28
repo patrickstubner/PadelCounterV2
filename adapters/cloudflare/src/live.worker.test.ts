@@ -135,6 +135,35 @@ describe('live match in workerd', () => {
     expect(Date.now() - back).toBeLessThan(500);
   });
 
+  it('returns the event id on a refusal and stores a mixed-case id once', async () => {
+    const created = await createLive('d66666666');
+    const host = await connect(created.hostToken, 'd66666666');
+    const refusedId = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA';
+    host.ws.send(JSON.stringify({
+      type: 'event',
+      eventId: refusedId,
+      event: { type: 'game/decrement', team: 'a', at: 1_700_000_000_100 },
+    }));
+    const refused = await host.messages.waitFor((message) => message.type === 'error' && message.code === 'not_applied');
+    expect(refused.eventId).toBe(refusedId.toLowerCase());
+
+    const scoredId = 'BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB';
+    host.ws.send(JSON.stringify({
+      type: 'event',
+      eventId: scoredId,
+      event: { type: 'game/increment', team: 'a', at: 1_700_000_000_200 },
+    }));
+    const scored = await host.messages.waitFor((message) => message.type === 'event' && message.eventId === scoredId.toLowerCase());
+    expect(scored.duplicate).toBe(false);
+    host.ws.send(JSON.stringify({
+      type: 'event',
+      eventId: scoredId.toLowerCase(),
+      event: { type: 'game/increment', team: 'a', at: 1_700_000_000_300 },
+    }));
+    const again = await host.messages.waitFor((message) => message.type === 'event' && message.duplicate === true);
+    expect(again.eventId).toBe(scoredId.toLowerCase());
+  });
+
   it('creates, invites, joins, carries, and reopens without a SQL begin', async () => {
     const first = await createLive(HOST_DEVICE);
     const host = await connect(first.hostToken, HOST_DEVICE);

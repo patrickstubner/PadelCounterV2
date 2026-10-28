@@ -1,14 +1,94 @@
 import {
+  canonicalEventId,
   connectionCloses,
+  HOST_TOKEN_TTL_MS,
   isJoinToken,
-  isRoomCode,
   isUuid,
+  isRoomCode,
+  JOIN_TOKEN_TTL_MS,
   parseMatchLog,
   parseStoredEvent,
   ROOM_MESSAGES,
   type MatchEvent,
   type MatchLog,
+  type RoomCode,
 } from '@padel/core';
+
+export { canonicalEventId, HOST_TOKEN_TTL_MS, JOIN_TOKEN_TTL_MS };
+
+/** Resend a point that was not in the snapshot after this long. */
+export const ACK_MS = 1_500;
+
+/** A hide longer than this forces a new socket even if the browser still says open. */
+export const HIDE_RECONNECT_MS = 15_000;
+
+/** Wait this long before the court turns red, so a short reconnect does not flash. */
+export const OFFLINE_COURT_MS = 1_500;
+
+/** Black court: this phone is not in a live match. */
+export const LOCAL_COURT = '#000000';
+
+/** Very dark blue: a live match is connected. White on it is above WCAG AA. */
+export const ONLINE_COURT = '#163056';
+
+/** Dark red: a live match is counting with no server. White on it is above WCAG AA. */
+export const OFFLINE_COURT = '#3a1016';
+
+const TERMINAL_CODES: ReadonlySet<RoomCode> = new Set([
+  'bad_token',
+  'expired',
+  'revoked',
+  'match_full',
+  'spectator_not_available',
+  'upgrade_required',
+]);
+
+export function isTerminalCode(code: RoomCode | null): boolean {
+  return code !== null && TERMINAL_CODES.has(code);
+}
+
+/** True when this fixed sentence is one that retrying cannot fix. */
+export function isTerminalMessage(message: string): boolean {
+  for (const code of TERMINAL_CODES) {
+    if (ROOM_MESSAGES[code] === message) return true;
+  }
+  return false;
+}
+
+export function reconnectDelayMs(attempt: number, slowDown: boolean, random = Math.random()): number {
+  const spread = Number.isFinite(random) ? Math.min(1, Math.max(0, random)) : 0;
+  if (slowDown) return 2_000 + Math.floor(spread * 400);
+  const step = Math.min(8, Math.max(0, Math.floor(attempt)));
+  const base = Math.min(30_000, 400 * 2 ** step);
+  return base + Math.floor(spread * base * 0.25);
+}
+
+export interface PendingLiveEvent<T> {
+  readonly id: string;
+  readonly event: T;
+  readonly token: string;
+  readonly matchId: string;
+}
+
+/** Unacked points for this token and match that the snapshot did not already contain. */
+export function unackedAfterSnapshot<T>(
+  items: readonly PendingLiveEvent<T>[],
+  token: string,
+  matchId: string,
+  eventIds: readonly string[],
+): PendingLiveEvent<T>[] {
+  const known = new Set(eventIds.map((id) => id.toLowerCase()));
+  const kept: PendingLiveEvent<T>[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (item.token !== token) continue;
+    if (item.matchId !== '' && item.matchId !== matchId) continue;
+    if (known.has(item.id) || seen.has(item.id)) continue;
+    seen.add(item.id);
+    kept.push({ ...item, matchId });
+  }
+  return kept;
+}
 
 export const JOIN_KEY = 'pcv2:join';
 
@@ -117,6 +197,11 @@ export function readJoinToken(
       storage.removeItem(JOIN_KEY);
       return { ok: false, invalid: true };
     }
+    const expiresAt = (parsed as { expiresAt?: unknown }).expiresAt;
+    if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
+      storage.removeItem(JOIN_KEY);
+      return { ok: false, invalid: true };
+    }
     return { ok: true, token: parsed.token };
   } catch {
     return { ok: false, invalid: false };
@@ -149,7 +234,8 @@ export type LiveNotice =
   | { readonly kind: 'delta'; readonly eventId: string; readonly event: MatchEvent; readonly duplicate: boolean; readonly players: number }
   | { readonly kind: 'presence'; readonly players: number }
   | { readonly kind: 'join_offer'; readonly token: string }
-  | { readonly kind: 'error'; readonly message: string; readonly close: boolean }
+  | { readonly kind: 'error'; readonly message: string; readonly close: boolean; readonly code: RoomCode | null; readonly eventId: string | null }
+  | { readonly kind: 'pong' }
   | { readonly kind: 'ignore' };
 
 function playerCount(value: unknown): number {
@@ -159,23 +245,32 @@ function playerCount(value: unknown): number {
 export function interpretMessage(data: unknown): LiveNotice {
   if (typeof data !== 'object' || data === null) return { kind: 'ignore' };
   const record = data as Record<string, unknown>;
+  if (record.type === 'pong') return { kind: 'pong' };
   if (record.type === 'error') {
+    const eventId = canonicalEventId(record.eventId);
     if (!isRoomCode(record.code)) {
-      return { kind: 'error', message: 'The live match did not accept that.', close: false };
+      return { kind: 'error', message: 'The live match did not accept that.', close: false, code: null, eventId };
     }
-    return { kind: 'error', message: ROOM_MESSAGES[record.code], close: connectionCloses(record.code) };
+    return {
+      kind: 'error',
+      message: ROOM_MESSAGES[record.code],
+      close: connectionCloses(record.code),
+      code: record.code,
+      eventId,
+    };
   }
   if (record.type === 'presence' && typeof record.players === 'number' && record.players >= 0 && record.players <= 4) {
     return { kind: 'presence', players: record.players };
   }
   if (record.type === 'event') {
+    const eventId = canonicalEventId(record.eventId);
     const event = parseStoredEvent(record.event);
-    if (!event || !isUuid(record.eventId)) {
-      return { kind: 'error', message: 'The live match did not accept that.', close: false };
+    if (!event || !eventId) {
+      return { kind: 'error', message: 'The live match did not accept that.', close: false, code: null, eventId };
     }
     return {
       kind: 'delta',
-      eventId: record.eventId.toLowerCase(),
+      eventId,
       event,
       duplicate: record.duplicate === true,
       players: playerCount(record.players),
@@ -183,7 +278,9 @@ export function interpretMessage(data: unknown): LiveNotice {
   }
   if (record.type === 'snapshot' && record.log) {
     const log = parseMatchLog(record.log);
-    if (!log) return { kind: 'error', message: 'The live match did not accept that.', close: false };
+    if (!log) {
+      return { kind: 'error', message: 'The live match did not accept that.', close: false, code: null, eventId: null };
+    }
     const eventIds = Array.isArray(record.eventIds)
       ? record.eventIds.filter((id): id is string => isUuid(id)).map((id) => id.toLowerCase())
       : [];

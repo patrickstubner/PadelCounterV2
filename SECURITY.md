@@ -226,6 +226,16 @@ Two phones could change the score on their own screens and not see each other's 
 - The Durable Object stored the event and only then awaited the once-a-minute D1 activity write before telling the other sockets. A `send` that threw on one closed peer stopped the loop. The fix stores the event, sends it to every other admitted socket immediately, and only then touches D1. Each `send` is isolated. Sockets are accepted with the hibernation tag `court` so `getWebSockets('court')` still lists them after the isolate wakes.
 - A point is applied on the phone that tapped it, and sent on the open socket in the same turn with a new event id. The echo and any repeat of that id do not add a second point. A refusal removes that one optimistic point. `visibilitychange` and `pageshow` open the socket again with the token still held for this tab. Leave, and a rejected code, drop it. The token is still not put back into the URL.
 
+## Review 11, 2026-10-28
+
+A live point stays on the phone until the server accepts that exact event. The court color shows whether a live match is still reached. The color is not a security control and does not change who may score.
+
+- Event ids are trimmed and lowercased. The client and `applyPlay` treat a mixed-case repeat as one id. A refusal includes that id. The phone removes only the optimistic point with that id. After a snapshot, any unacked point for this token and this match that the snapshot did not contain is sent again. Points for another token or match are dropped.
+- A point still unacked after 1.5 seconds is sent once more, with a ping. If it is still missing, the socket is closed and opened again. A page that stays hidden for more than 15 seconds closes the socket even when the browser still reports it open.
+- Reconnect waits with exponential backoff and jitter, and for about two seconds after `slow_down`. `bad_token`, `expired`, `revoked`, `match_full`, `spectator_not_available`, and `upgrade_required` clear the sender, the queue, and the token, and the court says Disconnected. `offline`, `slow_down`, `not_configured`, and `unavailable` keep the token. `unavailable` still closes the socket.
+- The tab stores the token with an expiry: 2 hours for a player and 12 hours for the host. A stored expiry in the past is removed. A joined player can choose Leave live match, which drops the token. The host still leaves from the connect dialog.
+- Black (`#000000`) is a match with no live connection. `#163056` is a live match that is connected. `#3a1016` is a live match that has had no server for 1.5 seconds and is still counting on the phone. The word Offline is shown as well, so the state is not color alone. A short reconnect stays on the blue. White and the gray court text on both colors are at least 5.2:1 (`offlineCourt.test.ts`). Assistive text announces connected, offline, and disconnected.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.
