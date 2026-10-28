@@ -70,7 +70,7 @@ Nothing here requires a paid Cloudflare plan or a credit card. Follow `docs/DEPL
 
 A WAF rate-limiting rule cannot be attached to `*.workers.dev`, because those rules belong to a zone and this project has no custom domain. Do not block a deploy on that rule. The Workers binding and the D1 join counters are what run on this host. Create, invite, carry, `/join`, and `/ws/*` also share an isolate limit of 20 requests per minute per address. If a zone is added later, the Free plan allows one rule with the three paths OR-ed together and a period of 10 seconds. The reason, with the Cloudflare doc links, is in `SECURITY.md`. Patrick accepted the remaining cost and availability risk of having no zone on 27 October 2026.
 
-Staging deploys the worker on every push to `main` when the Cloudflare secret and account id are present. Production deploys only from Actions, “Deploy”, “Run workflow”, on `main`, after the `production` environment approves that commit. Both skip cleanly when the secrets are absent. Pages runs in that same production run, after the worker, and only for that commit, when `DEPLOY_PAGES` is `true`.
+Staging deploys the worker on every push to `main` when the Cloudflare secret and account id are present. Production deploys only from Actions, “Deploy”, “Run workflow”, on `main`. The `production` environment has no required reviewer. Its deployment branch policy is custom and contains only `main`. Both skip cleanly when the secrets are absent. Pages runs in that same production run, after the worker, and only for that commit, when `DEPLOY_PAGES` is `true`.
 
 Do not create sign-in providers yet. They belong to a later change: a Google client, a Facebook app secret, a GitHub OAuth client secret, a passkey relying party of the pages host, and a signing key. No Apple Developer account, no X API, and no mail domain.
 
@@ -79,8 +79,8 @@ Do not create sign-in providers yet. They belong to a later change: a Google cli
 Details are in `SECURITY.md`. The short version:
 
 - The QR code carries a 128-bit token in the URL fragment (`#/join?t=<token>`), not in the query string and not next to the match id. The scanning phone removes that fragment with `history.replaceState` and then joins.
-- The token expires after 2 hours. The creating phone’s credential expires after 12 hours and is kept in memory only, so a refresh cannot mint a new code until you share again.
-- A new code revokes the previous code. Phones that are already connected stay connected.
+- The token expires after 2 hours. The creating phone’s credential expires after 12 hours and is kept in this tab’s `sessionStorage`, so a refresh can show the current code. It is not in `localStorage`.
+- New code revokes the previous code. Showing the current code does not. Phones that are already connected stay connected.
 - The worker stores SHA-256 hashes of tokens. The raw token is returned once.
 - The role is stored with the token. This version issues `player` only. `spectator` is rejected with “View-only links are not available yet.”
 - The Durable Object admits at most 4 player sockets, including the creator. Disconnecting frees a place.

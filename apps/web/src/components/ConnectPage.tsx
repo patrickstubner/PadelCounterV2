@@ -122,7 +122,8 @@ export function ConnectPage({
         {qr ? (
           <>
             <QrCode text={qr} />
-            <p>The code works for 2 hours. A new code turns this one off. Phones that already joined stay connected.</p>
+            <p data-testid="qr-note">This code works for 2 hours. Phones that already joined stay connected.</p>
+            <p data-testid="new-code-note">New code turns this code off and replaces it.</p>
           </>
         ) : null}
         <div className="connect-actions">

@@ -377,12 +377,15 @@ describe('live socket reconnect', () => {
     });
     await wait(30);
     expect(document.querySelector('[data-testid="live-disconnected"]')?.textContent).toBe('Disconnected.');
-    expect(document.querySelector('[data-testid="disconnected-hint"]')?.textContent).toBe('Taps are not applied.');
+    expect(document.querySelector('[data-testid="disconnected-hint"]')?.textContent).toBe('Points stay on this phone.');
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="increment-a"]')?.click();
+    });
+    expect(document.querySelector('.sr-only')?.textContent).toContain('Team A 1');
     expect(document.querySelector('[data-testid="court-connection"]')?.textContent).toContain('Disconnected from the live match.');
     expect(sessionStorage.getItem(JOIN_KEY)).toBeNull();
     expect(window.location.href).not.toContain(TOKEN);
     expect(court()?.className).toBe('app');
-    expect(document.querySelector('.sr-only')?.textContent).toContain('Team A 0');
     await wait(1_700);
     expect(joins).toBe(baseline);
     expect(court()?.className).toBe('app');
@@ -412,4 +415,31 @@ describe('live socket reconnect', () => {
     expect(old?.onclose).toBeNull();
     expect(document.querySelector('.sr-only')?.textContent).toContain('Team A 0');
   });
+
+  it('retries a failed reconnect and tries again when the browser is online', async () => {
+    let blockJoin = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        if (blockJoin) return Response.json({ error: 'offline' }, { status: 503 });
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    blockJoin = true;
+    const baseline = joins;
+    await act(async () => {
+      FakeSocket.sockets.at(-1)?.close();
+    });
+    for (let attempt = 0; attempt < 50 && joins < baseline + 2; attempt += 1) await wait(80);
+    expect(joins).toBeGreaterThanOrEqual(baseline + 2);
+    await wait(100);
+    const settled = joins;
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+    });
+    for (let attempt = 0; attempt < 15 && joins <= settled; attempt += 1) await wait(20);
+    expect(joins).toBeGreaterThan(settled);
+  }, 12_000);
 });

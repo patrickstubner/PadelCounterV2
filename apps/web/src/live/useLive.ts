@@ -103,7 +103,12 @@ export function useLive(
   const [joining, setJoining] = useState(false);
   const [offer, setOffer] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  const hostRef = useRef<{ matchId: string; token: string } | null>(null);
+  const hostRef = useRef<{
+    matchId: string;
+    token: string;
+    inviteToken: string | null;
+    inviteExpiresAt: number;
+  } | null>(null);
   const replaceRef = useRef(replaceLog);
   const applyRef = useRef(applyLive);
   const revertRef = useRef(revertLive);
@@ -196,18 +201,39 @@ export function useLive(
     setJoinError((current) => (current === ROOM_MESSAGES.slow_down ? null : current));
   };
 
-  const persistHost = (matchId: string, held: { token: string; expiresAt: number }) => {
-    hostRef.current = { matchId, token: held.token };
+  const writeHost = (held: { token: string; expiresAt: number }) => {
+    const current = hostRef.current;
+    if (!current) return;
     try {
       sessionStorage.setItem(JOIN_KEY, JSON.stringify({
         token: held.token,
         expiresAt: held.expiresAt,
         host: true,
-        matchId,
+        matchId: current.matchId,
+        ...(current.inviteToken ? { inviteToken: current.inviteToken, inviteExpiresAt: current.inviteExpiresAt } : {}),
       }));
     } catch {
-      // The ref still rotates a code until this tab closes.
+      // The ref still shows or rotates a code until this tab closes.
     }
+  };
+
+  const persistHost = (matchId: string, held: { token: string; expiresAt: number }) => {
+    const same = hostRef.current?.matchId === matchId ? hostRef.current : null;
+    hostRef.current = {
+      matchId,
+      token: held.token,
+      inviteToken: same?.inviteToken ?? null,
+      inviteExpiresAt: same?.inviteExpiresAt ?? 0,
+    };
+    writeHost(held);
+  };
+
+  const rememberInvite = (inviteToken: string, inviteExpiresAt: number) => {
+    const current = hostRef.current;
+    const held = tokenRef.current;
+    if (!current || !held) return;
+    hostRef.current = { ...current, inviteToken, inviteExpiresAt };
+    writeHost(held);
   };
 
   const rememberToken = (token: string, asJoin: boolean) => {
@@ -221,17 +247,35 @@ export function useLive(
     tokenRef.current = next;
     try {
       let matchId = '';
+      let inviteToken: string | null = null;
+      let inviteExpiresAt = 0;
       const raw = sessionStorage.getItem(JOIN_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as { token?: unknown; host?: unknown; matchId?: unknown };
-        if (parsed.token === token && parsed.host === true && isUuid(parsed.matchId)) matchId = parsed.matchId.toLowerCase();
+        const parsed = JSON.parse(raw) as {
+          token?: unknown;
+          host?: unknown;
+          matchId?: unknown;
+          inviteToken?: unknown;
+          inviteExpiresAt?: unknown;
+        };
+        if (parsed.token === token && parsed.host === true && isUuid(parsed.matchId)) {
+          matchId = parsed.matchId.toLowerCase();
+          if (isJoinToken(parsed.inviteToken) && typeof parsed.inviteExpiresAt === 'number') {
+            inviteToken = parsed.inviteToken;
+            inviteExpiresAt = parsed.inviteExpiresAt;
+          }
+        }
       }
       sessionStorage.setItem(JOIN_KEY, JSON.stringify({
         token: next.token,
         expiresAt: next.expiresAt,
-        ...(matchId ? { host: true, matchId } : {}),
+        ...(matchId ? {
+          host: true,
+          matchId,
+          ...(inviteToken ? { inviteToken, inviteExpiresAt } : {}),
+        } : {}),
       }));
-      if (matchId) hostRef.current = { matchId, token };
+      if (matchId) hostRef.current = { matchId, token, inviteToken, inviteExpiresAt };
     } catch {
       // The in-memory copy still reconnects this visit.
     }
@@ -367,6 +411,7 @@ export function useLive(
         return;
       }
       noteError(message);
+      if (tokenRef.current && message !== ROOM_MESSAGES.not_configured) wakeRef.current();
     };
     if (!isJoinToken(token)) {
       fail(ROOM_MESSAGES.bad_token);
@@ -383,7 +428,7 @@ export function useLive(
       detachSocket(socketRef.current);
       setStatus('connecting');
       if (asJoin) setJoinError(null);
-      else setError(null);
+      else if (!hadLive.current) setError(null);
       let ticket: string | undefined;
       try {
         const response = await fetch(`${api}/join`, {
@@ -574,10 +619,19 @@ export function useLive(
     try {
       const raw = sessionStorage.getItem(JOIN_KEY);
       if (!raw) return;
-      const parsed = JSON.parse(raw) as { token?: unknown; expiresAt?: unknown; host?: unknown; matchId?: unknown };
+      const parsed = JSON.parse(raw) as {
+        token?: unknown;
+        expiresAt?: unknown;
+        host?: unknown;
+        matchId?: unknown;
+        inviteToken?: unknown;
+        inviteExpiresAt?: unknown;
+      };
       if (parsed.host !== true || !isJoinToken(parsed.token) || !isUuid(parsed.matchId)) return;
       if (typeof parsed.expiresAt === 'number' && parsed.expiresAt <= Date.now()) return;
-      hostRef.current = { matchId: parsed.matchId.toLowerCase(), token: parsed.token };
+      const inviteToken = isJoinToken(parsed.inviteToken) ? parsed.inviteToken : null;
+      const inviteExpiresAt = typeof parsed.inviteExpiresAt === 'number' ? parsed.inviteExpiresAt : 0;
+      hostRef.current = { matchId: parsed.matchId.toLowerCase(), token: parsed.token, inviteToken, inviteExpiresAt };
     } catch {
       // A missing host record only means Show QR creates a match.
     }
@@ -608,9 +662,22 @@ export function useLive(
     };
     document.addEventListener('visibilitychange', onShow);
     window.addEventListener('pageshow', onShow);
+    const onOnline = () => {
+      if (!tokenRef.current) return;
+      if (readyRef.current && socketIsUp(socketRef.current)) return;
+      clearWake();
+      resumes.current = 0;
+      if (slowDown.current) {
+        wakeRef.current();
+        return;
+      }
+      reconnectNowRef.current();
+    };
+    window.addEventListener('online', onOnline);
     return () => {
       document.removeEventListener('visibilitychange', onShow);
       window.removeEventListener('pageshow', onShow);
+      window.removeEventListener('online', onOnline);
     };
   }, []);
 
@@ -695,14 +762,17 @@ export function useLive(
     });
     if (!response.ok) {
       setError(await errorText(response));
-      setStatus('off');
       return;
     }
-    const body = (await response.json()) as { token?: unknown };
+    const body = (await response.json()) as { token?: unknown; expiresAt?: unknown };
     if (typeof body.token !== 'string') {
       setError(ROOM_MESSAGES.offline);
       return;
     }
+    const expiresAt = typeof body.expiresAt === 'number' && Number.isFinite(body.expiresAt)
+      ? body.expiresAt
+      : Date.now() + JOIN_TOKEN_TTL_MS;
+    rememberInvite(body.token, expiresAt);
     const page = typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href;
     setQr(joinLink(page, body.token));
   };
@@ -762,6 +832,11 @@ export function useLive(
     share: (log, options) => {
       const current = hostRef.current;
       if (current && !options?.previousHostToken) {
+        if (current.inviteToken && current.inviteExpiresAt > Date.now()) {
+          const page = typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href;
+          setQr(joinLink(page, current.inviteToken));
+          return;
+        }
         void publishQr(current.matchId, current.token);
         return;
       }

@@ -98,7 +98,7 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     return Response.json({ matchId: MATCH, hostToken: HOST }, { status: 201 });
   }
   if (url.endsWith('/invites')) {
-    return Response.json({ token: INVITE, role: 'player', matchId: MATCH, expiresAt: 1 }, { status: 201 });
+    return Response.json({ token: INVITE, role: 'player', matchId: MATCH, expiresAt: Date.now() + 3_600_000 }, { status: 201 });
   }
   return Response.json({ error: 'not_found' }, { status: 404 });
 }
@@ -369,12 +369,15 @@ describe('connect overlay and scanned join', () => {
     await waitFor(() => document.querySelector('[data-testid="connect-open"]') !== null);
     await press('connect-open');
     await press('share-match');
-    await waitFor(() => fetchCalls.some((call) => call.url.endsWith('/invites')));
+    await waitFor(() => document.querySelector('[data-testid="connect-dialog"] .qr') !== null);
     expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
+    expect(fetchCalls.some((call) => call.url.endsWith('/invites'))).toBe(false);
+    expect(document.querySelector('[data-testid="new-code-note"]')?.textContent).toBe('New code turns this code off and replaces it.');
+    expect(document.body.textContent).not.toContain(INVITE);
+    await press('rotate-code');
+    await waitFor(() => fetchCalls.filter((call) => call.url.endsWith('/invites')).length === 1);
     expect(fetchCalls.filter((call) => call.url === `${API}/matches/${MATCH}/invites`)).toHaveLength(1);
     expect(new Headers(fetchCalls.find((call) => call.url.endsWith('/invites'))?.init?.headers).get('authorization')).toBe(`Bearer ${HOST}`);
-    await press('rotate-code');
-    await waitFor(() => fetchCalls.filter((call) => call.url.endsWith('/invites')).length === 2);
     expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
   });
 
