@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, JOIN_TOKEN_TTL_MS, ROOM_MESSAGES, type MatchEvent, type MatchLog } from '@padel/core';
+import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isUuid, JOIN_TOKEN_TTL_MS, ROOM_MESSAGES, type MatchEvent, type MatchLog } from '@padel/core';
 import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
@@ -15,6 +15,7 @@ import {
   joinLink,
   OFFLINE_COURT_MS,
   reconnectDelayMs,
+  SLOW_BANNER_MS,
   shouldResumeSocket,
   socketUrl,
   unackedAfterSnapshot,
@@ -118,10 +119,12 @@ export function useLive(
   const hiddenAt = useRef<number | null>(null);
   const wakeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const offlineTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seenRef = useRef(new Set<string>());
   const unackedRef = useRef<PendingPoint[]>([]);
   const queueRef = useRef<PendingPoint[]>([]);
   const wakeRef = useRef<() => void>(() => undefined);
+  const reconnectNowRef = useRef<() => void>(() => undefined);
   replaceRef.current = replaceLog;
   applyRef.current = applyLive;
   revertRef.current = revertLive;
@@ -147,6 +150,66 @@ export function useLive(
     unackedRef.current = [];
   };
 
+  const clearSlowTimer = () => {
+    if (slowTimer.current !== null) {
+      clearTimeout(slowTimer.current);
+      slowTimer.current = null;
+    }
+  };
+
+  /** Handlers go first so a closing socket cannot open another connection. */
+  const detachSocket = (ws: WebSocket | null) => {
+    if (!ws) return;
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    if (socketRef.current === ws) socketRef.current = null;
+    try {
+      ws.close();
+    } catch {
+      // Already closed.
+    }
+  };
+
+  const socketIsUp = (ws: WebSocket | null): boolean =>
+    ws !== null && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
+
+  const armSlowClear = () => {
+    clearSlowTimer();
+    slowTimer.current = setTimeout(() => {
+      slowTimer.current = null;
+      setError((current) => (current === ROOM_MESSAGES.slow_down ? null : current));
+      setJoinError((current) => (current === ROOM_MESSAGES.slow_down ? null : current));
+    }, SLOW_BANNER_MS);
+  };
+
+  const noteError = (message: string) => {
+    setError(message);
+    if (message === ROOM_MESSAGES.slow_down) armSlowClear();
+    else clearSlowTimer();
+  };
+
+  const clearSlowBanner = () => {
+    clearSlowTimer();
+    setError((current) => (current === ROOM_MESSAGES.slow_down ? null : current));
+    setJoinError((current) => (current === ROOM_MESSAGES.slow_down ? null : current));
+  };
+
+  const persistHost = (matchId: string, held: { token: string; expiresAt: number }) => {
+    hostRef.current = { matchId, token: held.token };
+    try {
+      sessionStorage.setItem(JOIN_KEY, JSON.stringify({
+        token: held.token,
+        expiresAt: held.expiresAt,
+        host: true,
+        matchId,
+      }));
+    } catch {
+      // The ref still rotates a code until this tab closes.
+    }
+  };
+
   const rememberToken = (token: string, asJoin: boolean) => {
     const now = Date.now();
     const current = tokenRef.current;
@@ -157,7 +220,18 @@ export function useLive(
     const next = { token, expiresAt: now + (asJoin ? JOIN_TOKEN_TTL_MS : HOST_TOKEN_TTL_MS) };
     tokenRef.current = next;
     try {
-      sessionStorage.setItem(JOIN_KEY, JSON.stringify(next));
+      let matchId = '';
+      const raw = sessionStorage.getItem(JOIN_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { token?: unknown; host?: unknown; matchId?: unknown };
+        if (parsed.token === token && parsed.host === true && isUuid(parsed.matchId)) matchId = parsed.matchId.toLowerCase();
+      }
+      sessionStorage.setItem(JOIN_KEY, JSON.stringify({
+        token: next.token,
+        expiresAt: next.expiresAt,
+        ...(matchId ? { host: true, matchId } : {}),
+      }));
+      if (matchId) hostRef.current = { matchId, token };
     } catch {
       // The in-memory copy still reconnects this visit.
     }
@@ -239,9 +313,7 @@ export function useLive(
     opening.current = false;
     liveRef.current = null;
     readyRef.current = false;
-    const previous = socketRef.current;
-    socketRef.current = null;
-    previous?.close();
+    detachSocket(socketRef.current);
     hostRef.current = null;
     matchRef.current = '';
     setStatus('off');
@@ -254,15 +326,13 @@ export function useLive(
 
   const open = (token: string, asJoin: boolean) => {
     const held = tokenRef.current;
-    if (held?.token === token && (opening.current || readyRef.current || socketRef.current)) return;
+    if (held?.token === token && (opening.current || socketIsUp(socketRef.current))) return;
     if (held && held.token !== token) {
       clearPending();
       generation.current += 1;
-      const previous = socketRef.current;
-      socketRef.current = null;
       opening.current = false;
-      previous?.close();
     }
+    detachSocket(socketRef.current);
     if (!rememberToken(token, asJoin)) {
       dropToken();
       clearPending();
@@ -284,7 +354,7 @@ export function useLive(
         liveRef.current = null;
         showLocalCourt();
         setStatus('disconnected');
-        setError(message);
+        noteError(message);
         if (asJoin) setJoinError(message);
         setJoining(false);
         return;
@@ -293,9 +363,10 @@ export function useLive(
       if (asJoin) {
         setJoining(false);
         setJoinError(message);
+        if (message === ROOM_MESSAGES.slow_down) armSlowClear();
         return;
       }
-      setError(message);
+      noteError(message);
     };
     if (!isJoinToken(token)) {
       fail(ROOM_MESSAGES.bad_token);
@@ -309,9 +380,7 @@ export function useLive(
         return;
       }
       readyRef.current = false;
-      const previous = socketRef.current;
-      socketRef.current = null;
-      previous?.close();
+      detachSocket(socketRef.current);
       setStatus('connecting');
       if (asJoin) setJoinError(null);
       else setError(null);
@@ -378,18 +447,19 @@ export function useLive(
             showLocalCourt();
             setJoining(false);
             setStatus('disconnected');
-            setError(notice.message);
-            ws.close();
+            noteError(notice.message);
+            detachSocket(ws);
             return;
           }
           if (asJoin && !readyRef.current) setJoinError(notice.message);
-          else setError(notice.message);
+          else noteError(notice.message);
           if (asJoin && !readyRef.current) setJoining(false);
           if (!notice.close) return;
           readyRef.current = false;
           opening.current = false;
           setStatus(hadLive.current ? 'connecting' : 'off');
-          ws.close();
+          detachSocket(ws);
+          wakeRef.current();
           return;
         }
         if (notice.kind === 'presence') {
@@ -404,6 +474,7 @@ export function useLive(
             applyRef.current(notice.event);
           }
           setPlayers(notice.players);
+          clearSlowBanner();
           return;
         }
         if (notice.kind === 'log') {
@@ -418,6 +489,23 @@ export function useLive(
           setPlayers(notice.players);
           setJoining(false);
           setJoinError(null);
+          clearSlowTimer();
+          setError(null);
+          if (notice.host && tokenRef.current) persistHost(matchId, tokenRef.current);
+          else {
+            hostRef.current = null;
+            try {
+              const raw = sessionStorage.getItem(JOIN_KEY);
+              if (raw) {
+                const parsed = JSON.parse(raw) as { token?: unknown; expiresAt?: unknown; host?: unknown };
+                if (parsed.host === true && parsed.token === tokenRef.current?.token && typeof parsed.expiresAt === 'number' && isJoinToken(parsed.token)) {
+                  sessionStorage.setItem(JOIN_KEY, JSON.stringify({ token: parsed.token, expiresAt: parsed.expiresAt }));
+                }
+              }
+            } catch {
+              // The in-memory host ref is already clear.
+            }
+          }
           setStatus('live');
           resumes.current = 0;
           slowDown.current = false;
@@ -448,6 +536,15 @@ export function useLive(
     })();
   };
 
+  reconnectNowRef.current = () => {
+    if (!tokenRef.current) return;
+    clearWake();
+    detachSocket(socketRef.current);
+    opening.current = false;
+    readyRef.current = false;
+    open(tokenRef.current.token, false);
+  };
+
   wakeRef.current = () => {
     const held = tokenRef.current;
     if (!held || wakeTimer.current !== null) return;
@@ -474,6 +571,19 @@ export function useLive(
   };
 
   useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(JOIN_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { token?: unknown; expiresAt?: unknown; host?: unknown; matchId?: unknown };
+      if (parsed.host !== true || !isJoinToken(parsed.token) || !isUuid(parsed.matchId)) return;
+      if (typeof parsed.expiresAt === 'number' && parsed.expiresAt <= Date.now()) return;
+      hostRef.current = { matchId: parsed.matchId.toLowerCase(), token: parsed.token };
+    } catch {
+      // A missing host record only means Show QR creates a match.
+    }
+  }, []);
+
+  useEffect(() => {
     if (typeof document === 'undefined' || typeof window === 'undefined') return;
     const onShow = () => {
       if (document.visibilityState === 'hidden') {
@@ -483,17 +593,16 @@ export function useLive(
       const hiddenFor = hiddenAt.current === null ? 0 : Date.now() - hiddenAt.current;
       hiddenAt.current = null;
       resumes.current = 0;
-      if (hiddenFor >= HIDE_RECONNECT_MS && socketRef.current && hadLive.current) {
-        const stale = socketRef.current;
-        socketRef.current = null;
+      const stale = socketRef.current;
+      if (hiddenFor >= HIDE_RECONNECT_MS && stale && hadLive.current) {
+        detachSocket(stale);
         opening.current = false;
         readyRef.current = false;
         setStatus('connecting');
-        try {
-          stale.close();
-        } catch {
-          // Already closed.
-        }
+      }
+      if (!socketIsUp(socketRef.current)) {
+        reconnectNowRef.current();
+        return;
       }
       wakeRef.current();
     };
@@ -531,9 +640,16 @@ export function useLive(
   }, [status, courtTone]);
 
   useEffect(() => () => {
+    generation.current += 1;
+    opening.current = false;
+    detachSocket(socketRef.current);
     if (offlineTimer.current !== null) {
       clearTimeout(offlineTimer.current);
       offlineTimer.current = null;
+    }
+    if (slowTimer.current !== null) {
+      clearTimeout(slowTimer.current);
+      slowTimer.current = null;
     }
   }, []);
 
@@ -563,11 +679,7 @@ export function useLive(
         }
         return;
       }
-      try {
-        ws.close();
-      } catch {
-        // The close handler resumes.
-      }
+      reconnectNowRef.current();
     }, 500);
     return () => window.clearInterval(timer);
   }, []);
@@ -628,8 +740,7 @@ export function useLive(
         ws.send(JSON.stringify({ type: 'event', eventId: createMatchId(), event }));
       }
       generation.current += 1;
-      ws?.close();
-      socketRef.current = null;
+      detachSocket(ws);
       hostRef.current = null;
       setStatus('off');
       setHost(true);
@@ -638,9 +749,10 @@ export function useLive(
       return previous;
     },
     connect: (token) => {
+      if (tokenRef.current?.token === token && (opening.current || socketIsUp(socketRef.current))) return;
       setJoining(true);
       setJoinError(null);
-      open(token, true);
+      open(token, hostRef.current?.token !== token);
     },
     rejectToken: () => {
       setJoining(false);
@@ -648,6 +760,11 @@ export function useLive(
       setStatus('off');
     },
     share: (log, options) => {
+      const current = hostRef.current;
+      if (current && !options?.previousHostToken) {
+        void publishQr(current.matchId, current.token);
+        return;
+      }
       void (async () => {
         if (!api) {
           setError(ROOM_MESSAGES.not_configured);
@@ -678,7 +795,8 @@ export function useLive(
             setStatus('off');
             return;
           }
-          hostRef.current = { matchId: body.matchId, token: body.hostToken };
+          const held = rememberToken(body.hostToken, false);
+          if (held) persistHost(body.matchId.toLowerCase(), held);
           open(body.hostToken, false);
           if (options?.carry && options.previousHostToken) {
             try {

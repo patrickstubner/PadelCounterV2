@@ -119,11 +119,18 @@ export function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onHash = () => {
+      if (room.host && room.status === 'live') {
+        const hash = window.location.hash;
+        if (/^#\/join\b/i.test(hash)) {
+          window.history.replaceState({ padelArchive: 'court' }, '', `${window.location.pathname}${window.location.search}`);
+        }
+        return;
+      }
       applyJoin(readJoinToken(window.location, window.history, readSession()));
     };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
-  }, [applyJoin]);
+  }, [applyJoin, room.host, room.status]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onPop = (event: PopStateEvent) => setScreen(screenFromHistory(event.state));
@@ -413,7 +420,10 @@ export function App() {
             </div>
           ) : null}
           {room.status === 'disconnected' ? (
-            <p className="live-error" role="status" data-testid="live-disconnected">Disconnected.</p>
+            <>
+              <p className="live-error" role="status" data-testid="live-disconnected">Disconnected.</p>
+              <p className="live-hint" data-testid="disconnected-hint">Taps are not applied.</p>
+            </>
           ) : null}
           {room.error ? (
             <p className="live-error" role="alert" data-testid="live-error">{room.error}</p>
@@ -444,7 +454,7 @@ export function App() {
           : room.courtTone === 'online'
             ? 'Live match connected.'
             : room.status === 'disconnected'
-              ? 'Disconnected from the live match.'
+              ? 'Disconnected from the live match. Taps are not applied.'
               : ''}
       </p>
       {pendingPlan ? (
