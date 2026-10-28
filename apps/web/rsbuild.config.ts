@@ -4,15 +4,11 @@ import { defineConfig, type RsbuildPlugin } from '@rsbuild/core';
 import { pluginReact } from '@rsbuild/plugin-react';
 import { generateSW } from 'workbox-build';
 import { PAGE_BASE } from './src/base';
+import { connectSrcExtra } from './src/csp';
 
 const appVersion = (JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }).version;
 const apiUrl = process.env.PUBLIC_API_URL ?? '';
-let connectSrc = '';
-try {
-  if (apiUrl) connectSrc = ` ${new URL(apiUrl).origin}`;
-} catch {
-  connectSrc = '';
-}
+const connectSrc = connectSrcExtra(apiUrl, process.env.NODE_ENV !== 'production');
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

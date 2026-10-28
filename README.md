@@ -22,7 +22,7 @@ The privacy note in the menu says the same thing in the app. It is not legal adv
 
 1. Open the app. The court shows Team A and Team B, both on 0.
 2. Tap **+** beside a team when that team wins a game. Tap **−** if that game should not have counted.
-3. To share the match, open the menu and choose **Connect players**. The QR code opens over the court. Close it with X, Close, or a tap outside. The other phones scan it and see the live score. Up to four phones can score.
+3. To share the match, open the menu and choose **Connect players**, then **Show QR code**. The code opens over the court. Close it with X, Close, or a tap outside. The other phones scan it and see the live score. Up to four phones can score. A phone that joined does not get a new QR.
 4. When you are done, open the menu and choose **End match**, then confirm. The score stays. Choose **Resume** later if the match should continue.
 5. To start another match, open the menu and choose **New match**. If the current match is still open, choose **Finish & new** or **Cancel**. Within one hour you can turn on **Reconnect players from last match**. Those phones tap **Join** on “Join new match?”.
 6. Open **History** in the menu to read the games, who changed them, and the score after each change.

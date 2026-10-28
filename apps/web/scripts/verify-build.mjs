@@ -52,7 +52,10 @@ if (apiUrl) {
   if (!api || api.protocol !== 'https:' || !api.hostname.endsWith('.workers.dev') || api.username || api.password) {
     fail('PUBLIC_API_URL must be an https workers.dev origin');
   }
-  htmlUrls = html.split(api.origin).join('');
+  const wss = `wss://${api.host}`;
+  if (!html.includes(`connect-src 'self' ${api.origin} ${wss}`)) fail(`CSP connect-src missing ${wss}`);
+  if (html.includes(`ws://${api.host}`)) fail('CSP connect-src allows ws:// for an https API');
+  htmlUrls = html.split(api.origin).join('').split(wss).join('');
 }
 if (/https?:\/\//.test(htmlUrls)) fail(`external URL in index.html:\n${html}`);
 if (/<script(?![^>]*\bsrc=)[^>]*>/.test(html)) fail('inline script in index.html');
@@ -98,6 +101,7 @@ if (sw.includes('importScripts(')) fail('service worker loads an external script
 for (const file of walk(dist)) {
   if (file.endsWith('.png') || file.endsWith('.ico')) continue;
   const text = readFileSync(file, 'utf8');
+  if (text.includes('__PADEL_TEST_API__')) fail(`test API hook shipped in ${file}`);
   for (const host of banned) {
     if (text.includes(host)) fail(`${host} found in ${file}`);
   }

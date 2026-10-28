@@ -127,4 +127,17 @@ describe('scanned join url', () => {
     expect(readJoinToken(location, history, storage)).toEqual({ ok: false, invalid: true });
     expect(storage.getItem(JOIN_KEY)).toBeNull();
   });
+
+  it('keeps a valid token when storage is missing and still strips the url', () => {
+    const calls: unknown[][] = [];
+    const history = {
+      replaceState: (...args: unknown[]) => {
+        calls.push(args);
+      },
+    };
+    const location = { hash: `#/join?t=${TOKEN}`, pathname: '/PadelCounterV2/', search: '' };
+    expect(readJoinToken(location, history, null)).toEqual({ ok: true, token: TOKEN });
+    expect(calls).toEqual([[{ padelArchive: 'court' }, '', '/PadelCounterV2/']]);
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
+  });
 });

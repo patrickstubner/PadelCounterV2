@@ -3,6 +3,7 @@ import { QrCode } from './QrCode';
 
 interface ConnectPageProps {
   readonly configured: boolean;
+  readonly host: boolean;
   readonly status: 'off' | 'connecting' | 'live';
   readonly players: number;
   readonly qr: string | null;
@@ -21,6 +22,7 @@ function focusable(root: HTMLElement): HTMLElement[] {
 
 export function ConnectPage({
   configured,
+  host,
   status,
   players,
   qr,
@@ -124,7 +126,7 @@ export function ConnectPage({
           </>
         ) : null}
         <div className="connect-actions">
-          {configured && !qr && status !== 'connecting' ? (
+          {configured && host && !qr && status !== 'connecting' ? (
             <button type="button" className="text-btn" data-testid="share-match" onClick={onShare}>
               Show QR code
             </button>

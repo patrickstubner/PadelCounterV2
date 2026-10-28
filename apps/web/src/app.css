@@ -524,13 +524,15 @@ button:disabled { cursor: not-allowed; }
 }
 
 .join-status,
-.join-error {
+.join-error,
+.live-error {
   font-size: 1rem;
   font-weight: 700;
   line-height: 1.35;
 }
 
-.join-error { color: #ffffff; }
+.join-error,
+.live-error { color: #ffffff; }
 
 .serve-line {
   font-size: 0.92rem;

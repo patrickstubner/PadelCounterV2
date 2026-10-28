@@ -19,7 +19,9 @@ interface FetchCall {
 }
 
 const fetchCalls: FetchCall[] = [];
+const sockets: FakeSocket[] = [];
 let joinMode: 'ok' | 'expired' | 'bad' = 'ok';
+let createMode: 'ok' | 'down' = 'ok';
 let snapshot: unknown = null;
 
 class FakeSocket {
@@ -33,6 +35,7 @@ class FakeSocket {
 
   constructor(url: string) {
     this.url = url;
+    sockets.push(this);
     queueMicrotask(() => {
       if (this.readyState === 3) return;
       this.readyState = 1;
@@ -83,7 +86,12 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     if (joinMode === 'bad') return Response.json({ error: 'bad_token', message: '<img src=x onerror=alert(1)>' }, { status: 401 });
     return Response.json({ ticket: TICKET }, { status: 201 });
   }
-  if (url.endsWith('/matches')) return Response.json({ matchId: MATCH, hostToken: HOST }, { status: 201 });
+  if (url.endsWith('/matches')) {
+    if (createMode === 'down') {
+      return Response.json({ error: 'not_configured', message: '<script>alert(1)</script>' }, { status: 503 });
+    }
+    return Response.json({ matchId: MATCH, hostToken: HOST }, { status: 201 });
+  }
   if (url.endsWith('/invites')) {
     return Response.json({ token: INVITE, role: 'player', matchId: MATCH, expiresAt: 1 }, { status: 201 });
   }
@@ -140,7 +148,9 @@ describe('connect overlay and scanned join', () => {
     globalThis.WebSocket = OriginalSocket;
     delete (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__;
     fetchCalls.splice(0);
+    sockets.splice(0);
     joinMode = 'ok';
+    createMode = 'ok';
     snapshot = null;
     localStorage.clear();
     sessionStorage.clear();
@@ -204,6 +214,8 @@ describe('connect overlay and scanned join', () => {
     const view = await mount();
     mounted.push(view);
     await press('connect-open');
+    expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
+    await press('share-match');
     await waitFor(() => document.querySelector('.qr') !== null);
     expect(document.querySelector('[data-testid="connect-dialog"] .qr')).not.toBeNull();
     expect(document.querySelector('[data-testid="current-a"]')).not.toBeNull();
@@ -220,6 +232,8 @@ describe('connect overlay and scanned join', () => {
     const view = await mount();
     mounted.push(view);
     await waitFor(() => scoreA().includes('4'));
+    expect(document.querySelector('[data-testid="join-error"]')).toBeNull();
+    expect(document.querySelector('[data-testid="connect-open"]')).toBeNull();
     expect(document.querySelector('[data-testid="connect-dialog"]')).toBeNull();
     expect(window.location.href).not.toContain(TOKEN);
     expect(window.location.hash).toBe('');
@@ -231,6 +245,13 @@ describe('connect overlay and scanned join', () => {
     const body = JSON.parse(String(join?.init?.body)) as { device?: string };
     expect(body.device).toMatch(/^d[a-f0-9]{8}$/);
     expect(fetchCalls.some((call) => call.url.includes('/ws/'))).toBe(false);
+    const socket = sockets.at(-1);
+    await act(async () => {
+      socket?.onmessage?.({ data: JSON.stringify({ type: 'error', code: 'not_applied', message: '<i>raw</i>' }) });
+    });
+    expect(document.querySelector('[data-testid="live-error"]')?.textContent).toContain('That change was not applied.');
+    expect(document.querySelector('[data-testid="live-error"]')?.textContent).not.toContain('raw');
+    expect(document.querySelector('[data-testid="join-error"]')).toBeNull();
   });
 
   it('shows a fixed error for an expired or invalid invite and does not render the server message', async () => {
@@ -278,5 +299,40 @@ describe('connect overlay and scanned join', () => {
     expect(window.location.href).not.toContain('short');
     expect(window.location.hash).toBe('');
     expect(document.querySelector('[data-testid="current-a"]')).not.toBeNull();
+  });
+
+  it('joins a hash that changes while the court is already open', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    window.history.replaceState(null, '', '/PadelCounterV2/');
+    const view = await mount();
+    mounted.push(view);
+    expect(scoreA()).toContain('0');
+    await act(async () => {
+      window.location.hash = `#/join?t=${TOKEN}`;
+    });
+    await waitFor(() => scoreA().includes('4'));
+    expect(window.location.hash).toBe('');
+    expect(window.location.href).not.toContain(TOKEN);
+    expect(document.querySelector('[data-testid="connect-open"]')).toBeNull();
+  });
+
+  it('shows a share failure in the dialog without clearing a join error', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    createMode = 'down';
+    window.history.replaceState(null, '', '/PadelCounterV2/#/join?t=short');
+    const view = await mount();
+    mounted.push(view);
+    await waitFor(() => (document.querySelector('[data-testid="join-error"]')?.textContent ?? '').includes('This code is not valid.'));
+    await press('connect-open');
+    await press('share-match');
+    await waitFor(() => document.querySelector('[data-testid="connect-error"]') !== null);
+    expect(document.querySelector('[data-testid="connect-error"]')?.textContent).toContain('Live sharing is not configured in this build.');
+    expect(document.querySelector('[data-testid="connect-error"]')?.textContent).not.toContain('script');
+    expect(document.querySelector('[data-testid="join-error"]')?.textContent).toContain('This code is not valid.');
+    expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(true);
   });
 });

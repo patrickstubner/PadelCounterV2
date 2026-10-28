@@ -17,6 +17,8 @@ export interface LiveController {
   readonly players: number;
   readonly qr: string | null;
   readonly error: string | null;
+  readonly joinError: string | null;
+  readonly joining: boolean;
   readonly offer: string | null;
   readonly share: (log: MatchLog, options?: ShareOptions) => void;
   readonly rotate: () => void;
@@ -48,11 +50,16 @@ function thisDevice(): string {
   }
 }
 
+function devApiOverride(): string {
+  if (!import.meta.env.DEV) return '';
+  const testApi = (globalThis as { __PADEL_TEST_API__?: unknown }).__PADEL_TEST_API__;
+  return typeof testApi === 'string' ? testApi.replace(/\/$/, '') : '';
+}
+
 function apiBase(): string {
   const fromEnv = String(import.meta.env.PUBLIC_API_URL ?? '').replace(/\/$/, '');
   if (fromEnv) return fromEnv;
-  const testApi = (globalThis as { __PADEL_TEST_API__?: unknown }).__PADEL_TEST_API__;
-  return typeof testApi === 'string' ? testApi.replace(/\/$/, '') : '';
+  return devApiOverride();
 }
 
 export function useLive(
@@ -66,6 +73,8 @@ export function useLive(
   const [players, setPlayers] = useState(0);
   const [qr, setQr] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
   const [offer, setOffer] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const hostRef = useRef<{ matchId: string; token: string } | null>(null);
@@ -96,23 +105,32 @@ export function useLive(
     rememberOffer(null);
   };
 
-  const open = (token: string) => {
-    if (!isJoinToken(token)) {
-      setError(ROOM_MESSAGES.bad_token);
+  const open = (token: string, asJoin: boolean) => {
+    const fail = (message: string) => {
       setStatus('off');
+      if (asJoin) {
+        setJoining(false);
+        setJoinError(message);
+        return;
+      }
+      setError(message);
+    };
+    if (!isJoinToken(token)) {
+      fail(ROOM_MESSAGES.bad_token);
       return;
     }
     const mine = generation.current + 1;
     generation.current = mine;
     void (async () => {
       if (!api) {
-        setError(ROOM_MESSAGES.not_configured);
+        fail(ROOM_MESSAGES.not_configured);
         return;
       }
       readyRef.current = false;
       socketRef.current?.close();
       setStatus('connecting');
-      setError(null);
+      if (asJoin) setJoinError(null);
+      else setError(null);
       let ticket: string | undefined;
       try {
         const response = await fetch(`${api}/join`, {
@@ -122,21 +140,18 @@ export function useLive(
         });
         if (generation.current !== mine) return;
         if (!response.ok) {
-          setError(await errorText(response));
-          setStatus('off');
+          fail(await errorText(response));
           return;
         }
         const body = (await response.json()) as { ticket?: unknown };
         if (typeof body.ticket !== 'string') {
-          setError(ROOM_MESSAGES.offline);
-          setStatus('off');
+          fail(ROOM_MESSAGES.offline);
           return;
         }
         ticket = body.ticket;
       } catch {
         if (generation.current !== mine) return;
-        setError(ROOM_MESSAGES.offline);
-        setStatus('off');
+        fail(ROOM_MESSAGES.offline);
         return;
       }
       if (!ticket || generation.current !== mine) return;
@@ -158,7 +173,9 @@ export function useLive(
           return;
         }
         if (notice.kind === 'error') {
-          setError(notice.message);
+          if (asJoin && !readyRef.current) setJoinError(notice.message);
+          else setError(notice.message);
+          if (asJoin && !readyRef.current) setJoining(false);
           if (!notice.close) return;
           liveRef.current = null;
           readyRef.current = false;
@@ -180,6 +197,8 @@ export function useLive(
           readyRef.current = true;
           setHost(notice.host);
           setPlayers(notice.players);
+          setJoining(false);
+          setJoinError(null);
           setStatus('live');
           liveRef.current = (courtEvent: MatchEvent) => {
             if (ws.readyState !== WebSocket.OPEN) return false;
@@ -189,12 +208,18 @@ export function useLive(
         }
       };
       ws.onerror = () => {
+        if (asJoin && !readyRef.current) {
+          setJoining(false);
+          setJoinError(ROOM_MESSAGES.offline);
+          return;
+        }
         setError(ROOM_MESSAGES.offline);
       };
       ws.onclose = () => {
         if (socketRef.current !== ws) return;
         liveRef.current = null;
         readyRef.current = false;
+        setJoining(false);
         setStatus('off');
         setHost(true);
       };
@@ -231,12 +256,16 @@ export function useLive(
     players,
     qr,
     error,
+    joinError,
+    joining,
     offer,
     disconnect,
     acceptOffer: () => {
       const token = offerRef.current;
       rememberOffer(null);
-      if (token) open(token);
+      if (!token) return;
+      setJoining(true);
+      open(token, true);
     },
     dismissOffer: () => rememberOffer(null),
     finishShared: (event) => {
@@ -258,10 +287,13 @@ export function useLive(
       return previous;
     },
     connect: (token) => {
-      open(token);
+      setJoining(true);
+      setJoinError(null);
+      open(token, true);
     },
     rejectToken: () => {
-      setError(ROOM_MESSAGES.bad_token);
+      setJoining(false);
+      setJoinError(ROOM_MESSAGES.bad_token);
       setStatus('off');
     },
     share: (log, options) => {
@@ -296,7 +328,7 @@ export function useLive(
             return;
           }
           hostRef.current = { matchId: body.matchId, token: body.hostToken };
-          open(body.hostToken);
+          open(body.hostToken, false);
           if (options?.carry && options.previousHostToken) {
             try {
               const carried = await fetch(`${api}/matches/${body.matchId}/carry`, {

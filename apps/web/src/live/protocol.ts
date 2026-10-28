@@ -53,6 +53,21 @@ export interface JoinHistory {
 
 export type JoinAttempt = { readonly ok: true; readonly token: string } | { readonly ok: false; readonly invalid: boolean };
 
+/** Invite captured at boot, including when sessionStorage is blocked. */
+let heldAttempt: JoinAttempt | null = null;
+
+export function holdJoin(attempt: JoinAttempt): void {
+  if (attempt.ok || attempt.invalid) heldAttempt = attempt;
+}
+
+export function heldJoin(): JoinAttempt | null {
+  return heldAttempt;
+}
+
+export function releaseHeldJoin(): void {
+  heldAttempt = null;
+}
+
 function rememberJoin(storage: Storage, token: string): void {
   storage.setItem(JOIN_KEY, JSON.stringify({ token }));
 }
@@ -65,21 +80,35 @@ function replaceCourt(locationLike: JoinLocation, historyLike: JoinHistory): voi
 /**
  * Read a scanned invite. A valid token is returned and removed from the URL.
  * A join fragment that is not a 128-bit token is also removed and reported invalid.
+ * Storage may be null or throw. The token is still returned so the caller can keep it in memory.
  */
-export function readJoinToken(locationLike: JoinLocation, historyLike: JoinHistory, storage: Storage): JoinAttempt {
+export function readJoinToken(
+  locationLike: JoinLocation,
+  historyLike: JoinHistory,
+  storage: Storage | null,
+): JoinAttempt {
   const fragment = locationLike.hash.startsWith('#') ? locationLike.hash.slice(1) : locationLike.hash;
   const joinFragment = /^\/join\b/i.test(fragment);
   const fromHash = parseJoinHash(locationLike.hash);
-  if (joinFragment) replaceCourt(locationLike, historyLike);
-  if (fromHash) {
+  if (joinFragment) {
     try {
-      rememberJoin(storage, fromHash.token);
+      replaceCourt(locationLike, historyLike);
     } catch {
-      // The URL is already clean. The caller still joins with the returned token.
+      // The token is still returned. The caller strips the URL again on the next read.
+    }
+  }
+  if (fromHash) {
+    if (storage) {
+      try {
+        rememberJoin(storage, fromHash.token);
+      } catch {
+        // The URL is already clean. The caller keeps the returned token in memory.
+      }
     }
     return { ok: true, token: fromHash.token };
   }
   if (joinFragment) return { ok: false, invalid: true };
+  if (!storage) return { ok: false, invalid: false };
   try {
     const raw = storage.getItem(JOIN_KEY);
     if (!raw) return { ok: false, invalid: false };
@@ -98,8 +127,13 @@ export function forgetJoinToken(storage: Storage): void {
   storage.removeItem(JOIN_KEY);
 }
 
-export function captureJoinHash(locationLike: JoinLocation, historyLike: JoinHistory, storage: Storage): StoredJoin | null {
+export function captureJoinHash(
+  locationLike: JoinLocation,
+  historyLike: JoinHistory,
+  storage: Storage | null,
+): StoredJoin | null {
   const attempt = readJoinToken(locationLike, historyLike, storage);
+  holdJoin(attempt);
   return attempt.ok ? { token: attempt.token } : null;
 }
 
