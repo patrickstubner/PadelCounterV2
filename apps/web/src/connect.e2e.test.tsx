@@ -24,6 +24,7 @@ let joinMode: 'ok' | 'expired' | 'bad' = 'ok';
 let createMode: 'ok' | 'down' = 'ok';
 let snapshot: unknown = null;
 let snapshotHost = false;
+let inviteFails = 0;
 
 class FakeSocket {
   static readonly CONNECTING = 0;
@@ -98,6 +99,10 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     return Response.json({ matchId: MATCH, hostToken: HOST }, { status: 201 });
   }
   if (url.endsWith('/invites')) {
+    if (inviteFails > 0) {
+      inviteFails -= 1;
+      return Response.json({ error: 'offline' }, { status: 503 });
+    }
     return Response.json({ token: INVITE, role: 'player', matchId: MATCH, expiresAt: Date.now() + 3_600_000 }, { status: 201 });
   }
   return Response.json({ error: 'not_found' }, { status: 404 });
@@ -158,6 +163,7 @@ describe('connect overlay and scanned join', () => {
     createMode = 'ok';
     snapshot = null;
     snapshotHost = false;
+    inviteFails = 0;
     localStorage.clear();
     sessionStorage.clear();
     window.history.replaceState(null, '', '/');
@@ -354,10 +360,16 @@ describe('connect overlay and scanned join', () => {
     await press('share-match');
     await waitFor(() => document.querySelector('[data-testid="connect-dialog"] .qr') !== null);
     expect(fetchCalls.filter((call) => call.url.endsWith('/matches'))).toHaveLength(1);
-    const stored = JSON.parse(sessionStorage.getItem(JOIN_KEY) ?? '{}') as { token?: string; host?: boolean; matchId?: string };
+    const stored = JSON.parse(sessionStorage.getItem(JOIN_KEY) ?? '{}') as {
+      token?: string;
+      host?: boolean;
+      matchId?: string;
+      expiresAt?: number;
+    };
     expect(stored.token).toBe(HOST);
     expect(stored.host).toBe(true);
     expect(stored.matchId).toBe(MATCH);
+    const expiresAt = stored.expiresAt;
 
     await unmount(first.root, first.container);
     mounted.splice(0);
@@ -367,12 +379,15 @@ describe('connect overlay and scanned join', () => {
     const again = await mount();
     mounted.push(again);
     await waitFor(() => document.querySelector('[data-testid="connect-open"]') !== null);
+    expect(JSON.parse(sessionStorage.getItem(JOIN_KEY) ?? '{}').expiresAt).toBe(expiresAt);
     await press('connect-open');
     await press('share-match');
     await waitFor(() => document.querySelector('[data-testid="connect-dialog"] .qr') !== null);
     expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
     expect(fetchCalls.some((call) => call.url.endsWith('/invites'))).toBe(false);
-    expect(document.querySelector('[data-testid="new-code-note"]')?.textContent).toBe('New code turns this code off and replaces it.');
+    expect(document.querySelector('[data-testid="new-code-note"]')?.textContent).toBe(
+      'New code turns this code off and disconnects the phones that joined with it.',
+    );
     expect(document.body.textContent).not.toContain(INVITE);
     await press('rotate-code');
     await waitFor(() => fetchCalls.filter((call) => call.url.endsWith('/invites')).length === 1);

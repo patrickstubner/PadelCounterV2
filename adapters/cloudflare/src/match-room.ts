@@ -1,10 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
-import { connectionCloses, isJoinToken, isRole, isRoomCode, parseMatchLog, type Credential, type Role } from '@padel/core';
+import { connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, replayScore, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
-import { takeLiveMessage } from './rate';
+import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
 import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange } from './room';
-import { ensureActivityColumn, insertEvent, insertInvite, insertJoined, insertRoom, markActivityTouch, openRoomForCreate, readActivityTouch, readJoined, readRoom, revokePlayerInvites, type RoomSql } from './store';
+import { ensureActivityColumn, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, revokePlayerInvites, type RoomSql } from './store';
 import { quotaMac, safeEqualHex, sha256Hex } from './tokens';
 
 /** Fixed scope. A minute in the MAC would split one address across two pending caps. */
@@ -23,6 +23,7 @@ interface AdmittedState {
   readonly admitted: true;
   readonly credential: Credential;
   readonly stamps: readonly number[];
+  readonly renameStamps?: readonly number[];
   /** HMAC of the client address. Never the address itself. */
   readonly ip: string;
   readonly actor: string;
@@ -133,6 +134,16 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       await this.hello(ws, record, state);
       return;
     }
+    if (record.type === 'team_renamed') {
+      const renameBudget = allowRate(state.renameStamps ?? [], Date.now(), RENAME_PER_SECOND, 1_000);
+      ws.serializeAttachment({ ...state, renameStamps: renameBudget.stamps });
+      if (!renameBudget.ok) {
+        this.reject(ws, 'slow_down', record.eventId);
+        return;
+      }
+      await this.rename(ws, { ...state, renameStamps: renameBudget.stamps }, record);
+      return;
+    }
     const budget = takeLiveMessage(state.stamps, record.type, Date.now());
     ws.serializeAttachment({ ...state, stamps: budget.stamps });
     if (!budget.ok) {
@@ -191,9 +202,66 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       deviceId,
     };
     ws.serializeAttachment(next);
-    ws.send(JSON.stringify(result.payload));
+    const played = replayScore(room.base, room.events.map((item) => item.event));
+    ws.send(JSON.stringify({
+      ...result.payload,
+      names: { A: played.teams.a.name, B: played.teams.b.name },
+      nameSeq: latestEventSeq(this.sql()),
+    }));
     this.broadcastPresence();
     await this.armAlarm(Date.now());
+  }
+
+  private async rename(ws: WebSocket, state: AdmittedState, record: Record<string, unknown>): Promise<void> {
+    const room = readRoom(this.sql());
+    if (!room) {
+      this.reject(ws, 'unavailable', record.eventId);
+      return;
+    }
+    const side = liveTeamSide(record.team);
+    const name = parseLiveTeamName(record.name);
+    if (!side || !name || typeof record.eventId !== 'string') {
+      this.reject(ws, 'not_applied', record.eventId);
+      return;
+    }
+    const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, state.tokenHash));
+    if (!invite) {
+      this.reject(ws, 'bad_token', record.eventId);
+      return;
+    }
+    const result = applyLiveEvent(room, invite, state.actor, record.eventId, {
+      type: 'team/rename',
+      team: side,
+      name,
+      at: Date.now(),
+    }, Date.now());
+    if (!result.ok) {
+      this.reject(ws, result.code, record.eventId);
+      return;
+    }
+    if (!result.duplicate) {
+      try {
+        insertEvent(this.sql(), result.event);
+      } catch {
+        this.reject(ws, 'unavailable', record.eventId);
+        return;
+      }
+    }
+    const seq = readEventSeq(this.sql(), result.event.eventId) ?? latestEventSeq(this.sql());
+    const stored = result.event.event.type === 'team/rename' ? result.event.event.name : name;
+    const payload = JSON.stringify({
+      type: 'team_renamed',
+      eventId: result.event.eventId,
+      team: side === 'a' ? 'A' : 'B',
+      name: stored,
+      seq,
+    });
+    this.broadcast(payload, ws);
+    try {
+      ws.send(payload);
+    } catch {
+      // The sender already showed the name. The ack is only for reconciliation.
+    }
   }
 
   private async play(ws: WebSocket, state: AdmittedState, record: Record<string, unknown>): Promise<void> {
@@ -203,6 +271,11 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       return;
     }
     if (typeof record.eventId !== 'string') {
+      this.reject(ws, 'not_applied', record.eventId);
+      return;
+    }
+    const rawEvent = record.event;
+    if (typeof rawEvent === 'object' && rawEvent !== null && (rawEvent as { type?: unknown }).type === 'team/rename') {
       this.reject(ws, 'not_applied', record.eventId);
       return;
     }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { isValidStoredName, parseLiveTeamName, sanitizeTeamName } from './names';
 import { connectionCloses } from './messages';
 import { createMatch, assignMatchId, matchReducer, replayScore } from './reducer';
 import { matchWinner, setWinner } from './rules';
@@ -87,7 +88,7 @@ describe('scoring without undo', () => {
     expect(parseMatchLog(tampered)).toBeNull();
   });
 
-  it('stores a rename only after sanitizeTeamName, capped at 20 characters', () => {
+  it('stores a rename only after sanitizeTeamName, capped at 24 characters', () => {
     const event = parseStoredEvent({
       type: 'team/rename',
       team: 'a',
@@ -96,8 +97,8 @@ describe('scoring without undo', () => {
     });
     expect(event).toMatchObject({ type: 'team/rename', team: 'a' });
     if (!event || event.type !== 'team/rename') return;
-    expect(event.name).toBe('Lobos extra characte');
-    expect([...event.name].length).toBeLessThanOrEqual(20);
+    expect(event.name).toBe('Lobos extra characters b');
+    expect([...event.name].length).toBeLessThanOrEqual(24);
     expect(event.name).not.toContain('\u0007');
   });
 });
@@ -136,5 +137,70 @@ describe('socket close policy', () => {
     expect(connectionCloses('join_device_limit')).toBe(false);
     expect(connectionCloses('join_network_limit')).toBe(false);
     expect(connectionCloses('invalid_device')).toBe(false);
+  });
+});
+
+describe('live team names', () => {
+  it('accepts a trimmed name of 24 characters and refuses controls or a longer name', () => {
+    const full = 'L'.repeat(24);
+    expect(parseLiveTeamName(`  ${full}  `)).toBe(full);
+    expect(parseLiveTeamName(`${full}X`)).toBeNull();
+    expect(parseLiveTeamName('Lobos\n')).toBeNull();
+    expect(parseLiveTeamName('')).toBeNull();
+    expect(parseLiveTeamName(12)).toBeNull();
+    expect(parseLiveTeamName('\u3164')).toBeNull();
+    expect(parseLiveTeamName('\u115F')).toBeNull();
+    expect(parseLiveTeamName('\u2800\u2800')).toBeNull();
+    expect(parseLiveTeamName('\uFE0F\uFE0F')).toBeNull();
+    expect(parseLiveTeamName('\u{E0100}')).toBeNull();
+    expect(parseLiveTeamName(`A${'\u0301'.repeat(8)}`)).toBeNull();
+    expect(parseLiveTeamName('A\u0301')).toBe('Á');
+    expect(parseLiveTeamName('❤️')).toBe('❤️');
+    const kept = matchReducer(createMatch(T0), { type: 'team/rename', team: 'a', name: full, at: T0 + 1 });
+    expect(kept.teams.a.name).toBe(full);
+    const local = matchReducer(createMatch(T0), {
+      type: 'team/rename',
+      team: 'b',
+      name: `  ${'W'.repeat(30)}\u0007`,
+      at: T0 + 1,
+    });
+    expect([...local.teams.b.name].length).toBeLessThanOrEqual(24);
+    expect(local.teams.b.name).not.toContain('\u0007');
+  });
+
+  it('keeps Hindi, Thai, Arabic, and Hebrew names and refuses a stack of marks', () => {
+    const names = [
+      'भारतीय टीम',
+      'ऑस्ट्रेलिया',
+      'สวัสดีครับ',
+      'বাংলাদেশ',
+      'مَرْحَبًا',
+      'שָׁלוֹם',
+      'ทีมไทย',
+      'नमस्ते',
+    ];
+    for (const name of names) {
+      expect(name.normalize('NFC')).toBe(name);
+      expect(parseLiveTeamName(name)).toBe(name);
+      expect(sanitizeTeamName(name, 'a')).toBe(name);
+      expect(sanitizeTeamName(name, 'b')).toBe(name);
+      expect(isValidStoredName(name)).toBe(true);
+    }
+    const allowed = `5${'\u0301'.repeat(4)}`;
+    const stacked = `5${'\u0301'.repeat(8)}`;
+    expect(parseLiveTeamName(allowed)).toBe(allowed);
+    expect(sanitizeTeamName(allowed, 'a')).toBe(allowed);
+    expect(parseLiveTeamName(stacked)).toBeNull();
+    expect(parseLiveTeamName(`X${'\u0323'.repeat(5)}`)).toBeNull();
+    expect(sanitizeTeamName(stacked, 'a')).toBe(stacked);
+    expect([...sanitizeTeamName(stacked, 'b')].filter((char) => /\p{M}/u.test(char))).toHaveLength(8);
+    expect(isValidStoredName(stacked)).toBe(true);
+    expect(isValidStoredName('A\u00A0B')).toBe(true);
+    expect(parseLiveTeamName('A\u00A0B')).toBe('A B');
+    expect(isValidStoredName('A\u0301')).toBe(false);
+    expect(isValidStoredName('\u3164')).toBe(true);
+    expect(sanitizeTeamName('\uFE0F\uFE0F', 'a')).toBe('Team A');
+    expect(sanitizeTeamName('\u{E0100}', 'b')).toBe('Team B');
+    expect(sanitizeTeamName('❤️', 'a')).toBe('❤️');
   });
 });

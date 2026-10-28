@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ROOM_MESSAGES } from '@padel/core';
-import { JOIN_KEY, interpretMessage, isTerminalCode, isTerminalMessage, joinLink, parseJoinHash, readJoinToken, reconnectDelayMs, shouldResumeSocket, socketUrl, unackedAfterSnapshot } from './protocol';
+import { JOIN_KEY, interpretMessage, isTerminalCode, isTerminalMessage, joinLink, onlineRetryAllowed, parseJoinHash, readJoinToken, reconnectDelayMs, shouldResumeSocket, socketUrl, unackedAfterSnapshot } from './protocol';
 
 const ID = '00000000-0000-4000-8000-0000000000aa';
 const TOKEN = 'abcdefghijklmnopqrstuv';
@@ -116,6 +116,9 @@ describe('pending live points', () => {
     expect(slow).toBeGreaterThanOrEqual(2_000);
     expect(later).toBeGreaterThan(fast);
     expect(reconnectDelayMs(0, false, 1)).toBeGreaterThan(fast);
+    expect(reconnectDelayMs(3, true, 0)).toBeGreaterThanOrEqual(later);
+    expect(onlineRetryAllowed(1_000, 2_500)).toBe(false);
+    expect(onlineRetryAllowed(1_000, 3_000)).toBe(true);
     expect(isTerminalCode('bad_token')).toBe(true);
     expect(isTerminalCode('upgrade_required')).toBe(true);
     expect(isTerminalCode('unavailable')).toBe(false);
@@ -154,6 +157,17 @@ describe('scanned join url', () => {
     location.hash = '';
     expect(readJoinToken(location, history, storage)).toEqual({ ok: true, token: TOKEN });
     expect(calls).toHaveLength(1);
+  });
+
+  it('keeps the host token when a join fragment arrives in that tab', () => {
+    const storage = memoryStorage();
+    const host = 'hhhhhhhhhhhhhhhhhhhhhh';
+    const expiresAt = Date.now() + 60_000;
+    storage.setItem(JOIN_KEY, JSON.stringify({ token: host, expiresAt, host: true, matchId: ID }));
+    const history = { replaceState: () => undefined };
+    const location = { hash: `#/join?t=${TOKEN}`, pathname: '/PadelCounterV2/', search: '' };
+    expect(readJoinToken(location, history, storage)).toEqual({ ok: true, token: host });
+    expect(JSON.parse(storage.getItem(JOIN_KEY) ?? '{}').token).toBe(host);
   });
 
   it('drops a stored token whose expiry has passed', () => {

@@ -1,5 +1,5 @@
 import { isUuid } from './id';
-import { isValidStoredName, sanitizeTeamName } from './names';
+import { isValidStoredName, storedTeamName } from './names';
 import { withActor } from './policy';
 import { isPlausibleSetScore } from './rules';
 import {
@@ -130,7 +130,7 @@ export function parseStoredEvent(value: unknown): MatchEvent | null {
       const event = {
         type: 'team/rename' as const,
         team: record.team,
-        name: sanitizeTeamName(record.name, record.team),
+        name: storedTeamName(record.name, record.team),
         at: record.at,
       };
       return withActor(event, record.by);

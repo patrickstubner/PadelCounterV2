@@ -135,7 +135,7 @@ describe('role checks', () => {
     expect(state.sets[0]).toEqual({ a: 1, b: 1 });
   });
 
-  it('stores a sanitized name of at most 20 characters and broadcasts a delta', () => {
+  it('stores a sanitized name of at most 24 characters and broadcasts a delta', () => {
     const played = applyPlay(
       started(),
       { role: 'player', host: true },
@@ -145,8 +145,8 @@ describe('role checks', () => {
     );
     expect(played.ok).toBe(true);
     if (!played.ok || played.event.event.type !== 'team/rename') return;
-    expect(played.event.event.name).toBe('Lobos extra characte');
-    expect([...played.event.event.name].length).toBeLessThanOrEqual(20);
+    expect(played.event.event.name).toBe('Lobos extra characters b');
+    expect([...played.event.event.name].length).toBeLessThanOrEqual(24);
     const delta = eventDelta({
       eventId: played.event.eventId,
       event: played.event.event,

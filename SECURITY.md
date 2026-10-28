@@ -255,6 +255,29 @@ Production deploy aborted with `production environment needs a required reviewer
 - A failed New code leaves the live connection up. A retry does not clear the error banner; the snapshot still does.
 - The README and `docs/architektur-report.md` no longer say that production deploy waits for a required reviewer. Production is a manual workflow on `main`, and the deployment branch policy contains only `main`.
 
+## Review 14, 2026-10-28
+
+- A connected phone can rename a team. The server stores `team/rename` in the match log, so the name is in the history, and it broadcasts `{ type: 'team_renamed', team, name, seq }`. The name is trimmed, at most 24 characters, and is refused when it contains a control character. The court renders that name as text. A later `seq` wins. Renames are limited to 3 per second on one connection. A match that is not live still renames only on that phone. Review 15 uses the same 24-character limit there.
+- `slow_down` waits at least two seconds, and that wait is used once. The next retry uses the normal backoff. A successful reconnect clears the previous error. Repeated `online` events inside two seconds do not each open a socket.
+- A join fragment in the host tab does not replace the host token in `sessionStorage`. Reloading the tab does not extend `expiresAt`.
+- The dialog and the README say that New code disconnects the phones that joined with the current code.
+
+## Review 15, 2026-10-28
+
+- A `team_renamed` frame is applied whenever its server sequence is newer, including when the event id is this phone’s own. Two phones that rename at the same time end on the name the server stored last.
+- Team names use one limit, `MAX_TEAM_NAME_LENGTH` (24), on the court, in the archive, and in the worker. D1 does not store team names. A played match with a 24-character name stays in History after a reload.
+- `{ type: 'event', event: { type: 'team/rename' } }` is refused. Renames go through `team_renamed`, which keeps the 3-per-second limit and rejects a name instead of shortening it.
+- A new name is refused when it is only a blank filler (`U+3164`, `U+115F`, `U+2800`) or only variation selectors. Review 16 limits combining marks per base character.
+- A successful New code clears the error that an earlier attempt left on the court.
+- The match still holds at most 500 events. Three connections renaming at the limit can fill that in about a minute, the same way repeated score taps can. After that the room refuses further changes. New code still disconnects phones that joined with the old code. This is noted, not changed.
+
+## Review 16, 2026-10-28
+
+- Combining marks are limited per base character, at most four in a row. They are not counted across the whole name. A Hindi, Thai, Bengali, Arabic, or Hebrew name is stored unchanged. `sanitizeTeamName` does not drop or reorder marks that are already valid.
+- `isValidStoredName` checks that a saved name is NFC, already trimmed, free of control and format characters, free of an unpaired surrogate, and at most 24 characters. It does not rewrite a no-break space. The filler and mark rules apply only to a new name, so a name saved by an older build still loads.
+- A local name that is only variation selectors becomes Team A or Team B. The server already refuses that name.
+- A phone still on 2.1.3 sends a live rename as `{ type: 'event', event: { type: 'team/rename' } }`. The server refuses that path. That phone can rename a team in a live match only after it updates.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.

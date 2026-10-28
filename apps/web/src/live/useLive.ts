@@ -14,6 +14,7 @@ import {
   JOIN_KEY,
   joinLink,
   OFFLINE_COURT_MS,
+  onlineRetryAllowed,
   reconnectDelayMs,
   SLOW_BANNER_MS,
   shouldResumeSocket,
@@ -120,6 +121,8 @@ export function useLive(
   const resumes = useRef(0);
   const opening = useRef(false);
   const slowDown = useRef(false);
+  const nameSeq = useRef(0);
+  const lastOnlineRetry = useRef(0);
   const hadLive = useRef(false);
   const hiddenAt = useRef<number | null>(null);
   const wakeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -243,7 +246,19 @@ export function useLive(
       if (current.expiresAt <= now) return null;
       return current;
     }
-    const next = { token, expiresAt: now + (asJoin ? JOIN_TOKEN_TTL_MS : HOST_TOKEN_TTL_MS) };
+    let keptExpiry: number | null = null;
+    try {
+      const raw = sessionStorage.getItem(JOIN_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { token?: unknown; expiresAt?: unknown };
+        if (parsed.token === token && typeof parsed.expiresAt === 'number' && parsed.expiresAt > now) {
+          keptExpiry = parsed.expiresAt;
+        }
+      }
+    } catch {
+      // A missing expiry gets a fresh lifetime below.
+    }
+    const next = { token, expiresAt: keptExpiry ?? now + (asJoin ? JOIN_TOKEN_TTL_MS : HOST_TOKEN_TTL_MS) };
     tokenRef.current = next;
     try {
       let matchId = '';
@@ -293,8 +308,11 @@ export function useLive(
 
   const sendPoint = (ws: WebSocket, item: PendingPoint) => {
     if (ws.readyState !== WebSocket.OPEN) return false;
+    const body = item.event.type === 'team/rename'
+      ? { type: 'team_renamed', eventId: item.id, team: item.event.team.toUpperCase(), name: item.event.name }
+      : { type: 'event', eventId: item.id, event: item.event };
     try {
-      ws.send(JSON.stringify({ type: 'event', eventId: item.id, event: item.event }));
+      ws.send(JSON.stringify(body));
     } catch {
       return false;
     }
@@ -447,6 +465,10 @@ export function useLive(
           return;
         }
         ticket = body.ticket;
+        if (!asJoin) {
+          setError(null);
+          setJoinError(null);
+        }
       } catch {
         if (generation.current !== mine) return;
         fail(ROOM_MESSAGES.offline);
@@ -522,6 +544,15 @@ export function useLive(
           clearSlowBanner();
           return;
         }
+        if (notice.kind === 'rename') {
+          unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
+          queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
+          if (notice.seq <= nameSeq.current) return;
+          nameSeq.current = notice.seq;
+          seenRef.current.add(notice.eventId);
+          applyRef.current({ type: 'team/rename', team: notice.team, name: notice.name, at: Date.now() });
+          return;
+        }
         if (notice.kind === 'log') {
           const matchId = notice.log.base.matchId.toLowerCase();
           matchRef.current = matchId;
@@ -554,6 +585,7 @@ export function useLive(
           setStatus('live');
           resumes.current = 0;
           slowDown.current = false;
+          nameSeq.current = Math.max(nameSeq.current, notice.nameSeq);
           opening.current = false;
           clearWake();
           armSender();
@@ -605,7 +637,9 @@ export function useLive(
     const ws = socketRef.current;
     const visibility = typeof document === 'undefined' ? 'visible' : document.visibilityState;
     if (!shouldResumeSocket(visibility, ws ? ws.readyState : null, opening.current)) return;
-    const delay = reconnectDelayMs(resumes.current, slowDown.current);
+    const penalise = slowDown.current;
+    if (penalise) slowDown.current = false;
+    const delay = reconnectDelayMs(resumes.current, penalise);
     resumes.current += 1;
     wakeTimer.current = setTimeout(() => {
       wakeTimer.current = null;
@@ -663,8 +697,11 @@ export function useLive(
     document.addEventListener('visibilitychange', onShow);
     window.addEventListener('pageshow', onShow);
     const onOnline = () => {
+      const now = Date.now();
+      if (!onlineRetryAllowed(lastOnlineRetry.current, now)) return;
       if (!tokenRef.current) return;
       if (readyRef.current && socketIsUp(socketRef.current)) return;
+      lastOnlineRetry.current = now;
       clearWake();
       resumes.current = 0;
       if (slowDown.current) {
@@ -733,7 +770,7 @@ export function useLive(
         for (const item of fresh) {
           try {
             ws.send(JSON.stringify({ type: 'ping' }));
-            ws.send(JSON.stringify({ type: 'event', eventId: item.id, event: item.event }));
+            sendPoint(ws, item);
             item.resent = true;
             item.sentAt = now;
           } catch {
@@ -773,6 +810,8 @@ export function useLive(
       ? body.expiresAt
       : Date.now() + JOIN_TOKEN_TTL_MS;
     rememberInvite(body.token, expiresAt);
+    setError(null);
+    setJoinError(null);
     const page = typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href;
     setQr(joinLink(page, body.token));
   };

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_TEAM_NAME_LENGTH } from './names';
 import { appendEvent, createLog, replay } from './log';
 import { loadLog, saveLog, serializeLog } from './persistence';
 import {
@@ -279,5 +280,25 @@ describe('match archive', () => {
     saved.set(ARCHIVE_KEY, '{');
     expect(loadArchive(memory)).toEqual([]);
     expect(loadArchive(storage)).toEqual([]);
+  });
+
+  it('keeps a played match whose name uses the full shared limit', () => {
+    const name = 'A'.repeat(MAX_TEAM_NAME_LENGTH);
+    const saved = new Map<string, string>();
+    const memory: MatchStorage = {
+      getItem: (key) => saved.get(key) ?? null,
+      setItem: (key, value) => {
+        saved.set(key, value);
+      },
+    };
+    const match = archived(ID, T0);
+    const long: ArchivedMatch = {
+      ...match,
+      teams: { a: name, b: 'Team B' },
+      events: [{ type: 'team/rename', team: 'a', name, at: T0 }],
+    };
+    expect(saveArchive([long], memory)).toBe(true);
+    expect(loadArchive(memory)[0]?.teams.a).toBe(name);
+    expect(loadArchive(memory)).toHaveLength(1);
   });
 });

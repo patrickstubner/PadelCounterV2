@@ -22,10 +22,14 @@ export {
   MAX_TEAM_NAME_LENGTH,
   MAX_TEAM_NAME_UTF16_UNITS,
   UNSAFE_CHARS,
+  MAX_LIVE_TEAM_NAME_LENGTH,
   clampTeamNameDraft,
   codePointLength,
   isValidStoredName,
+  liveTeamSide,
+  parseLiveTeamName,
   sanitizeTeamName,
+  storedTeamName,
 } from './names';
 export {
   RULES_SUMMARY,

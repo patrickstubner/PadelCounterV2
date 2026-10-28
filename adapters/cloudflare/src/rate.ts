@@ -49,6 +49,9 @@ function takeBucket(
   return next.ok;
 }
 
+/** Renames are a few per second on one connection, separate from scoring. */
+export const RENAME_PER_SECOND = 3;
+
 /** Pings and scoring events share one per-socket budget. */
 export function takeLiveMessage(
   stamps: readonly number[],
