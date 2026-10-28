@@ -290,10 +290,12 @@ Production deploy aborted with `production environment needs a required reviewer
 
 - A device token is granted inside one Durable Object transaction, and the D1 insert is one statement that checks the count of eight. Parallel redeems cannot add a ninth active token.
 - When this network has used its code attempts, the 429 says to use the QR link. That limit is unchanged.
-- The global counter is recorded in D1. When it reaches 10,000 in a minute the worker logs the fixed line `short code attempts recorded`. The line has no address and no code.
+- The global counter is recorded in D1. The upsert returns the new count (`RETURNING n`). When that count becomes exactly 10,000 the worker logs the fixed line `short code attempts recorded`. The line has no address and no code.
 - A successful code or scan removes the Join match history entry, so Back does not open the dialog again.
-- The deploy check refuses `QUOTA_HMAC_KEY` when it is missing or shorter than 32 characters, and it does not print the value. Replacing that secret invalidates open short codes and quota counters. `docs/DEPLOY.md` says so.
-- A code token that finds the court already full is revoked, so the slot can be used again. The phone is told “This match is full.”
+- The worker returns 503 `not_configured` when `QUOTA_HMAC_KEY` is missing or shorter than 32 characters. The body is the usual message and does not include the secret. The deploy check applies the same length rule and does not print the value. Deploy copies the GitHub environment secret onto the worker with `wrangler secret put`, passing the value on stdin. That GitHub secret is the single source for staging and for production.
+- Replacing `QUOTA_HMAC_KEY` expires open short codes and quota counters. That is accepted. Phones need a new QR code or a new short code. `docs/DEPLOY.md` says so.
+- A code token that finds the court already full, and whose device has no admitted socket, is revoked, so the slot can be used again. The phone is told “This match is full.” A phone that already has a seat can reconnect while the court is full. Its previous socket is closed, and the token stays.
+- A failed D1 claim does not drop the device token it was replacing. The previous room invite is restored.
 
 ## Out of scope
 

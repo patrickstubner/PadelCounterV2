@@ -24,7 +24,7 @@ import { corsHeaders, isAllowedOrigin } from './cors';
 import { clientAddress, clientIpHeaders, d1MatchIndex, isIdConflict, type D1Like, type MatchIndex } from './match-index';
 import { takeJoinFailure, takeMatchRoute } from './rate';
 import { classifyPath, limitsMatchRoute, matchIdFrom, ticketFrom } from './routes';
-import { quotaMac, randomToken, safeEqualHex, sha256Hex } from './tokens';
+import { quotaMac, quotaSecret, randomToken, safeEqualHex, sha256Hex } from './tokens';
 
 export interface RoomNamespace {
   idFromName(name: string): unknown;
@@ -133,7 +133,7 @@ async function enforceMatchRouteLimit(
   origin: string | null,
   environment: string,
 ): Promise<Response | null> {
-  const secret = env.QUOTA_HMAC_KEY;
+  const secret = quotaSecret(env.QUOTA_HMAC_KEY);
   const limiter = env.REQUEST_LIMIT;
   if (!secret || !limiter) return error(503, 'not_configured', origin, environment);
   const key = await quotaMac(secret, 'rate-ip', clientAddress(request), RATE_LIMIT_SCOPE);
@@ -161,7 +161,7 @@ async function createMatch(request: Request, env: ServerEnv): Promise<Response> 
   if (typeof record.device !== 'string' || !DEVICE_ID.test(record.device)) {
     return Response.json({ error: 'invalid_match' }, { status: 400 });
   }
-  const secret = env.QUOTA_HMAC_KEY;
+  const secret = quotaSecret(env.QUOTA_HMAC_KEY);
   if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
   const index = d1MatchIndex(env.DB);
   const now = Date.now();
@@ -299,7 +299,7 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
   const index = d1MatchIndex(env.DB);
   const inviteHash = await sha256Hex(inviteToken);
   const now = Date.now();
-  const secret = env.QUOTA_HMAC_KEY;
+  const secret = quotaSecret(env.QUOTA_HMAC_KEY);
   if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
   await index.replacePlayerCredential(matchId, now, {
     tokenHash: inviteHash,
@@ -374,7 +374,7 @@ async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
   }
   const rawCode = body && typeof body === 'object' ? (body as { code?: unknown }).code : undefined;
   if (typeof rawCode === 'string' && !bearer(request)) return redeemJoinCode(request, env, device, rawCode);
-  const secret = env.QUOTA_HMAC_KEY;
+  const secret = quotaSecret(env.QUOTA_HMAC_KEY);
   if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
   const index = d1MatchIndex(env.DB);
   const now = Date.now();
@@ -420,6 +420,19 @@ function joinCodeRejected(): Response {
   );
 }
 
+async function readMintGrant(response: Response): Promise<{ replaced: readonly string[]; revokedAt: number }> {
+  try {
+    const body = (await response.json()) as { replaced?: unknown; revokedAt?: unknown };
+    const replaced = Array.isArray(body.replaced)
+      ? body.replaced.filter((hash): hash is string => typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash)).slice(0, 8)
+      : [];
+    const revokedAt = typeof body.revokedAt === 'number' && Number.isInteger(body.revokedAt) ? body.revokedAt : 0;
+    return { replaced, revokedAt };
+  } catch {
+    return { replaced: [], revokedAt: 0 };
+  }
+}
+
 function codeLimited(): Response {
   return Response.json(
     { error: 'code_limited', message: ROOM_MESSAGES.code_limited },
@@ -430,7 +443,7 @@ function codeLimited(): Response {
 const CODE_ALARM_LOG = 'short code attempts recorded';
 
 async function redeemJoinCode(request: Request, env: ServerEnv, device: string, rawCode: string): Promise<Response> {
-  const secret = env.QUOTA_HMAC_KEY;
+  const secret = quotaSecret(env.QUOTA_HMAC_KEY);
   if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
   const index = d1MatchIndex(env.DB);
   const now = Date.now();
@@ -477,6 +490,7 @@ async function redeemJoinCode(request: Request, env: ServerEnv, device: string, 
   });
   if (added.status === 409) return joinCodeRejected();
   if (!added.ok) return Response.json({ error: 'unavailable' }, { status: 503 });
+  const minted = await readMintGrant(added);
   const claimed = await index.claimMinted({
     tokenHash,
     matchId: credential.matchId,
@@ -488,7 +502,11 @@ async function redeemJoinCode(request: Request, env: ServerEnv, device: string, 
   if (!claimed) {
     await stub.fetch('https://match.internal/revoke-minted', {
       method: 'POST',
-      body: JSON.stringify({ tokenHash }),
+      body: JSON.stringify({
+        tokenHash,
+        restore: minted.replaced,
+        revokedAt: minted.revokedAt,
+      }),
     });
     return joinCodeRejected();
   }

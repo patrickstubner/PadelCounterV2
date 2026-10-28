@@ -48,6 +48,11 @@ describe('production deploy gate', () => {
     expect(yaml).toContain('github.sha');
     expect(yaml).toContain('git rev-parse HEAD');
     expect(yaml).toContain('wrangler deploy --env production');
+    expect(yaml).toContain("printf '%s' \"$QUOTA_HMAC_KEY\" | pnpm exec wrangler secret put QUOTA_HMAC_KEY --env staging");
+    expect(yaml).toContain("printf '%s' \"$QUOTA_HMAC_KEY\" | pnpm exec wrangler secret put QUOTA_HMAC_KEY --env production");
+    expect(yaml).not.toContain('set -x');
+    expect(yaml).not.toContain('echo "$QUOTA_HMAC_KEY"');
+    expect(yaml).not.toContain('echo $QUOTA_HMAC_KEY');
     expect(yaml).toContain('actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e');
     expect(yaml).toContain('needs: production');
     expect(yaml).toContain('check-deploy-env.mjs');

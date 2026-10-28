@@ -1,8 +1,8 @@
-import { CODE_ATTEMPTS_PER_PREFIX, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, parseLiveTeamName } from '@padel/core';
+import { CODE_ALARM_GLOBAL, CODE_ATTEMPTS_PER_PREFIX, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, joinWindow, parseLiveTeamName } from '@padel/core';
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
-import { quotaMac, sha256Hex } from './tokens';
+import { describe, expect, it, vi } from 'vitest';
+import { TEST_QUOTA_HMAC_KEY, quotaMac, sha256Hex } from './tokens';
 
 const ORIGIN = 'https://patrickstubner.github.io';
 const HOST_DEVICE = 'd11111111';
@@ -335,7 +335,7 @@ describe('live match in workerd', () => {
           return typeof attachment?.ip === 'string' ? attachment.ip : '';
         }),
       );
-    const expected = await quotaMac('test-quota-hmac-key', 'socket-ip', address, 'socket');
+    const expected = await quotaMac(TEST_QUOTA_HMAC_KEY, 'socket-ip', address, 'socket');
     const pending = await readIps();
     expect(pending).toContain(expected);
     expect(JSON.stringify(pending)).not.toContain(address);
@@ -479,7 +479,7 @@ describe('short match codes', () => {
     const invited = await issuedCode('d04040404');
     const compact = invited.code.replace('-', '');
     const row = await env.DB.prepare('SELECT code_hash FROM join_codes WHERE match_id = ?').bind(invited.matchId).first();
-    const expected = await quotaMac('test-quota-hmac-key', 'join-code', compact, 'code');
+    const expected = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-code', compact, 'code');
     expect(row?.code_hash).toBe(expected);
     expect(row?.code_hash).not.toBe(await sha256Hex(compact));
     const first = await redeem(invited.code, 'd05050505');
@@ -560,6 +560,95 @@ describe('short match codes', () => {
     expect(left?.n).toBe(0);
     const again = await redeem(invited.code, 'daa000006');
     expect(again.status).toBe(201);
+  });
+
+  it('admits a seated device again when the court is full', async () => {
+    const invited = await issuedCode('dab000001');
+    await connect(invited.hostToken, 'dab000001');
+    const first = await redeem(invited.code, 'dab000002');
+    expect(first.status).toBe(201);
+    const body = (await first.json()) as { token: string };
+    const seated = await connect(body.token, 'dab000002');
+    const second = await redeem(invited.code, 'dab000003');
+    const third = await redeem(invited.code, 'dab000004');
+    expect(second.status).toBe(201);
+    expect(third.status).toBe(201);
+    await connect(((await second.json()) as { token: string }).token, 'dab000003');
+    await connect(((await third.json()) as { token: string }).token, 'dab000004');
+    const errors: string[] = [];
+    seated.ws.addEventListener('message', (event: MessageEvent) => {
+      const parsed = JSON.parse(String(event.data)) as { type?: string; code?: string };
+      if (parsed.type === 'error' && parsed.code) errors.push(parsed.code);
+    });
+    const closed = new Promise<CloseEvent>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('old socket stayed open')), 3_000);
+      seated.ws.addEventListener('close', (event: CloseEvent) => {
+        clearTimeout(timer);
+        resolve(event);
+      });
+    });
+    const again = await connect(body.token, 'dab000002');
+    const close = await closed;
+    expect(close.code).toBe(4000);
+    expect(close.reason).toBe('superseded');
+    expect(errors).toEqual([]);
+    expect(again.ws.readyState).toBe(WebSocket.OPEN);
+    const still = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${body.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'dab000002' }),
+    });
+    expect(still.status).toBe(201);
+    const live = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
+    ).bind(invited.matchId, 'dab000002').first();
+    expect(live?.n).toBe(1);
+  });
+
+  it('keeps the previous token when the D1 claim does not insert', async () => {
+    const invited = await issuedCode('dcd000001');
+    const first = await redeem(invited.code, 'dcd000002');
+    expect(first.status).toBe(201);
+    const body = (await first.json()) as { token: string };
+    for (let n = 0; n < MAX_MINTED_TOKENS - 1; n += 1) {
+      const device = `d${(n + 1).toString(16).padStart(8, 'e')}`;
+      expect((await redeem(invited.code, device)).status).toBe(201);
+    }
+    await env.DB.prepare(
+      'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at, device_id) VALUES (?, ?, 0, ?, NULL, ?)',
+    ).bind('ab'.repeat(32), invited.matchId, Date.now() + 3_600_000, 'd0f0f0f0f').run();
+    const replaced = await redeem(invited.code, 'dcd000002');
+    expect(replaced.status).toBe(401);
+    expect(await replaced.json()).toEqual(NEUTRAL);
+    const kept = await connect(body.token, 'dcd000002');
+    expect(kept.ws.readyState).toBe(WebSocket.OPEN);
+    const live = await env.DB.prepare(
+      'SELECT token_hash FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
+    ).bind(invited.matchId, 'dcd000002').all();
+    expect(live.results).toHaveLength(1);
+    expect(live.results[0]?.token_hash).toBe(await sha256Hex(body.token));
+  });
+
+  it('logs one alarm line when the global count becomes 10000', async () => {
+    const invited = await issuedCode('dae000001');
+    const window = joinWindow(Date.now());
+    const hash = await quotaMac(TEST_QUOTA_HMAC_KEY, 'code-global', 'all', String(window));
+    await env.DB.prepare(
+      'INSERT INTO join_quota (subject_hash, window, n, cap) VALUES (?, ?, ?, ?) ON CONFLICT(subject_hash, window) DO UPDATE SET n = excluded.n, cap = excluded.cap',
+    ).bind(hash, window, CODE_ALARM_GLOBAL - 1, CODE_ALARM_GLOBAL).run();
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((line?: unknown) => {
+      lines.push(String(line));
+    });
+    try {
+      const first = await redeem(invited.code, 'dae000002');
+      expect(first.status).toBe(201);
+      const second = await redeem(invited.code, 'dae000003');
+      expect(second.status).toBe(201);
+      expect(lines.filter((line) => line === 'short code attempts recorded')).toEqual(['short code attempts recorded']);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('revokes the code and the invite when the match ends', async () => {

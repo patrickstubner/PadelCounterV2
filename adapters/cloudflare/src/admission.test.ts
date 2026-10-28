@@ -62,6 +62,8 @@ describe('pending sockets', () => {
     expect(source).toContain('expiredHello');
     const open = source.slice(source.indexOf('private async openSocket'), source.indexOf('async webSocketMessage'));
     expect(open.indexOf("quotaMac(secret, 'socket-ip'")).toBeGreaterThan(-1);
+    expect(open.indexOf('quotaSecret')).toBeGreaterThan(-1);
+    expect(open.indexOf('quotaSecret')).toBeLessThan(open.indexOf('acceptWebSocket'));
     expect(open.indexOf('quotaMac')).toBeLessThan(open.indexOf('serializeAttachment'));
     expect(open).toContain('ip: ipMac');
     expect(open).not.toContain('ip, openedAt');

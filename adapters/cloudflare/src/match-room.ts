@@ -1,11 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
-import { MAX_MINTED_TOKENS, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
+import { MAX_MINTED_TOKENS, ROOM_MESSAGES, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
 import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange } from './room';
-import { ensureActivityColumn, grantMintedInvite, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, revokeInviteHash, revokePlayerInvites, type RoomSql } from './store';
-import { quotaMac, safeEqualHex, sha256Hex } from './tokens';
+import { ensureActivityColumn, grantMintedInvite, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, type RoomSql } from './store';
+import { quotaMac, quotaSecret, safeEqualHex, sha256Hex } from './tokens';
 
 /** Fixed scope. A minute in the MAC would split one address across two pending caps. */
 const SOCKET_IP_SCOPE = 'socket';
@@ -94,8 +94,8 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   }
 
   private async openSocket(request: Request): Promise<Response> {
-    const secret = this.env.QUOTA_HMAC_KEY;
-    if (!secret) return json(503, { error: 'not_configured' });
+    const secret = quotaSecret(this.env.QUOTA_HMAC_KEY);
+    if (!secret) return json(503, { error: 'not_configured', message: ROOM_MESSAGES.not_configured });
     const address = request.headers.get(CLIENT_IP_HEADER) ?? 'missing';
     const ipMac = await quotaMac(secret, 'socket-ip', address, SOCKET_IP_SCOPE);
     if (!allowPending(this.views(), ipMac)) return json(429, { error: 'slow_down' });
@@ -180,13 +180,10 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
     const tokenHash = await sha256Hex(record.token);
     const deviceId = typeof record.device === 'string' && /^d[a-f0-9]{8}$/.test(record.device) ? record.device : null;
-    const connected = this.ctx.getWebSockets(COURT_TAG).filter((socket) => {
-      if (socket === ws) return false;
-      return this.readState(socket)?.admitted === true;
-    }).length;
-    const result = helloPayload(room, tokenHash, connected, Date.now(), deviceId);
+    const seated = this.seatedSockets(ws, deviceId);
+    const result = helloPayload(room, tokenHash, seated.others, Date.now(), deviceId);
     if (!result.ok) {
-      if (result.code === 'match_full') {
+      if (result.code === 'match_full' && seated.same.length === 0) {
         const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, tokenHash));
         if (invite?.deviceId) {
           const now = Date.now();
@@ -222,8 +219,34 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       names: { A: played.teams.a.name, B: played.teams.b.name },
       nameSeq: latestEventSeq(this.sql()),
     }));
+    this.closeSuperseded(seated.same);
     this.broadcastPresence();
     await this.armAlarm(Date.now());
+  }
+
+  /** Admitted sockets for this device do not take another seat. */
+  private seatedSockets(self: WebSocket, deviceId: string | null): { others: number; same: WebSocket[] } {
+    const same: WebSocket[] = [];
+    let others = 0;
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      if (socket === self) continue;
+      const state = this.readState(socket);
+      if (state?.admitted !== true) continue;
+      if (deviceId !== null && state.deviceId === deviceId) same.push(socket);
+      else others += 1;
+    }
+    return { others, same };
+  }
+
+  /** Drop the previous half-open socket without a terminal room code. */
+  private closeSuperseded(sockets: readonly WebSocket[]): void {
+    for (const socket of sockets) {
+      try {
+        socket.close(4000, 'superseded');
+      } catch {
+        // The peer is already gone.
+      }
+    }
   }
 
   private async rename(ws: WebSocket, state: AdmittedState, record: Record<string, unknown>): Promise<void> {
@@ -467,16 +490,23 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       revokedAt: null,
       deviceId,
     }, Date.now(), MAX_MINTED_TOKENS));
-    if (decision === 'full') return json(409, { error: 'join_code' });
-    return json(201, { ok: true });
+    if (decision.status === 'full') return json(409, { error: 'join_code' });
+    return json(201, { ok: true, replaced: decision.replaced, revokedAt: decision.revokedAt });
   }
 
   private async revokeMinted(request: Request): Promise<Response> {
-    const body = await readBody(request, 200);
-    const tokenHash = body && typeof body === 'object' ? (body as { tokenHash?: unknown }).tokenHash : undefined;
+    const body = await readBody(request, 4000);
+    const fields = body && typeof body === 'object'
+      ? (body as { tokenHash?: unknown; restore?: unknown; revokedAt?: unknown })
+      : {};
+    const tokenHash = fields.tokenHash;
     if (typeof tokenHash !== 'string' || !/^[0-9a-f]{64}$/.test(tokenHash)) return json(400, { error: 'invalid_match' });
     if (!readRoom(this.sql())) return json(404, { error: 'unavailable' });
     revokeInviteHash(this.sql(), tokenHash, Date.now());
+    const restore = Array.isArray(fields.restore)
+      ? fields.restore.filter((hash): hash is string => typeof hash === 'string').slice(0, MAX_MINTED_TOKENS)
+      : [];
+    if (typeof fields.revokedAt === 'number') restoreInviteHashes(this.sql(), restore, fields.revokedAt);
     return json(200, { ok: true });
   }
 

@@ -60,7 +60,7 @@ pnpm build
 pnpm dev
 ```
 
-`pnpm dev` starts the court. `pnpm dev:worker` starts `wrangler dev --env dev` from `adapters/cloudflare`. Copy `adapters/cloudflare/.dev.vars.example` to `.dev.vars` and set `QUOTA_HMAC_KEY` to a long random string. There are no OAuth secrets to fill in.
+`pnpm dev` starts the court. `pnpm dev:worker` starts `wrangler dev --env dev` from `adapters/cloudflare`. Copy `adapters/cloudflare/.dev.vars.example` to `.dev.vars` and set `QUOTA_HMAC_KEY` to a random string of at least 32 characters. There are no OAuth secrets to fill in.
 
 To point a local court at a local worker, start the worker and run the court with `PUBLIC_API_URL=http://127.0.0.1:8787`. The dev worker allows that origin. Production and staging do not.
 

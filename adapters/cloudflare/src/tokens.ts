@@ -1,3 +1,14 @@
+/** Runtime floor. A shorter value is treated as unset and is never echoed. */
+export const QUOTA_KEY_MIN_LENGTH = 32;
+
+/** Fake key for tests. Not a deployed secret. */
+export const TEST_QUOTA_HMAC_KEY = 'test-quota-hmac-key-32-characters!';
+
+export function quotaSecret(value: string | undefined): string | null {
+  if (typeof value !== 'string' || value.length < QUOTA_KEY_MIN_LENGTH) return null;
+  return value;
+}
+
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return hex(digest);
