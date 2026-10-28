@@ -569,7 +569,7 @@ export default function App() {
           rows={[
             ["Pull Request", "`pnpm install --frozen-lockfile`, `lint`, `tsc -b`, Unit (Vitest), Contract-Tests gegen Miniflare/`wrangler dev` (Cloudflare), Supabase-CLI lokal, Firebase Emulator; `pnpm audit` + OSV-Scanner; CodeQL; Build ohne Deploy", "Supabase-/Firebase-Contract-Tests nur bei Änderungen in core oder dem Adapter (Pfadfilter)"],
             ["Push auf main", "Wie PR, dann Deploy Staging (Worker), Pages-Artefakt für Staging-Smoke-Test", "Staging-Frontend: Build gegen Staging-API, als Artefakt (eine zweite Pages-Site pro Repo gibt es nicht)"],
-            ["Freigabe `production`", "D1-Migration prod, `wrangler deploy --env production`, dann Frontend-Build gegen Prod-API und `actions/upload-pages-artifact` + `actions/deploy-pages`", "GitHub Environment mit Required Reviewer (Patrick); bei öffentlichen Repos gratis (nicht verifiziert für den aktuellen Plan); Alternative: Deploy nur bei Tag `v*`"],
+            ["Freigabe `production`", "D1-Migration prod, `wrangler deploy --env production`, dann Frontend-Build gegen Prod-API und `actions/upload-pages-artifact` + `actions/deploy-pages`", "Manuelles `workflow_dispatch` auf `main`. Kein Required Reviewer. Die Deployment-Branch-Policy ist custom und enthält nur `main`."],
             ["Pfadfilter", "`apps/web/**` → nur Pages; `adapters/cloudflare/**` → nur Worker; `packages/core/**` → beides", "Via `dorny/paths-filter` oder `on.push.paths` (Ersteres nicht verifiziert)"],
             ["Zeitplan", "Wöchentlich Audit/OSV, Dependabot", "Wie v1"],
           ]}

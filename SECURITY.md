@@ -247,6 +247,14 @@ Production deploy aborted with `production environment needs a required reviewer
 - A snapshot clears the error banner. “Too many changes. Wait a moment.” also clears when a later point is accepted, or after 5 seconds if nothing is accepted.
 - Disconnected shows that taps are not applied. The terminal codes from Review 11 still clear the token. The court colors are unchanged.
 
+## Review 13, 2026-10-28
+
+- A reconnect whose `POST /join` fails for a transient reason waits with the same backoff and jitter, then tries again. The browser `online` event starts that attempt without waiting out a backoff that was only for a dead network. `slow_down` still waits about two seconds. A rejected code still stops.
+- Disconnected still clears the token. Points tapped after that stay on this phone and are not sent. The hint says that. It does not say that the taps are ignored.
+- Show QR code after a reload shows the player code that is still inside its two hours. It does not call `POST /matches/:id/invites`, so it does not revoke that code. New code is the action that replaces it. The dialog says “New code turns this code off and replaces it.” The raw player code is stored next to the host credential in `sessionStorage` for this tab only, and not in `localStorage` or the address bar.
+- A failed New code leaves the live connection up. A retry does not clear the error banner; the snapshot still does.
+- The README and `docs/architektur-report.md` no longer say that production deploy waits for a required reviewer. Production is a manual workflow on `main`, and the deployment branch policy contains only `main`.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.

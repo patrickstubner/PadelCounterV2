@@ -422,7 +422,7 @@ export function App() {
           {room.status === 'disconnected' ? (
             <>
               <p className="live-error" role="status" data-testid="live-disconnected">Disconnected.</p>
-              <p className="live-hint" data-testid="disconnected-hint">Taps are not applied.</p>
+              <p className="live-hint" data-testid="disconnected-hint">Points stay on this phone.</p>
             </>
           ) : null}
           {room.error ? (
@@ -454,7 +454,7 @@ export function App() {
           : room.courtTone === 'online'
             ? 'Live match connected.'
             : room.status === 'disconnected'
-              ? 'Disconnected from the live match. Taps are not applied.'
+              ? 'Disconnected from the live match. Points stay on this phone.'
               : ''}
       </p>
       {pendingPlan ? (
