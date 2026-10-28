@@ -87,7 +87,7 @@ Use the same value on both workers if both should accept the same phones, or two
 
 **can be scripted with wrangler/gh once a token exists.** The environments themselves are already in place.
 
-`staging` and `production` already exist. `production` requires reviewer `patrickstubner` and allows the `main` branch. The deploy job checks that `production` has a required reviewer and fails if that rule is missing. Confirm that in the GitHub environment settings if it is ever cleared. **Owner must do (browser/account)** only to change that reviewer rule. Creating it again is not part of this pass.
+`staging` and `production` already exist. `production` has no required reviewer. Patrick removed that rule on 2026-10-28. Deploy to production is a manual `workflow_dispatch`, and the environment's deployment branch policy is custom and contains only `main`. The deploy job checks that policy and fails if it is missing, if it allows protected branches instead, or if the custom policies are anything other than the branch `main`. Confirm the policy in the GitHub environment settings if it is ever cleared. **Owner must do (browser/account)** only to change that branch policy. Creating the environments again is not part of this pass.
 
 `github-pages` is the Pages environment and is separate.
 
@@ -157,7 +157,7 @@ Characteristic IP, action Block, period 10 seconds, mitigation timeout 10 second
 
 **can be scripted with wrangler/gh once a token exists.**
 
-Push to `main` after steps 1–7. The staging job runs on that push. It migrates `padel-counter-staging` and deploys the worker `padel-counter-staging`. Watch the Actions log. A missing token skips successfully and does not deploy. A missing production reviewer is not required for staging.
+Push to `main` after steps 1–7. The staging job runs on that push. It migrates `padel-counter-staging` and deploys the worker `padel-counter-staging`. Watch the Actions log. A missing token skips successfully and does not deploy. Staging does not need the production branch policy. It only has to exist.
 
 On this first staging run, confirm that the token from step 2 is enough. Workers Scripts: Edit and D1: Edit are the intended set. If `wrangler d1 migrations apply` or `wrangler deploy` fails because the token is not allowed to read account settings, add Account Settings: Read and rerun the job. Do not add that permission before the failure.
 
@@ -239,11 +239,11 @@ Open a WebSocket to `wss://padel-counter-staging.<workers.dev subdomain>.workers
 
 Then open the court, share a match, and join from a second browser only after production Pages has the `PUBLIC_API_URL` from step 9. A staging worker and the published court are different hosts until that variable is the production origin and Pages has been deployed.
 
-## 13. Production approval
+## 13. Production deploy
 
 **Owner must do (browser/account).**
 
-On `main`, run the Deploy workflow with “Run workflow”. `production` asks `patrickstubner` to approve. The job checks out that exact commit, migrates `padel-counter`, deploys the worker `padel-counter`, and, when `DEPLOY_PAGES` is `true`, publishes GitHub Pages for the same commit. Do not approve a commit that has not passed CI. Do not mark a pull request ready just to deploy.
+On `main`, run the Deploy workflow with “Run workflow”. Nothing in `production` asks for a reviewer. The job checks that the deployment branch policy is custom and contains only `main`, checks out that exact commit, migrates `padel-counter`, deploys the worker `padel-counter`, and, when `DEPLOY_PAGES` is `true`, publishes GitHub Pages for the same commit. Do not run it for a commit that has not passed CI. Do not mark a pull request ready just to deploy.
 
 ## 14. Usage and billing notifications
 
