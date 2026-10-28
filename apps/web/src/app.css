@@ -4,8 +4,9 @@
   --text: #ffffff;
   --a: #e4ff47;
   --b: #ffb020;
-  --a-bg: #071006;
-  --b-bg: #120e06;
+  --court: #000000;
+  --court-online: #163056;
+  --court-offline: #3a1016;
   --line: #2a2a2a;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
@@ -49,7 +50,7 @@ button:disabled { cursor: not-allowed; }
   height: 100dvh;
   display: flex;
   flex-direction: column;
-  background: #000000;
+  background: var(--court);
   transition: background-color 0.45s ease;
   user-select: none;
   -webkit-user-select: none;
@@ -67,7 +68,7 @@ button:disabled { cursor: not-allowed; }
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.35rem 0.7rem;
-  background: #000000;
+  background: var(--court);
   transition: background-color 0.45s ease;
 }
 
@@ -266,8 +267,10 @@ button:disabled { cursor: not-allowed; }
   padding: 0.35rem;
 }
 
-.team-a { background: var(--a-bg); --accent: var(--a); }
-.team-b { background: var(--b-bg); --accent: var(--b); }
+.team-a,
+.team-b { background: var(--court); }
+.team-a { --accent: var(--a); }
+.team-b { --accent: var(--b); }
 
 .step {
   width: 100%;
@@ -507,7 +510,7 @@ button:disabled { cursor: not-allowed; }
   align-items: center;
   justify-content: center;
   gap: 0.12rem;
-  background: #000000;
+  background: var(--court);
   transition: background-color 0.45s ease;
   min-height: 0;
   z-index: 1;
@@ -518,21 +521,11 @@ button:disabled { cursor: not-allowed; }
   padding: 0;
 }
 
-/* Local stays #000000. Online #163056 and offline #3a1016 are separate dark hues.
-   White and #a3a3a3 on both are at least 5.2:1. Disabled glyphs use #d0d0d0 (11.9:1 on #141414). */
-.app.is-online,
-.app.is-online .top,
-.app.is-online .foot,
-.app.is-online .mid {
-  background: #163056;
-}
-
-.app.is-offline,
-.app.is-offline .top,
-.app.is-offline .foot,
-.app.is-offline .mid {
-  background: #3a1016;
-}
+/* One court colour per state, shared by both halves, the bar, and the middle.
+   Solo #000000 is darker than the old team tints #071006 and #120e06.
+   Online #163056 and offline #3a1016 stay the same on both halves. */
+.app.is-online { --court: var(--court-online); }
+.app.is-offline { --court: var(--court-offline); }
 
 .app.is-online .step:disabled,
 .app.is-online .text-btn:disabled,
