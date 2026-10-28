@@ -123,6 +123,13 @@ export function readJoinToken(
   }
 }
 
+/** A hidden page waits. An opening or still-open socket is left alone. */
+export function shouldResumeSocket(visibility: string, readyState: number | null, opening: boolean): boolean {
+  if (opening || visibility === 'hidden') return false;
+  if (readyState === null) return true;
+  return readyState !== 0 && readyState !== 1;
+}
+
 export function forgetJoinToken(storage: Storage): void {
   storage.removeItem(JOIN_KEY);
 }
@@ -138,7 +145,7 @@ export function captureJoinHash(
 }
 
 export type LiveNotice =
-  | { readonly kind: 'log'; readonly log: MatchLog; readonly players: number; readonly host: boolean }
+  | { readonly kind: 'log'; readonly log: MatchLog; readonly players: number; readonly host: boolean; readonly eventIds: readonly string[] }
   | { readonly kind: 'delta'; readonly eventId: string; readonly event: MatchEvent; readonly duplicate: boolean; readonly players: number }
   | { readonly kind: 'presence'; readonly players: number }
   | { readonly kind: 'join_offer'; readonly token: string }
@@ -177,7 +184,10 @@ export function interpretMessage(data: unknown): LiveNotice {
   if (record.type === 'snapshot' && record.log) {
     const log = parseMatchLog(record.log);
     if (!log) return { kind: 'error', message: 'The live match did not accept that.', close: false };
-    return { kind: 'log', log, players: playerCount(record.players), host: record.host === true };
+    const eventIds = Array.isArray(record.eventIds)
+      ? record.eventIds.filter((id): id is string => isUuid(id)).map((id) => id.toLowerCase())
+      : [];
+    return { kind: 'log', log, players: playerCount(record.players), host: record.host === true, eventIds };
   }
   if (record.type === 'join_offer' && isJoinToken(record.token)) {
     return { kind: 'join_offer', token: record.token };

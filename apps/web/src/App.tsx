@@ -66,7 +66,7 @@ function useUpdateReady(): boolean {
 
 export function App() {
   const match = useMatch();
-  const room = useLive(match.liveRef, match.replaceLog, match.applyLive);
+  const room = useLive(match.liveRef, match.replaceLog, match.applyLive, match.revertLive);
   const install = useInstallOffer();
   useWakeLock();
   const updateReady = useUpdateReady();
@@ -90,13 +90,16 @@ export function App() {
   const [connectOpen, setConnectOpen] = useState(false);
   const joinStarted = useRef(false);
   const applyJoin = useCallback((attempt: { readonly ok: true; readonly token: string } | { readonly ok: false; readonly invalid: boolean }) => {
-    if (attempt.ok) room.connect(attempt.token);
-    else if (attempt.invalid) room.rejectToken();
-    else return;
+    if (attempt.ok) {
+      room.connect(attempt.token);
+      return;
+    }
+    if (!attempt.invalid) return;
+    room.rejectToken();
     try {
       forgetJoinToken(window.sessionStorage);
     } catch {
-      // The token is already in memory. The address bar is cleared by readJoinToken.
+      // The address bar is already clear.
     }
   }, [room]);
   useEffect(() => {
@@ -110,13 +113,8 @@ export function App() {
     applyJoin(readJoinToken(window.location, window.history, readSession()));
   }, [applyJoin]);
   useEffect(() => {
-    if (room.status !== 'live' || typeof window === 'undefined') return;
+    if (room.status !== 'live') return;
     releaseHeldJoin();
-    try {
-      forgetJoinToken(window.sessionStorage);
-    } catch {
-      // Storage may be blocked. The address bar is already clear.
-    }
   }, [room.status]);
   useEffect(() => {
     if (typeof window === 'undefined') return;

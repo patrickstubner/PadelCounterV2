@@ -1,9 +1,9 @@
-import { useRef, useState, type MutableRefObject } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { isJoinToken, isRoomCode, ROOM_MESSAGES, type MatchEvent, type MatchLog } from '@padel/core';
 import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
-import { interpretMessage, joinLink, socketUrl } from './protocol';
+import { forgetJoinToken, interpretMessage, joinLink, shouldResumeSocket, socketUrl } from './protocol';
 
 export interface ShareOptions {
   readonly previousHostToken?: string;
@@ -66,6 +66,7 @@ export function useLive(
   liveRef: MutableRefObject<LiveSend | null>,
   replaceLog: (log: MatchLog) => void,
   applyLive: (event: MatchEvent) => void,
+  revertLive: (event: MatchEvent) => void,
 ): LiveController {
   const api = apiBase();
   const [status, setStatus] = useState<'off' | 'connecting' | 'live'>('off');
@@ -80,11 +81,52 @@ export function useLive(
   const hostRef = useRef<{ matchId: string; token: string } | null>(null);
   const replaceRef = useRef(replaceLog);
   const applyRef = useRef(applyLive);
+  const revertRef = useRef(revertLive);
   const readyRef = useRef(false);
   const generation = useRef(0);
   const offerRef = useRef<string | null>(null);
+  const tokenRef = useRef<string | null>(null);
+  const resumes = useRef(0);
+  const opening = useRef(false);
+  const seenRef = useRef(new Set<string>());
+  const unackedRef = useRef<{ id: string; event: MatchEvent }[]>([]);
+  const queueRef = useRef<{ id: string; event: MatchEvent }[]>([]);
+  const wakeRef = useRef<() => void>(() => undefined);
   replaceRef.current = replaceLog;
   applyRef.current = applyLive;
+  revertRef.current = revertLive;
+
+  const armSender = () => {
+    liveRef.current = (courtEvent: MatchEvent) => {
+      const eventId = createMatchId();
+      seenRef.current.add(eventId);
+      unackedRef.current.push({ id: eventId, event: courtEvent });
+      applyRef.current(courtEvent);
+      const ws = socketRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'event', eventId, event: courtEvent }));
+      } else {
+        queueRef.current.push({ id: eventId, event: courtEvent });
+        wakeRef.current();
+      }
+      return true;
+    };
+  };
+
+  const flushQueue = (ws: WebSocket) => {
+    const pending = queueRef.current.splice(0);
+    for (const item of pending) {
+      if (seenRef.current.has(item.id)) {
+        unackedRef.current = unackedRef.current.filter((row) => row.id !== item.id);
+        continue;
+      }
+      if (ws.readyState !== WebSocket.OPEN) {
+        queueRef.current.push(item);
+        continue;
+      }
+      ws.send(JSON.stringify({ type: 'event', eventId: item.id, event: item.event }));
+    }
+  };
 
   const rememberOffer = (token: string | null) => {
     offerRef.current = token;
@@ -92,6 +134,8 @@ export function useLive(
   };
 
   const disconnect = () => {
+    tokenRef.current = null;
+    queueRef.current = [];
     generation.current += 1;
     liveRef.current = null;
     readyRef.current = false;
@@ -106,11 +150,26 @@ export function useLive(
   };
 
   const open = (token: string, asJoin: boolean) => {
+    tokenRef.current = token;
+    if (opening.current) return;
+    opening.current = true;
     const fail = (message: string) => {
+      opening.current = false;
       setStatus('off');
       if (asJoin) {
         setJoining(false);
         setJoinError(message);
+        const rejected = message === ROOM_MESSAGES.bad_token
+          || message === ROOM_MESSAGES.expired
+          || message === ROOM_MESSAGES.revoked;
+        if (rejected) {
+          tokenRef.current = null;
+          try {
+            forgetJoinToken(sessionStorage);
+          } catch {
+            // Storage may be blocked.
+          }
+        }
         return;
       }
       setError(message);
@@ -127,7 +186,9 @@ export function useLive(
         return;
       }
       readyRef.current = false;
-      socketRef.current?.close();
+      const previous = socketRef.current;
+      socketRef.current = null;
+      previous?.close();
       setStatus('connecting');
       if (asJoin) setJoinError(null);
       else setError(null);
@@ -173,13 +234,23 @@ export function useLive(
           return;
         }
         if (notice.kind === 'error') {
+          const failed = unackedRef.current.shift();
+          if (failed && !notice.close) {
+            seenRef.current.delete(failed.id);
+            revertRef.current(failed.event);
+          }
           if (asJoin && !readyRef.current) setJoinError(notice.message);
           else setError(notice.message);
           if (asJoin && !readyRef.current) setJoining(false);
           if (!notice.close) return;
-          liveRef.current = null;
           readyRef.current = false;
           setStatus('off');
+          tokenRef.current = null;
+          try {
+            forgetJoinToken(sessionStorage);
+          } catch {
+            // Storage may be blocked. The in-memory token is already cleared.
+          }
           ws.close();
           return;
         }
@@ -188,23 +259,27 @@ export function useLive(
           return;
         }
         if (notice.kind === 'delta') {
-          if (readyRef.current && !notice.duplicate) applyRef.current(notice.event);
+          unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
+          if (!seenRef.current.has(notice.eventId)) {
+            seenRef.current.add(notice.eventId);
+            applyRef.current(notice.event);
+          }
           setPlayers(notice.players);
           return;
         }
         if (notice.kind === 'log') {
           replaceRef.current(notice.log);
+          seenRef.current = new Set(notice.eventIds);
           readyRef.current = true;
           setHost(notice.host);
           setPlayers(notice.players);
           setJoining(false);
           setJoinError(null);
           setStatus('live');
-          liveRef.current = (courtEvent: MatchEvent) => {
-            if (ws.readyState !== WebSocket.OPEN) return false;
-            ws.send(JSON.stringify({ type: 'event', eventId: createMatchId(), event: courtEvent }));
-            return true;
-          };
+          resumes.current = 0;
+          opening.current = false;
+          armSender();
+          flushQueue(ws);
         }
       };
       ws.onerror = () => {
@@ -217,14 +292,39 @@ export function useLive(
       };
       ws.onclose = () => {
         if (socketRef.current !== ws) return;
-        liveRef.current = null;
+        socketRef.current = null;
         readyRef.current = false;
+        opening.current = false;
         setJoining(false);
-        setStatus('off');
-        setHost(true);
+        if (tokenRef.current) wakeRef.current();
       };
     })();
   };
+
+  wakeRef.current = () => {
+    if (!tokenRef.current || resumes.current >= 4) return;
+    const ws = socketRef.current;
+    const visibility = typeof document === 'undefined' ? 'visible' : document.visibilityState;
+    if (!shouldResumeSocket(visibility, ws ? ws.readyState : null, opening.current)) return;
+    resumes.current += 1;
+    const token = tokenRef.current;
+    open(token, false);
+  };
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof window === 'undefined') return;
+    const onShow = () => {
+      if (document.visibilityState === 'hidden') return;
+      resumes.current = 0;
+      wakeRef.current();
+    };
+    document.addEventListener('visibilitychange', onShow);
+    window.addEventListener('pageshow', onShow);
+    return () => {
+      document.removeEventListener('visibilitychange', onShow);
+      window.removeEventListener('pageshow', onShow);
+    };
+  }, []);
 
   const publishQr = async (matchId: string, hostToken: string) => {
     const response = await fetch(`${api}/matches/${matchId}/invites`, {
@@ -271,6 +371,8 @@ export function useLive(
     finishShared: (event) => {
       const previous = hostRef.current?.token ?? null;
       const ws = socketRef.current;
+      tokenRef.current = null;
+      queueRef.current = [];
       liveRef.current = null;
       readyRef.current = false;
       if (ws && ws.readyState === WebSocket.OPEN) {

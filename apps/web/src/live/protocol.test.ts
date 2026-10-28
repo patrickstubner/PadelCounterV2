@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ROOM_MESSAGES } from '@padel/core';
-import { JOIN_KEY, interpretMessage, joinLink, parseJoinHash, readJoinToken, socketUrl } from './protocol';
+import { JOIN_KEY, interpretMessage, joinLink, parseJoinHash, readJoinToken, shouldResumeSocket, socketUrl } from './protocol';
 
 const ID = '00000000-0000-4000-8000-0000000000aa';
 const TOKEN = 'abcdefghijklmnopqrstuv';
@@ -90,6 +90,17 @@ function memoryStorage(): Storage {
     },
   };
 }
+
+describe('socket resume', () => {
+  it('waits while the page is hidden and resumes when the socket is gone', () => {
+    expect(shouldResumeSocket('hidden', null, false)).toBe(false);
+    expect(shouldResumeSocket('visible', 1, false)).toBe(false);
+    expect(shouldResumeSocket('visible', 0, false)).toBe(false);
+    expect(shouldResumeSocket('visible', null, true)).toBe(false);
+    expect(shouldResumeSocket('visible', null, false)).toBe(true);
+    expect(shouldResumeSocket('visible', 3, false)).toBe(true);
+  });
+});
 
 describe('scanned join url', () => {
   it('removes a valid token from the url and keeps it only for this tab', () => {

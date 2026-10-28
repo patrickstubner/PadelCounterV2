@@ -98,6 +98,43 @@ function sendEvent(ws: WebSocket, event: Record<string, unknown>): void {
 }
 
 describe('live match in workerd', () => {
+  it('syncs a point both ways without waiting for a batch', async () => {
+    const created = await createLive('d44444444');
+    const host = await connect(created.hostToken, 'd44444444');
+    const invite = await call(`/matches/${created.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${created.hostToken}` },
+      body: JSON.stringify({ role: 'player' }),
+    });
+    expect(invite.status).toBe(201);
+    const invited = (await invite.json()) as { token: string };
+    const player = await connect(invited.token, 'd55555555');
+
+    const hostEvent = '00000000-0000-4000-8000-0000000000a1';
+    const playerEvent = '00000000-0000-4000-8000-0000000000a2';
+    const started = Date.now();
+    host.ws.send(JSON.stringify({
+      type: 'event',
+      eventId: hostEvent,
+      event: { type: 'game/increment', team: 'a', at: 1_700_000_000_100 },
+    }));
+    const onPlayer = await player.messages.waitFor((message) => message.type === 'event' && message.eventId === hostEvent);
+    expect((onPlayer.event as { team?: string }).team).toBe('a');
+    expect(onPlayer.duplicate).toBe(false);
+    expect(Date.now() - started).toBeLessThan(500);
+
+    const back = Date.now();
+    player.ws.send(JSON.stringify({
+      type: 'event',
+      eventId: playerEvent,
+      event: { type: 'game/increment', team: 'b', at: 1_700_000_000_200 },
+    }));
+    const onHost = await host.messages.waitFor((message) => message.type === 'event' && message.eventId === playerEvent);
+    expect((onHost.event as { team?: string }).team).toBe('b');
+    expect(onHost.duplicate).toBe(false);
+    expect(Date.now() - back).toBeLessThan(500);
+  });
+
   it('creates, invites, joins, carries, and reopens without a SQL begin', async () => {
     const first = await createLive(HOST_DEVICE);
     const host = await connect(first.hostToken, HOST_DEVICE);
