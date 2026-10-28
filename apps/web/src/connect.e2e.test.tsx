@@ -23,8 +23,13 @@ const sockets: FakeSocket[] = [];
 let joinMode: 'ok' | 'expired' | 'bad' = 'ok';
 let createMode: 'ok' | 'down' = 'ok';
 let snapshot: unknown = null;
+let snapshotHost = false;
 
 class FakeSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
   url: string;
   readyState = 0;
   onopen: ((event: Event) => void) | null = null;
@@ -50,7 +55,7 @@ class FakeSocket {
     const log = snapshot;
     queueMicrotask(() => {
       this.onmessage?.({
-        data: JSON.stringify({ type: 'snapshot', protocol: 1, host: false, players: 2, log }),
+        data: JSON.stringify({ type: 'snapshot', protocol: 1, host: snapshotHost, players: 2, log }),
       });
       this.onmessage?.({ data: JSON.stringify({ type: 'presence', players: 2 }) });
     });
@@ -152,6 +157,7 @@ describe('connect overlay and scanned join', () => {
     joinMode = 'ok';
     createMode = 'ok';
     snapshot = null;
+    snapshotHost = false;
     localStorage.clear();
     sessionStorage.clear();
     window.history.replaceState(null, '', '/');
@@ -335,4 +341,112 @@ describe('connect overlay and scanned join', () => {
     expect(document.querySelector('[data-testid="join-error"]')?.textContent).toContain('This code is not valid.');
     expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(true);
   });
+
+  it('rotates the same match after the host reloads', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    snapshotHost = true;
+    const first = await mount();
+    mounted.push(first);
+    await press('connect-open');
+    await press('share-match');
+    await waitFor(() => document.querySelector('[data-testid="connect-dialog"] .qr') !== null);
+    expect(fetchCalls.filter((call) => call.url.endsWith('/matches'))).toHaveLength(1);
+    const stored = JSON.parse(sessionStorage.getItem(JOIN_KEY) ?? '{}') as { token?: string; host?: boolean; matchId?: string };
+    expect(stored.token).toBe(HOST);
+    expect(stored.host).toBe(true);
+    expect(stored.matchId).toBe(MATCH);
+
+    await unmount(first.root, first.container);
+    mounted.splice(0);
+    fetchCalls.splice(0);
+    sockets.splice(0);
+    window.history.replaceState(null, '', '/PadelCounterV2/');
+    const again = await mount();
+    mounted.push(again);
+    await waitFor(() => document.querySelector('[data-testid="connect-open"]') !== null);
+    await press('connect-open');
+    await press('share-match');
+    await waitFor(() => fetchCalls.some((call) => call.url.endsWith('/invites')));
+    expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
+    expect(fetchCalls.filter((call) => call.url === `${API}/matches/${MATCH}/invites`)).toHaveLength(1);
+    expect(new Headers(fetchCalls.find((call) => call.url.endsWith('/invites'))?.init?.headers).get('authorization')).toBe(`Bearer ${HOST}`);
+    await press('rotate-code');
+    await waitFor(() => fetchCalls.filter((call) => call.url.endsWith('/invites')).length === 2);
+    expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
+  });
+
+  it('ignores a join fragment while this phone is the live host', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    snapshotHost = true;
+    window.history.replaceState(null, '', `/PadelCounterV2/#/join?t=${HOST}`);
+    const view = await mount();
+    mounted.push(view);
+    await waitFor(() => document.querySelector('[data-testid="connect-open"]') !== null);
+    const joins = fetchCalls.filter((call) => call.url.endsWith('/join')).length;
+    await act(async () => {
+      window.history.replaceState(null, '', `/PadelCounterV2/#/join?t=${TOKEN}`);
+      window.dispatchEvent(new Event('hashchange'));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(joins);
+    expect(window.location.hash).toBe('');
+    expect(sessionStorage.getItem(JOIN_KEY)).toContain(HOST);
+    expect(sessionStorage.getItem(JOIN_KEY)).not.toContain(TOKEN);
+  });
+
+  it('clears an error when the snapshot arrives and drops the slow banner after success or five seconds', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    window.history.replaceState(null, '', `/PadelCounterV2/#/join?t=${TOKEN}`);
+    const view = await mount();
+    mounted.push(view);
+    await waitFor(() => scoreA().includes('4'));
+    const socket = sockets.at(-1);
+    await act(async () => {
+      socket?.onmessage?.({ data: JSON.stringify({ type: 'error', code: 'not_applied' }) });
+    });
+    expect(document.querySelector('[data-testid="live-error"]')?.textContent).toContain('That change was not applied.');
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({ type: 'snapshot', protocol: 1, host: false, players: 2, eventIds: [], log: liveLog() }),
+      });
+    });
+    expect(document.querySelector('[data-testid="live-error"]')).toBeNull();
+
+    await act(async () => {
+      socket?.onmessage?.({ data: JSON.stringify({ type: 'error', code: 'slow_down' }) });
+    });
+    expect(document.querySelector('[data-testid="live-error"]')?.textContent).toContain('Too many changes.');
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          type: 'event',
+          eventId: '00000000-0000-4000-8000-0000000000aa',
+          duplicate: false,
+          players: 2,
+          event: { type: 'game/increment', team: 'b', at: 1_700_000_000_100 },
+        }),
+      });
+    });
+    expect(document.querySelector('[data-testid="live-error"]')).toBeNull();
+
+    await act(async () => {
+      socket?.onmessage?.({ data: JSON.stringify({ type: 'error', code: 'slow_down' }) });
+    });
+    expect(document.querySelector('[data-testid="live-error"]')?.textContent).toContain('Too many changes.');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5_200));
+    });
+    expect(document.querySelector('[data-testid="live-error"]')).toBeNull();
+  }, 8_000);
 });

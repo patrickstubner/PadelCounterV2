@@ -201,15 +201,18 @@ describe('live socket reconnect', () => {
     const bodies = FakeSocket.sockets.flatMap((socket) => socket.sent);
     expect(bodies.join('\n')).toContain('game/increment');
 
+    const old = FakeSocket.sockets.at(-1);
+    const started = Date.now();
     await act(async () => {
-      FakeSocket.sockets.at(-1)?.close();
+      old?.close();
       document.dispatchEvent(new Event('visibilitychange'));
     });
-    for (let attempt = 0; attempt < 40 && joins <= baseline; attempt += 1) {
+    for (let attempt = 0; attempt < 15 && joins <= baseline; attempt += 1) {
       await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 20));
       });
     }
+    expect(Date.now() - started).toBeLessThan(400);
     expect(joins).toBe(baseline + 1);
     expect(FakeSocket.sockets.length).toBeGreaterThan(1);
   });
@@ -374,6 +377,7 @@ describe('live socket reconnect', () => {
     });
     await wait(30);
     expect(document.querySelector('[data-testid="live-disconnected"]')?.textContent).toBe('Disconnected.');
+    expect(document.querySelector('[data-testid="disconnected-hint"]')?.textContent).toBe('Taps are not applied.');
     expect(document.querySelector('[data-testid="court-connection"]')?.textContent).toContain('Disconnected from the live match.');
     expect(sessionStorage.getItem(JOIN_KEY)).toBeNull();
     expect(window.location.href).not.toContain(TOKEN);
@@ -384,4 +388,28 @@ describe('live socket reconnect', () => {
     expect(court()?.className).toBe('app');
     expect(document.querySelector('[data-testid="court-offline"]')).toBeNull();
   }, 8_000);
+
+  it('detaches the previous socket and joins the next code immediately', async () => {
+    const other = 'bbbbbbbbbbbbbbbbbbbbbb';
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    const old = FakeSocket.sockets.at(-1);
+    const baseline = joins;
+    expect(old?.onmessage).not.toBeNull();
+    await act(async () => {
+      window.history.replaceState(null, '', `/PadelCounterV2/#/join?t=${other}`);
+      window.dispatchEvent(new Event('hashchange'));
+    });
+    for (let attempt = 0; attempt < 15 && joins <= baseline; attempt += 1) await wait(20);
+    expect(joins).toBe(baseline + 1);
+    expect(old?.onmessage).toBeNull();
+    expect(old?.onclose).toBeNull();
+    expect(document.querySelector('.sr-only')?.textContent).toContain('Team A 0');
+  });
 });

@@ -25,6 +25,9 @@ export const HIDE_RECONNECT_MS = 15_000;
 /** Wait this long before the court turns red, so a short reconnect does not flash. */
 export const OFFLINE_COURT_MS = 1_500;
 
+/** Drop the "too many changes" banner on its own if nothing succeeds first. */
+export const SLOW_BANNER_MS = 5_000;
+
 /** Black court: this phone is not in a live match. */
 export const LOCAL_COURT = '#000000';
 

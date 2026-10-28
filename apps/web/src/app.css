@@ -543,7 +543,8 @@ button:disabled { cursor: not-allowed; }
   color: #d0d0d0;
 }
 
-.offline-label {
+.offline-label,
+.live-hint {
   margin: 0;
   font-size: 0.78rem;
   font-weight: 800;
