@@ -41,13 +41,100 @@ export interface StoredJoin {
   readonly token: string;
 }
 
-export function captureJoinHash(locationLike: Location, historyLike: History, storage: Storage): StoredJoin | null {
-  const parsed = parseJoinHash(locationLike.hash);
-  if (!parsed) return null;
-  storage.setItem(JOIN_KEY, JSON.stringify({ token: parsed.token }));
-  const clean = `${locationLike.pathname}${locationLike.search}#/join`;
-  historyLike.replaceState({ padelArchive: 'court' }, '', clean);
-  return parsed;
+export interface JoinLocation {
+  readonly hash: string;
+  readonly pathname: string;
+  readonly search: string;
+}
+
+export interface JoinHistory {
+  replaceState(data: unknown, unused: string, url?: string | URL | null): void;
+}
+
+export type JoinAttempt = { readonly ok: true; readonly token: string } | { readonly ok: false; readonly invalid: boolean };
+
+/** Invite captured at boot, including when sessionStorage is blocked. */
+let heldAttempt: JoinAttempt | null = null;
+
+export function holdJoin(attempt: JoinAttempt): void {
+  if (attempt.ok || attempt.invalid) heldAttempt = attempt;
+}
+
+export function heldJoin(): JoinAttempt | null {
+  return heldAttempt;
+}
+
+export function releaseHeldJoin(): void {
+  heldAttempt = null;
+}
+
+function rememberJoin(storage: Storage, token: string): void {
+  storage.setItem(JOIN_KEY, JSON.stringify({ token }));
+}
+
+/** Drop a join fragment so the address bar cannot keep the invite. */
+function replaceCourt(locationLike: JoinLocation, historyLike: JoinHistory): void {
+  historyLike.replaceState({ padelArchive: 'court' }, '', `${locationLike.pathname}${locationLike.search}`);
+}
+
+/**
+ * Read a scanned invite. A valid token is returned and removed from the URL.
+ * A join fragment that is not a 128-bit token is also removed and reported invalid.
+ * Storage may be null or throw. The token is still returned so the caller can keep it in memory.
+ */
+export function readJoinToken(
+  locationLike: JoinLocation,
+  historyLike: JoinHistory,
+  storage: Storage | null,
+): JoinAttempt {
+  const fragment = locationLike.hash.startsWith('#') ? locationLike.hash.slice(1) : locationLike.hash;
+  const joinFragment = /^\/join\b/i.test(fragment);
+  const fromHash = parseJoinHash(locationLike.hash);
+  if (joinFragment) {
+    try {
+      replaceCourt(locationLike, historyLike);
+    } catch {
+      // The token is still returned. The caller strips the URL again on the next read.
+    }
+  }
+  if (fromHash) {
+    if (storage) {
+      try {
+        rememberJoin(storage, fromHash.token);
+      } catch {
+        // The URL is already clean. The caller keeps the returned token in memory.
+      }
+    }
+    return { ok: true, token: fromHash.token };
+  }
+  if (joinFragment) return { ok: false, invalid: true };
+  if (!storage) return { ok: false, invalid: false };
+  try {
+    const raw = storage.getItem(JOIN_KEY);
+    if (!raw) return { ok: false, invalid: false };
+    const parsed = JSON.parse(raw) as { token?: unknown };
+    if (!isJoinToken(parsed.token)) {
+      storage.removeItem(JOIN_KEY);
+      return { ok: false, invalid: true };
+    }
+    return { ok: true, token: parsed.token };
+  } catch {
+    return { ok: false, invalid: false };
+  }
+}
+
+export function forgetJoinToken(storage: Storage): void {
+  storage.removeItem(JOIN_KEY);
+}
+
+export function captureJoinHash(
+  locationLike: JoinLocation,
+  historyLike: JoinHistory,
+  storage: Storage | null,
+): StoredJoin | null {
+  const attempt = readJoinToken(locationLike, historyLike, storage);
+  holdJoin(attempt);
+  return attempt.ok ? { token: attempt.token } : null;
 }
 
 export type LiveNotice =

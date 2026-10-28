@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ROOM_MESSAGES } from '@padel/core';
-import { interpretMessage, joinLink, parseJoinHash, socketUrl } from './protocol';
+import { JOIN_KEY, interpretMessage, joinLink, parseJoinHash, readJoinToken, socketUrl } from './protocol';
 
 const ID = '00000000-0000-4000-8000-0000000000aa';
 const TOKEN = 'abcdefghijklmnopqrstuv';
@@ -70,5 +70,74 @@ describe('join links', () => {
       event: { type: 'game/increment', team: 'a', at: 1_700_000_000_000 },
     });
     expect(notice).not.toHaveProperty('log');
+  });
+});
+
+function memoryStorage(): Storage {
+  const map = new Map<string, string>();
+  return {
+    get length() {
+      return map.size;
+    },
+    clear: () => map.clear(),
+    getItem: (key) => map.get(key) ?? null,
+    key: (index) => [...map.keys()][index] ?? null,
+    removeItem: (key) => {
+      map.delete(key);
+    },
+    setItem: (key, value) => {
+      map.set(key, value);
+    },
+  };
+}
+
+describe('scanned join url', () => {
+  it('removes a valid token from the url and keeps it only for this tab', () => {
+    const storage = memoryStorage();
+    const calls: unknown[][] = [];
+    const history = {
+      replaceState: (...args: unknown[]) => {
+        calls.push(args);
+      },
+    };
+    const location = { hash: `#/join?t=${TOKEN}`, pathname: '/PadelCounterV2/', search: '' };
+    expect(readJoinToken(location, history, storage)).toEqual({ ok: true, token: TOKEN });
+    expect(calls).toEqual([[{ padelArchive: 'court' }, '', '/PadelCounterV2/']]);
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
+    expect(JSON.parse(storage.getItem(JOIN_KEY) ?? '{}')).toEqual({ token: TOKEN });
+    location.hash = '';
+    expect(readJoinToken(location, history, storage)).toEqual({ ok: true, token: TOKEN });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('drops an invalid invite fragment and does not keep it', () => {
+    const storage = memoryStorage();
+    const calls: unknown[][] = [];
+    const history = {
+      replaceState: (...args: unknown[]) => {
+        calls.push(args);
+      },
+    };
+    const location = { hash: '#/join?t=short', pathname: '/PadelCounterV2/', search: '?ok=1' };
+    expect(readJoinToken(location, history, storage)).toEqual({ ok: false, invalid: true });
+    expect(calls).toEqual([[{ padelArchive: 'court' }, '', '/PadelCounterV2/?ok=1']]);
+    expect(storage.getItem(JOIN_KEY)).toBeNull();
+    storage.setItem(JOIN_KEY, JSON.stringify({ token: '<img src=x>' }));
+    location.hash = '';
+    expect(readJoinToken(location, history, storage)).toEqual({ ok: false, invalid: true });
+    expect(storage.getItem(JOIN_KEY)).toBeNull();
+  });
+
+  it('keeps a valid token when storage is missing and still strips the url', () => {
+    const calls: unknown[][] = [];
+    const history = {
+      replaceState: (...args: unknown[]) => {
+        calls.push(args);
+      },
+    };
+    const location = { hash: `#/join?t=${TOKEN}`, pathname: '/PadelCounterV2/', search: '' };
+    expect(readJoinToken(location, history, null)).toEqual({ ok: true, token: TOKEN });
+    expect(calls).toEqual([[{ padelArchive: 'court' }, '', '/PadelCounterV2/']]);
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
   });
 });

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isOpenMatch, lastChangeAt, planNewMatch, type NewMatchPlan } from '@padel/core';
-import { connectHistoryState, detailHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
+import { detailHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
 import { CourtHeader, type CourtAction } from './components/CourtHeader';
@@ -26,11 +26,20 @@ import { colonSetScore, currentHistory } from './domain/history';
 import { RULES_SUMMARY, celebrationWinner, matchWinner, serveCourtLabel, servePickPrompt, tiebreakHint } from './domain/rules';
 import { useInstallOffer } from './hooks/useInstallOffer';
 import { useMatch } from './hooks/useMatch';
-import { JOIN_KEY } from './live/protocol';
+import { forgetJoinToken, heldJoin, readJoinToken, releaseHeldJoin } from './live/protocol';
 import { useLive } from './live/useLive';
 import { INSTALL_LABEL, IOS_INSTALL_HINT } from './installOffer';
 import { watchControllerChange } from './registerServiceWorker';
 import { useWakeLock } from './useWakeLock';
+
+function readSession(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
 
 function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState(
@@ -75,31 +84,48 @@ export function App() {
   const fanfarePlayed = useRef<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [screen, setScreen] = useState<ArchiveScreen>(() => {
-    if (typeof history !== 'undefined') {
-      const fromHistory = screenFromHistory(history.state);
-      if (fromHistory.view !== 'court') return fromHistory;
-    }
-    try {
-      if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(JOIN_KEY)) return { view: 'connect' };
-    } catch {
-      // Storage may be blocked. The court still opens.
-    }
-    return { view: 'court' };
+    if (typeof history === 'undefined') return { view: 'court' };
+    return screenFromHistory(history.state);
   });
+  const [connectOpen, setConnectOpen] = useState(false);
   const joinStarted = useRef(false);
-  useEffect(() => {
-    if (joinStarted.current) return;
-    joinStarted.current = true;
+  const applyJoin = useCallback((attempt: { readonly ok: true; readonly token: string } | { readonly ok: false; readonly invalid: boolean }) => {
+    if (attempt.ok) room.connect(attempt.token);
+    else if (attempt.invalid) room.rejectToken();
+    else return;
     try {
-      const raw = sessionStorage.getItem(JOIN_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as { token?: unknown };
-      if (typeof parsed.token !== 'string') return;
-      room.connect(parsed.token);
+      forgetJoinToken(window.sessionStorage);
     } catch {
-      // A bad saved code is ignored. The connect screen explains the failure if the socket opens.
+      // The token is already in memory. The address bar is cleared by readJoinToken.
     }
   }, [room]);
+  useEffect(() => {
+    if (joinStarted.current || typeof window === 'undefined') return;
+    joinStarted.current = true;
+    const held = heldJoin();
+    if (held) {
+      applyJoin(held);
+      return;
+    }
+    applyJoin(readJoinToken(window.location, window.history, readSession()));
+  }, [applyJoin]);
+  useEffect(() => {
+    if (room.status !== 'live' || typeof window === 'undefined') return;
+    releaseHeldJoin();
+    try {
+      forgetJoinToken(window.sessionStorage);
+    } catch {
+      // Storage may be blocked. The address bar is already clear.
+    }
+  }, [room.status]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onHash = () => {
+      applyJoin(readJoinToken(window.location, window.history, readSession()));
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, [applyJoin]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onPop = (event: PopStateEvent) => setScreen(screenFromHistory(event.state));
@@ -133,7 +159,9 @@ export function App() {
     setScreen({ view: 'detail', id });
   };
   const openPrivacy = () => openScreen({ view: 'privacy' }, privacyHistoryState());
-  const openConnect = () => openScreen({ view: 'connect' }, connectHistoryState());
+  const openConnect = () => {
+    setConnectOpen(true);
+  };
   const closeArchive = () => {
     setDeletingId(null);
     if (typeof history === 'undefined') {
@@ -222,33 +250,6 @@ export function App() {
     );
   }
 
-  if (screen.view === 'connect') {
-    return (
-      <div className="app">
-        <ConnectPage
-          configured={room.configured}
-          status={room.status}
-          players={room.players}
-          qr={room.qr}
-          error={room.error}
-          onShare={() => room.share(match.log)}
-          onRotate={room.rotate}
-          onLeave={() => {
-            room.disconnect();
-            try {
-              sessionStorage.removeItem(JOIN_KEY);
-            } catch {
-              // Storage may be blocked.
-            }
-          }}
-          onBack={closeArchive}
-        />
-        <p className="app-version" data-testid="app-version">{`v${import.meta.env.APP_VERSION}`}</p>
-        {updateButton}
-      </div>
-    );
-  }
-
   if (screen.view !== 'court') {
     return (
       <div className="app">
@@ -287,8 +288,9 @@ export function App() {
     );
   }
 
+  const showConnect = !room.joining && (room.status !== 'live' || room.host);
   const actions: readonly CourtAction[] = [
-    { id: 'connect', label: 'Connect players', testId: 'connect-open', onSelect: openConnect },
+    ...(showConnect ? [{ id: 'connect', label: 'Connect players', testId: 'connect-open', onSelect: openConnect }] : []),
     { id: 'history', label: 'History', testId: 'history-open', onSelect: openMatches },
     state.ended
       ? { id: 'resume', label: 'Resume', testId: 'resume-match', emphasized: true, onSelect: match.resumeMatch }
@@ -389,6 +391,18 @@ export function App() {
               {pick}
             </p>
           ) : null}
+          {room.joining && room.status === 'connecting' ? (
+            <p className="join-status" data-testid="join-status">Connecting to the match…</p>
+          ) : null}
+          {room.joinError ? (
+            <div className="join-error" role="alert" data-testid="join-error">
+              <p>Could not join this match.</p>
+              <p>{room.joinError}</p>
+            </div>
+          ) : null}
+          {room.error ? (
+            <p className="live-error" role="alert" data-testid="live-error">{room.error}</p>
+          ) : null}
         </div>
         <TeamPanel
           team="b"
@@ -453,6 +467,27 @@ export function App() {
           cancelTestId="dismiss-join"
           onCancel={room.dismissOffer}
           onConfirm={room.acceptOffer}
+        />
+      ) : null}
+      {connectOpen ? (
+        <ConnectPage
+          configured={room.configured}
+          host={room.host}
+          status={room.status}
+          players={room.players}
+          qr={room.qr}
+          error={room.error}
+          onShare={() => room.share(match.log)}
+          onRotate={room.rotate}
+          onLeave={() => {
+            room.disconnect();
+            try {
+              forgetJoinToken(window.sessionStorage);
+            } catch {
+              // Storage may be blocked.
+            }
+          }}
+          onClose={() => setConnectOpen(false)}
         />
       ) : null}
       {confirming === 'end' ? (
