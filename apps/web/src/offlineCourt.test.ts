@@ -9,8 +9,10 @@ import { LOCAL_COURT, OFFLINE_COURT, ONLINE_COURT } from './live/protocol';
  * #f2f2f2 on #163056 = 11.79, on #3a1016 = 14.82
  * #d0d0d0 on #163056 = 8.56, on #3a1016 = 10.76, on #141414 = 11.94
  * #a3a3a3 on #000000 = 8.33, on #163056 = 5.23, on #3a1016 = 6.58
- * #e4ff47 on #163056 = 11.75, #ffb020 on #163056 = 7.22
- * #d5d5d5 on #000000 = 14.31, on #163056 = 8.99, on #3a1016 = 11.31
+ * #e4ff47 on #071006 = 17.22, #ffb020 on #120e06 = 10.52
+ * #ffffff on #071006 = 19.34, on #120e06 = 19.25, on #0a1a3f = 17.04
+ * #a3a3a3 on #0a1a3f = 6.75, #f4f4f4 on #0a1a3f = 15.49
+ * #d5d5d5 on #071006 = 13.18, on #120e06 = 13.00
  * #6b6b6b on #163056 = 2.48 and on #3a1016 = 3.11, so those courts do not use it.
  */
 
@@ -50,22 +52,30 @@ describe('court background contrast', () => {
     expect(css).toContain('.app.is-offline { --court: var(--court-offline); }');
     expect(css).toContain('transition: background-color 0.45s ease');
     expect(css).toContain('.offline-label');
-    expect(css).not.toContain('--a-bg');
-    expect(css).not.toContain('--b-bg');
+    expect(css).toContain('--a-bg: #071006');
+    expect(css).toContain('--b-bg: #120e06');
   });
 
-  it('paints both court halves with the same colour in every state', () => {
-    const teamRule = css.slice(css.indexOf('.team-a,'), css.indexOf('.team-a { --accent'));
-    expect(teamRule).toContain('background: var(--court)');
-    expect(teamRule).not.toMatch(/#[0-9a-fA-F]{3,8}/);
-    const halves = ['.team-a', '.team-b', '.top', '.foot', '.mid', '.app'];
-    for (const selector of halves) {
-      expect(css, selector).toContain('var(--court)');
-    }
-    const oldHalves = ['#071006', '#120e06'];
-    const darkerOld = oldHalves.reduce((darker, hex) => (luminance(hex) < luminance(darker) ? hex : darker));
-    expect(darkerOld).toBe('#071006');
-    expect(luminance(LOCAL_COURT)).toBeLessThan(luminance(darkerOld));
+  it('keeps both court halves on the original near-black tints', () => {
+    expect(css).toContain('.team-a { background: var(--a-bg); --accent: var(--a); }');
+    expect(css).toContain('.team-b { background: var(--b-bg); --accent: var(--b); }');
+    const halves = css.slice(css.indexOf('.team-a { background'), css.indexOf('.step {'));
+    expect(halves).not.toContain('#163056');
+    expect(halves).not.toContain('var(--court)');
+    expect(halves).not.toContain('var(--bar)');
+  });
+
+  it('paints the header and the footer with the darker blue in every state', () => {
+    const blues = ['#163056', '#0a1a3f'] as const;
+    const darker = blues.reduce((chosen, hex) => (luminance(hex) < luminance(chosen) ? hex : chosen));
+    expect(darker).toBe('#0a1a3f');
+    expect(luminance('#0a1a3f')).toBeLessThan(luminance('#163056'));
+    expect(css).toContain(`--bar: ${darker}`);
+    expect(css).toMatch(/\.top,\s*\.foot\s*\{[^}]*background:\s*var\(--bar\)/);
+    const stateRules = css.slice(css.indexOf('.app.is-online {'), css.indexOf('.app.is-online .step:disabled'));
+    expect(stateRules).not.toContain('.top');
+    expect(stateRules).not.toContain('.foot');
+    expect(stateRules).not.toContain('--bar');
   });
 
   it('keeps court text, scores, and buttons at WCAG AA', () => {
@@ -82,15 +92,15 @@ describe('court background contrast', () => {
       ['#f2f2f2', OFFLINE_COURT],
       ['#d0d0d0', OFFLINE_COURT],
       ['#a3a3a3', OFFLINE_COURT],
-      ['#d5d5d5', LOCAL_COURT],
-      ['#d5d5d5', ONLINE_COURT],
-      ['#d5d5d5', OFFLINE_COURT],
-      ['#e4ff47', LOCAL_COURT],
-      ['#e4ff47', ONLINE_COURT],
-      ['#e4ff47', OFFLINE_COURT],
-      ['#ffb020', LOCAL_COURT],
-      ['#ffb020', ONLINE_COURT],
-      ['#ffb020', OFFLINE_COURT],
+      ['#ffffff', '#071006'],
+      ['#ffffff', '#120e06'],
+      ['#e4ff47', '#071006'],
+      ['#ffb020', '#120e06'],
+      ['#d5d5d5', '#071006'],
+      ['#d5d5d5', '#120e06'],
+      ['#ffffff', '#0a1a3f'],
+      ['#f4f4f4', '#0a1a3f'],
+      ['#a3a3a3', '#0a1a3f'],
       ['#d0d0d0', '#141414'],
     ] as const;
     for (const [foreground, background] of pairs) {

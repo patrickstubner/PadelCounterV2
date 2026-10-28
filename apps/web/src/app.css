@@ -4,9 +4,13 @@
   --text: #ffffff;
   --a: #e4ff47;
   --b: #ffb020;
+  --a-bg: #071006;
+  --b-bg: #120e06;
   --court: #000000;
   --court-online: #163056;
   --court-offline: #3a1016;
+  /* Darker of the two blues (#0a1a3f and #163056). Header and footer keep it in every state. */
+  --bar: #0a1a3f;
   --line: #2a2a2a;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
@@ -68,7 +72,7 @@ button:disabled { cursor: not-allowed; }
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.35rem 0.7rem;
-  background: var(--court);
+  background: var(--bar);
   transition: background-color 0.45s ease;
 }
 
@@ -267,10 +271,8 @@ button:disabled { cursor: not-allowed; }
   padding: 0.35rem;
 }
 
-.team-a,
-.team-b { background: var(--court); }
-.team-a { --accent: var(--a); }
-.team-b { --accent: var(--b); }
+.team-a { background: var(--a-bg); --accent: var(--a); }
+.team-b { background: var(--b-bg); --accent: var(--b); }
 
 .step {
   width: 100%;
@@ -521,9 +523,8 @@ button:disabled { cursor: not-allowed; }
   padding: 0;
 }
 
-/* One court colour per state, shared by both halves, the bar, and the middle.
-   Solo #000000 is darker than the old team tints #071006 and #120e06.
-   Online #163056 and offline #3a1016 stay the same on both halves. */
+/* The shell and the middle follow the connection. The halves stay #071006 and #120e06.
+   Header and footer stay on --bar, so these rules do not paint .top or .foot. */
 .app.is-online { --court: var(--court-online); }
 .app.is-offline { --court: var(--court-offline); }
 
