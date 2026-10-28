@@ -97,6 +97,9 @@ for (const file of precached) {
 if (sw.includes('icon-1024.png')) fail('icon-1024.png must not be precached');
 if (!statSync(join(dist, 'icons/icon-1024.png')).isFile()) fail('icon-1024.png missing from dist');
 if (sw.includes('importScripts(')) fail('service worker loads an external script');
+const notice = readFileSync(join(dist, 'NOTICE.txt'), 'utf8');
+if (!notice.includes('qr 0.7.2') || !notice.includes('Paul Miller')) fail('NOTICE missing the qr decoder');
+if (!notice.includes('qrcode 1.5.4') || !notice.includes('Ryan Day')) fail('NOTICE missing the qrcode drawer');
 
 for (const file of walk(dist)) {
   if (file.endsWith('.png') || file.endsWith('.ico')) continue;

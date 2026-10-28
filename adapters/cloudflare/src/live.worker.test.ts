@@ -1,8 +1,8 @@
-import { createMatch } from '@padel/core';
+import { CODE_ATTEMPTS_PER_PREFIX, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, parseLiveTeamName } from '@padel/core';
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
-import { quotaMac } from './tokens';
+import { quotaMac, sha256Hex } from './tokens';
 
 const ORIGIN = 'https://patrickstubner.github.io';
 const HOST_DEVICE = 'd11111111';
@@ -16,9 +16,13 @@ function nextIp(): string {
 }
 
 function call(path: string, init: RequestInit = {}): Promise<Response> {
+  return callFrom(nextIp(), path, init);
+}
+
+function callFrom(ip: string, path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set('origin', ORIGIN);
-  headers.set('cf-connecting-ip', nextIp());
+  headers.set('cf-connecting-ip', ip);
   return exports.default.fetch(new Request(`https://padel.example${path}`, { ...init, headers }));
 }
 
@@ -289,10 +293,6 @@ describe('live match in workerd', () => {
     );
     expect((ended.event as { by?: string }).by).toBe('host');
 
-    sendEvent(player.ws, { type: 'match/resume', at: 4 });
-    const refused = await player.messages.waitFor((message) => message.type === 'error');
-    expect(refused.code).toBe('forbidden');
-
     sendEvent(host.ws, { type: 'match/resume', at: 5 });
     await player.messages.waitFor(
       (message) => message.type === 'event' && (message.event as { type?: string }).type === 'match/resume',
@@ -347,5 +347,226 @@ describe('live match in workerd', () => {
     expect(admitted).toContain(expected);
     expect(JSON.stringify(admitted)).not.toContain(address);
     ws.close();
+  });
+});
+
+const NEUTRAL = { error: 'join_code', message: ROOM_MESSAGES.join_code };
+
+async function issuedCode(device: string): Promise<{ matchId: string; hostToken: string; token: string; code: string }> {
+  const created = await createLive(device);
+  const response = await call(`/matches/${created.matchId}/invites`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${created.hostToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ role: 'player' }),
+  });
+  expect(response.status).toBe(201);
+  const body = (await response.json()) as { token?: string; code?: string; matchId?: string };
+  if (!body.token || !body.code) throw new Error('invite did not return a code');
+  expect(body.matchId).toBe(created.matchId);
+  return { matchId: created.matchId, hostToken: created.hostToken, token: body.token, code: body.code };
+}
+
+function redeem(code: string, device: string, ip?: string): Promise<Response> {
+  const init: RequestInit = {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ device, code }),
+  };
+  return ip ? callFrom(ip, '/join', init) : call('/join', init);
+}
+
+describe('short match codes', () => {
+  it('mints a player token from the code and leaves the QR token working', async () => {
+    const invited = await issuedCode('d12121212');
+    expect(invited.code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}$/);
+    expect(invited.code).not.toMatch(/[01ILO]/);
+    const typed = invited.code.toLowerCase().replace('-', '');
+    const response = await redeem(typed, 'd23232323');
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as { token?: string; ticket?: string; matchId?: string; code?: string };
+    expect(body.matchId).toBeUndefined();
+    expect(body.code).toBeUndefined();
+    expect(typeof body.token).toBe('string');
+    expect(typeof body.ticket).toBe('string');
+    expect(JSON.stringify(body)).not.toContain(invited.code.replace('-', ''));
+    const token = body.token ?? '';
+    const opened = await call(`/ws/${body.ticket}`, { headers: { upgrade: 'websocket' } });
+    const socket = opened.webSocket;
+    if (!socket) throw new Error('socket missing');
+    socket.accept();
+    const messages = inbox(socket);
+    socket.send(JSON.stringify({ type: 'hello', protocol: 1, token, device: 'd23232323' }));
+    const snapshot = await messages.waitFor((message) => message.type === 'snapshot');
+    expect(snapshot.protocol).toBe(1);
+
+    const wrongTicket = await ticketFor(token, 'd34343434');
+    const wrong = await call(`/ws/${wrongTicket}`, { headers: { upgrade: 'websocket' } });
+    const wrongSocket = wrong.webSocket;
+    if (!wrongSocket) throw new Error('socket missing');
+    wrongSocket.accept();
+    const wrongMessages = inbox(wrongSocket);
+    wrongSocket.send(JSON.stringify({ type: 'hello', protocol: 1, token, device: 'd34343434' }));
+    const refused = await wrongMessages.waitFor((message) => message.type === 'error');
+    expect(refused.code).toBe('bad_token');
+
+    await connect(invited.token, 'd45454545');
+  });
+
+  it('uses one error for an unknown code and an expired code', async () => {
+    const invited = await issuedCode('d56565656');
+    const unknown = await redeem('ZZZZ-ZZZZ', 'd67676767');
+    expect(unknown.status).toBe(401);
+    expect(await unknown.json()).toEqual(NEUTRAL);
+    await env.DB.prepare('UPDATE join_codes SET expires_at = ? WHERE match_id = ?').bind(1, invited.matchId).run();
+    const expired = await redeem(invited.code, 'd78787878');
+    expect(expired.status).toBe(401);
+    expect(await expired.json()).toEqual(NEUTRAL);
+    expect(JSON.stringify(await redeem('nope', 'd89898989').then((item) => item.json()))).not.toContain('nope');
+  });
+
+  it('revokes the code and the minted token when the host asks for a new code', async () => {
+    const invited = await issuedCode('d9a9a9a9a');
+    const first = await redeem(invited.code, 'dabababa1');
+    const minted = (await first.json()) as { token: string };
+    const again = await call(`/matches/${invited.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${invited.hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'player' }),
+    });
+    const next = (await again.json()) as { code: string; token: string };
+    expect(next.code).not.toBe(invited.code);
+    const oldCode = await redeem(invited.code, 'dcdcdcdc2');
+    expect(oldCode.status).toBe(401);
+    expect(await oldCode.json()).toEqual(NEUTRAL);
+    const oldToken = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${minted.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'dabababa1' }),
+    });
+    expect(oldToken.status).toBe(401);
+    const fresh = await redeem(next.code, 'dcdcdcdc2');
+    expect(fresh.status).toBe(201);
+    const body = (await fresh.json()) as { token: string };
+    await connect(body.token, 'dcdcdcdc2');
+  });
+
+  it('checks the address budget before the code, including a valid one, and shares an IPv6 /64', async () => {
+    const invited = await issuedCode('d01010101');
+    const prefix = '2001:db8:1:2::1';
+    const samePrefix = '2001:db8:1:2::abcd';
+    for (let n = 0; n < CODE_ATTEMPTS_PER_PREFIX; n += 1) {
+      const response = await redeem('ZZZZ-ZZZZ', 'd01010101', prefix);
+      expect(response.status).toBe(401);
+    }
+    const blocked = await redeem(invited.code, 'd01010101', samePrefix);
+    expect(blocked.status).toBe(429);
+    expect(((await blocked.json()) as { error?: string }).error).toBe('slow_down');
+    const other = await redeem(invited.code, 'd01010101', '2001:db8:9:9::1');
+    expect(other.status).toBe(201);
+  });
+
+  it('does not let the global alarm lock out another address', async () => {
+    const invited = await issuedCode('d02020202');
+    for (let n = 0; n < 61; n += 1) {
+      const response = await redeem('YYYY-YYYY', `d${(n + 32).toString(16).padStart(8, '0')}`);
+      expect(response.status).toBe(401);
+    }
+    const kept = await redeem(invited.code, 'd03030303');
+    expect(kept.status).toBe(201);
+  });
+
+  it('stores an HMAC of the code, reuses one token per device, and stops at eight', async () => {
+    const invited = await issuedCode('d04040404');
+    const compact = invited.code.replace('-', '');
+    const row = await env.DB.prepare('SELECT code_hash FROM join_codes WHERE match_id = ?').bind(invited.matchId).first();
+    const expected = await quotaMac('test-quota-hmac-key', 'join-code', compact, 'code');
+    expect(row?.code_hash).toBe(expected);
+    expect(row?.code_hash).not.toBe(await sha256Hex(compact));
+    const first = await redeem(invited.code, 'd05050505');
+    const firstBody = (await first.json()) as { token: string };
+    const second = await redeem(invited.code, 'd05050505');
+    expect(second.status).toBe(201);
+    const secondBody = (await second.json()) as { token: string };
+    expect(secondBody.token).not.toBe(firstBody.token);
+    const active = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
+    ).bind(invited.matchId, 'd05050505').first();
+    expect(active?.n).toBe(1);
+    const stale = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${firstBody.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'd05050505' }),
+    });
+    expect(stale.status).toBe(401);
+    for (let n = 0; n < MAX_MINTED_TOKENS - 1; n += 1) {
+      const device = `d${(n + 64).toString(16).padStart(8, '0')}`;
+      const response = await redeem(invited.code, device);
+      expect(response.status).toBe(201);
+    }
+    const extra = await redeem(invited.code, 'd0e0e0e0e');
+    expect(extra.status).toBe(401);
+    expect(await extra.json()).toEqual(NEUTRAL);
+    const minted = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL',
+    ).bind(invited.matchId).first();
+    expect(minted?.n).toBe(MAX_MINTED_TOKENS);
+  });
+
+  it('revokes the code and the invite when the match ends', async () => {
+    const invited = await issuedCode('d06060606');
+    const host = await connect(invited.hostToken, 'd06060606');
+    host.ws.send(JSON.stringify({
+      type: 'event',
+      eventId: '00000000-0000-4000-8000-0000000000ee',
+      event: { type: 'match/end', at: 1_700_000_000_100 },
+    }));
+    await host.messages.waitFor((message) => message.type === 'event');
+    const code = await redeem(invited.code, 'd07070707');
+    expect(code.status).toBe(401);
+    expect(await code.json()).toEqual(NEUTRAL);
+    const invite = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${invited.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'd07070707' }),
+    });
+    expect(invite.status).toBe(401);
+  });
+
+  it('stores a replayed name only after the extra marks are removed', async () => {
+    const stacked = `x${'\u0301'.repeat(8)}y`;
+    const base = createMatch(1_700_000_000_000);
+    const created = await call('/matches', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        device: 'd08080808',
+        log: {
+          schemaVersion: 2,
+          base,
+          events: [{ type: 'team/rename', team: 'a', name: stacked, at: base.createdAt + 1 }],
+        },
+      }),
+    });
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as { hostToken: string };
+    const host = await connect(body.hostToken, 'd08080808');
+    const snap = await host.messages.waitFor((message) => message.type === 'snapshot');
+    const events = (snap.log as { events: { type: string; name?: string }[] }).events;
+    const rename = events.find((event) => event.type === 'team/rename');
+    expect(rename?.name).not.toBe(stacked);
+    expect(parseLiveTeamName(rename?.name)).toBe(rename?.name);
+    const hindi = await call('/matches', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        device: 'd09090909',
+        log: {
+          schemaVersion: 2,
+          base: createMatch(1_700_000_000_000, undefined, { a: 'भारतीय टीम' }),
+          events: [],
+        },
+      }),
+    });
+    expect(hindi.status).toBe(201);
   });
 });

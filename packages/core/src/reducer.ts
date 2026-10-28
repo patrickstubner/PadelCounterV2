@@ -1,8 +1,29 @@
 import { createMatchId, isUuid } from './id';
 import type { MatchLog } from './parse';
-import { sanitizeTeamName, storedTeamName } from './names';
+import { clampLiveTeamName, sanitizeTeamName, storedTeamName } from './names';
 import { canDecrement, gamesPlayed, isPlausibleSetScore, matchWinner, rotateServe, setWinner } from './rules';
 import { SCHEMA_VERSION, isNewMatchEvent, isPlayerSlot, isSetIndex, isTeamId, isTimestamp, type MatchEvent, type MatchState, type Server, type SetIndex, type SetScore, type TeamId } from './types';
+
+/** Names stored for a new live match. Replay cannot put a stack of marks back. */
+export function prepareLiveLog(log: MatchLog): MatchLog {
+  const events = log.events.map((event) => {
+    if (event.type !== 'team/rename') return event;
+    const name = clampLiveTeamName(event.name, event.team);
+    return name === event.name ? event : { ...event, name };
+  });
+  const nameA = clampLiveTeamName(log.base.teams.a.name, 'a');
+  const nameB = clampLiveTeamName(log.base.teams.b.name, 'b');
+  const base = nameA === log.base.teams.a.name && nameB === log.base.teams.b.name
+    ? log.base
+    : {
+        ...log.base,
+        teams: {
+          a: { name: nameA },
+          b: { name: nameB },
+        },
+      };
+  return { ...log, base, events };
+}
 
 export function createMatch(
   at: number,

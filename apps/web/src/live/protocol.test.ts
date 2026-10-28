@@ -1,9 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { ROOM_MESSAGES } from '@padel/core';
-import { JOIN_KEY, interpretMessage, isTerminalCode, isTerminalMessage, joinLink, onlineRetryAllowed, parseJoinHash, readJoinToken, reconnectDelayMs, shouldResumeSocket, socketUrl, unackedAfterSnapshot } from './protocol';
+import { JOIN_KEY, interpretMessage, isTerminalCode, isTerminalMessage, joinLink, matchCodeShareText, onlineRetryAllowed, parseJoinHash, readJoinToken, reconnectDelayMs, sendMatchCode, shouldResumeSocket, socketUrl, tokenFromJoinQr, unackedAfterSnapshot } from './protocol';
 
 const ID = '00000000-0000-4000-8000-0000000000aa';
 const TOKEN = 'abcdefghijklmnopqrstuv';
+
+describe('sending a short code', () => {
+  it('shares the code, copies it when sharing is missing, and ignores a cancelled share', async () => {
+    const text = matchCodeShareText('K7M-42Q');
+    expect(text).toBe('Join my padel match in Padel Counter. Code: K7M-42Q');
+    expect(text).not.toContain('#/join');
+    const share = async () => undefined;
+    expect(await sendMatchCode('K7M-42Q', { share })).toBe('shared');
+    const writeText = async () => undefined;
+    expect(await sendMatchCode('K7M-42Q', { clipboard: { writeText } })).toBe('copied');
+    let copied = false;
+    expect(await sendMatchCode('K7M-42Q', {
+      share: async () => {
+        throw new DOMException('cancelled', 'AbortError');
+      },
+      clipboard: { writeText: async () => {
+        copied = true;
+      } },
+    })).toBe('visible');
+    expect(copied).toBe(false);
+  });
+});
 
 describe('join links', () => {
   it('keeps the code in the fragment and parses only a 128-bit token', () => {
@@ -14,6 +36,14 @@ describe('join links', () => {
     expect(parseJoinHash(`#/join?t=${TOKEN}`)).toEqual({ token: TOKEN });
     expect(parseJoinHash(`#/join/${ID}?t=${TOKEN}`)).toBeNull();
     expect(parseJoinHash('#/join?t=short')).toBeNull();
+    const page = 'https://patrickstubner.github.io/PadelCounterV2/';
+    expect(tokenFromJoinQr(link, page)).toBe(TOKEN);
+    expect(tokenFromJoinQr(`${page}?t=${TOKEN}#/join?t=${TOKEN}`, page)).toBeNull();
+    expect(tokenFromJoinQr(`https://evil.example/PadelCounterV2/#/join?t=${TOKEN}`, page)).toBeNull();
+    expect(tokenFromJoinQr(`https://patrickstubner.github.io/PadelCounter/#/join?t=${TOKEN}`, page)).toBeNull();
+    expect(tokenFromJoinQr(`https://user:secret@patrickstubner.github.io/PadelCounterV2/#/join?t=${TOKEN}`, page)).toBeNull();
+    expect(tokenFromJoinQr('K7M-42Q', page)).toBeNull();
+    expect(tokenFromJoinQr(`http://patrickstubner.github.io/PadelCounterV2/#/join?t=${TOKEN}`, page)).toBeNull();
     expect(socketUrl('http://localhost:8787', TOKEN)).toBe(`ws://localhost:8787/ws/${TOKEN}`);
     expect(socketUrl('https://padel-counter.example.workers.dev/', TOKEN)).toBe(
       `wss://padel-counter.example.workers.dev/ws/${TOKEN}`,

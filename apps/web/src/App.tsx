@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isOpenMatch, lastChangeAt, planNewMatch, type NewMatchPlan } from '@padel/core';
-import { detailHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
+import { detailHistoryState, joinHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
+import { JoinMatchPage } from './components/JoinMatchPage';
 import { CourtHeader, type CourtAction } from './components/CourtHeader';
 import { HistoryPage } from './components/HistoryPage';
 import { PrivacyPage } from './components/PrivacyPage';
@@ -88,6 +89,7 @@ export function App() {
     return screenFromHistory(history.state);
   });
   const [connectOpen, setConnectOpen] = useState(false);
+  const [joinOpen, setJoinOpen] = useState(false);
   const joinStarted = useRef(false);
   const applyJoin = useCallback((attempt: { readonly ok: true; readonly token: string } | { readonly ok: false; readonly invalid: boolean }) => {
     if (attempt.ok) {
@@ -133,7 +135,11 @@ export function App() {
   }, [applyJoin, room.host, room.status]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const onPop = (event: PopStateEvent) => setScreen(screenFromHistory(event.state));
+    const onPop = (event: PopStateEvent) => {
+      const state = event.state as { padelArchive?: string } | null;
+      if (!state || state.padelArchive !== 'join') setJoinOpen(false);
+      setScreen(screenFromHistory(event.state));
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
@@ -166,6 +172,17 @@ export function App() {
   const openPrivacy = () => openScreen({ view: 'privacy' }, privacyHistoryState());
   const openConnect = () => {
     setConnectOpen(true);
+  };
+  const closeJoin = () => {
+    if (typeof history !== 'undefined' && (history.state as { padelArchive?: string } | null)?.padelArchive === 'join') {
+      history.back();
+      return;
+    }
+    setJoinOpen(false);
+  };
+  const openJoin = () => {
+    if (typeof history !== 'undefined') history.pushState(joinHistoryState(), '');
+    setJoinOpen(true);
   };
   const closeArchive = () => {
     setDeletingId(null);
@@ -294,6 +311,7 @@ export function App() {
   }
 
   const showConnect = !room.joining && (room.status !== 'live' || room.host);
+  const showJoin = !room.joining && room.status !== 'live';
   const leaveLive = () => {
     room.disconnect();
     try {
@@ -304,6 +322,7 @@ export function App() {
   };
   const actions: readonly CourtAction[] = [
     ...(showConnect ? [{ id: 'connect', label: 'Connect players', testId: 'connect-open', onSelect: openConnect }] : []),
+    ...(showJoin ? [{ id: 'join', label: 'Join match', testId: 'join-open', onSelect: openJoin }] : []),
     ...(room.status === 'live' && !room.host
       ? [{ id: 'leave', label: 'Leave live match', testId: 'leave-live-menu', onSelect: leaveLive }]
       : []),
@@ -510,6 +529,7 @@ export function App() {
           status={room.status === 'disconnected' ? 'off' : room.status}
           players={room.players}
           qr={room.qr}
+          code={room.code}
           error={room.error}
           onShare={() => room.share(match.log)}
           onRotate={room.rotate}
@@ -522,6 +542,23 @@ export function App() {
             }
           }}
           onClose={() => setConnectOpen(false)}
+        />
+      ) : null}
+      {joinOpen ? (
+        <JoinMatchPage
+          configured={room.configured}
+          error={room.joinError}
+          pageHref={typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href}
+          onCode={(code) => {
+            void room.joinByCode(code).then((ok) => {
+              if (ok) setJoinOpen(false);
+            });
+          }}
+          onToken={(token) => {
+            setJoinOpen(false);
+            room.connect(token);
+          }}
+          onClose={closeJoin}
         />
       ) : null}
       {confirming === 'end' ? (

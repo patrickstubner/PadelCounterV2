@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isUuid, JOIN_TOKEN_TTL_MS, ROOM_MESSAGES, type MatchEvent, type MatchLog } from '@padel/core';
+import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isUuid, JOIN_TOKEN_TTL_MS, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, type MatchEvent, type MatchLog } from '@padel/core';
 import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
@@ -36,6 +36,7 @@ export interface LiveController {
   readonly host: boolean;
   readonly players: number;
   readonly qr: string | null;
+  readonly code: string | null;
   readonly error: string | null;
   readonly joinError: string | null;
   readonly joining: boolean;
@@ -43,6 +44,7 @@ export interface LiveController {
   readonly share: (log: MatchLog, options?: ShareOptions) => void;
   readonly rotate: () => void;
   readonly connect: (token: string) => void;
+  readonly joinByCode: (code: string) => Promise<boolean>;
   readonly rejectToken: () => void;
   readonly disconnect: () => void;
   readonly acceptOffer: () => void;
@@ -99,6 +101,7 @@ export function useLive(
   const [host, setHost] = useState(true);
   const [players, setPlayers] = useState(0);
   const [qr, setQr] = useState<string | null>(null);
+  const [matchCode, setMatchCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
@@ -109,6 +112,7 @@ export function useLive(
     token: string;
     inviteToken: string | null;
     inviteExpiresAt: number;
+    inviteCode: string | null;
   } | null>(null);
   const replaceRef = useRef(replaceLog);
   const applyRef = useRef(applyLive);
@@ -214,6 +218,7 @@ export function useLive(
         host: true,
         matchId: current.matchId,
         ...(current.inviteToken ? { inviteToken: current.inviteToken, inviteExpiresAt: current.inviteExpiresAt } : {}),
+        ...(current.inviteCode ? { inviteCode: current.inviteCode } : {}),
       }));
     } catch {
       // The ref still shows or rotates a code until this tab closes.
@@ -227,15 +232,17 @@ export function useLive(
       token: held.token,
       inviteToken: same?.inviteToken ?? null,
       inviteExpiresAt: same?.inviteExpiresAt ?? 0,
+      inviteCode: same?.inviteCode ?? null,
     };
     writeHost(held);
   };
 
-  const rememberInvite = (inviteToken: string, inviteExpiresAt: number) => {
+  const rememberInvite = (inviteToken: string, inviteExpiresAt: number, inviteCode: string | null) => {
     const current = hostRef.current;
     const held = tokenRef.current;
     if (!current || !held) return;
-    hostRef.current = { ...current, inviteToken, inviteExpiresAt };
+    hostRef.current = { ...current, inviteToken, inviteExpiresAt, inviteCode };
+    setMatchCode(inviteCode);
     writeHost(held);
   };
 
@@ -264,6 +271,7 @@ export function useLive(
       let matchId = '';
       let inviteToken: string | null = null;
       let inviteExpiresAt = 0;
+      let inviteCode: string | null = null;
       const raw = sessionStorage.getItem(JOIN_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as {
@@ -272,6 +280,7 @@ export function useLive(
           matchId?: unknown;
           inviteToken?: unknown;
           inviteExpiresAt?: unknown;
+          inviteCode?: unknown;
         };
         if (parsed.token === token && parsed.host === true && isUuid(parsed.matchId)) {
           matchId = parsed.matchId.toLowerCase();
@@ -279,6 +288,8 @@ export function useLive(
             inviteToken = parsed.inviteToken;
             inviteExpiresAt = parsed.inviteExpiresAt;
           }
+          const storedCode = normalizeJoinCode(parsed.inviteCode);
+          if (storedCode) inviteCode = storedCode;
         }
       }
       sessionStorage.setItem(JOIN_KEY, JSON.stringify({
@@ -288,9 +299,10 @@ export function useLive(
           host: true,
           matchId,
           ...(inviteToken ? { inviteToken, inviteExpiresAt } : {}),
+          ...(inviteCode ? { inviteCode } : {}),
         } : {}),
       }));
-      if (matchId) hostRef.current = { matchId, token, inviteToken, inviteExpiresAt };
+      if (matchId) hostRef.current = { matchId, token, inviteToken, inviteExpiresAt, inviteCode };
     } catch {
       // The in-memory copy still reconnects this visit.
     }
@@ -381,12 +393,13 @@ export function useLive(
     setStatus('off');
     setHost(true);
     setQr(null);
+    setMatchCode(null);
     setPlayers(0);
     setError(null);
     rememberOffer(null);
   };
 
-  const open = (token: string, asJoin: boolean) => {
+  const open = (token: string, asJoin: boolean, existingTicket?: string) => {
     const held = tokenRef.current;
     if (held?.token === token && (opening.current || socketIsUp(socketRef.current))) return;
     if (held && held.token !== token) {
@@ -447,32 +460,34 @@ export function useLive(
       setStatus('connecting');
       if (asJoin) setJoinError(null);
       else if (!hadLive.current) setError(null);
-      let ticket: string | undefined;
-      try {
-        const response = await fetch(`${api}/join`, {
-          method: 'POST',
-          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ device: thisDevice() }),
-        });
-        if (generation.current !== mine) return;
-        if (!response.ok) {
-          fail(await errorText(response));
-          return;
-        }
-        const body = (await response.json()) as { ticket?: unknown };
-        if (typeof body.ticket !== 'string') {
+      let ticket: string | undefined = existingTicket;
+      if (!ticket) {
+        try {
+          const response = await fetch(`${api}/join`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ device: thisDevice() }),
+          });
+          if (generation.current !== mine) return;
+          if (!response.ok) {
+            fail(await errorText(response));
+            return;
+          }
+          const body = (await response.json()) as { ticket?: unknown };
+          if (typeof body.ticket !== 'string') {
+            fail(ROOM_MESSAGES.offline);
+            return;
+          }
+          ticket = body.ticket;
+          if (!asJoin) {
+            setError(null);
+            setJoinError(null);
+          }
+        } catch {
+          if (generation.current !== mine) return;
           fail(ROOM_MESSAGES.offline);
           return;
         }
-        ticket = body.ticket;
-        if (!asJoin) {
-          setError(null);
-          setJoinError(null);
-        }
-      } catch {
-        if (generation.current !== mine) return;
-        fail(ROOM_MESSAGES.offline);
-        return;
       }
       if (!ticket || generation.current !== mine) return;
       const ws = new WebSocket(socketUrl(api, ticket));
@@ -660,12 +675,14 @@ export function useLive(
         matchId?: unknown;
         inviteToken?: unknown;
         inviteExpiresAt?: unknown;
+        inviteCode?: unknown;
       };
       if (parsed.host !== true || !isJoinToken(parsed.token) || !isUuid(parsed.matchId)) return;
       if (typeof parsed.expiresAt === 'number' && parsed.expiresAt <= Date.now()) return;
       const inviteToken = isJoinToken(parsed.inviteToken) ? parsed.inviteToken : null;
       const inviteExpiresAt = typeof parsed.inviteExpiresAt === 'number' ? parsed.inviteExpiresAt : 0;
-      hostRef.current = { matchId: parsed.matchId.toLowerCase(), token: parsed.token, inviteToken, inviteExpiresAt };
+      const inviteCode = normalizeJoinCode(parsed.inviteCode);
+      hostRef.current = { matchId: parsed.matchId.toLowerCase(), token: parsed.token, inviteToken, inviteExpiresAt, inviteCode };
     } catch {
       // A missing host record only means Show QR creates a match.
     }
@@ -801,7 +818,7 @@ export function useLive(
       setError(await errorText(response));
       return;
     }
-    const body = (await response.json()) as { token?: unknown; expiresAt?: unknown };
+    const body = (await response.json()) as { token?: unknown; expiresAt?: unknown; code?: unknown };
     if (typeof body.token !== 'string') {
       setError(ROOM_MESSAGES.offline);
       return;
@@ -809,7 +826,7 @@ export function useLive(
     const expiresAt = typeof body.expiresAt === 'number' && Number.isFinite(body.expiresAt)
       ? body.expiresAt
       : Date.now() + JOIN_TOKEN_TTL_MS;
-    rememberInvite(body.token, expiresAt);
+    rememberInvite(body.token, expiresAt, normalizeJoinCode(body.code));
     setError(null);
     setJoinError(null);
     const page = typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href;
@@ -823,6 +840,7 @@ export function useLive(
     host,
     players,
     qr,
+    code: matchCode,
     error,
     joinError,
     joining,
@@ -854,6 +872,7 @@ export function useLive(
       setStatus('off');
       setHost(true);
       setQr(null);
+      setMatchCode(null);
       setPlayers(0);
       return previous;
     },
@@ -862,6 +881,40 @@ export function useLive(
       setJoining(true);
       setJoinError(null);
       open(token, hostRef.current?.token !== token);
+    },
+    joinByCode: async (code) => {
+      const normalized = normalizeJoinCode(code);
+      if (!normalized) {
+        setJoinError(ROOM_MESSAGES.join_code);
+        return false;
+      }
+      if (!api) {
+        setJoinError(ROOM_MESSAGES.not_configured);
+        return false;
+      }
+      try {
+        const response = await fetch(`${api}/join`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ device: thisDevice(), code: normalized }),
+        });
+        if (!response.ok) {
+          setJoinError(await errorText(response));
+          return false;
+        }
+        const body = (await response.json()) as { token?: unknown; ticket?: unknown };
+        if (!isJoinToken(body.token) || typeof body.ticket !== 'string') {
+          setJoinError(ROOM_MESSAGES.join_code);
+          return false;
+        }
+        setJoining(true);
+        setJoinError(null);
+        open(body.token, true, body.ticket);
+        return true;
+      } catch {
+        setJoinError(ROOM_MESSAGES.offline);
+        return false;
+      }
     },
     rejectToken: () => {
       setJoining(false);
@@ -874,6 +927,7 @@ export function useLive(
         if (current.inviteToken && current.inviteExpiresAt > Date.now()) {
           const page = typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href;
           setQr(joinLink(page, current.inviteToken));
+          setMatchCode(current.inviteCode);
           return;
         }
         void publishQr(current.matchId, current.token);
@@ -884,6 +938,7 @@ export function useLive(
           setError(ROOM_MESSAGES.not_configured);
           return;
         }
+        const liveLog = prepareLiveLog(log);
         setStatus('connecting');
         setError(null);
         try {
@@ -891,7 +946,7 @@ export function useLive(
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              log,
+              log: liveLog,
               device: thisDevice(),
               ...(options?.previousHostToken
                 ? { previousHostToken: options.previousHostToken, carry: options.carry === true }

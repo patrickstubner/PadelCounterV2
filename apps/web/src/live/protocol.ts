@@ -121,6 +121,60 @@ export function joinLink(pageHref: string, token: string): string {
   return `${url.origin}${path}#/join?t=${encodeURIComponent(token)}`;
 }
 
+/**
+ * A scanned QR is a join link only when it is this app: same origin, same path, token in the fragment.
+ * Anything else is ignored.
+ */
+export function tokenFromJoinQr(text: string, pageHref: string): string | null {
+  if (text.length > 2048) return null;
+  let scanned: URL;
+  let page: URL;
+  try {
+    scanned = new URL(text.trim());
+    page = new URL(pageHref);
+  } catch {
+    return null;
+  }
+  if (scanned.username || scanned.password) return null;
+  if (scanned.origin !== page.origin) return null;
+  const scannedPath = scanned.pathname.endsWith('/') ? scanned.pathname : `${scanned.pathname}/`;
+  const pagePath = page.pathname.endsWith('/') ? page.pathname : `${page.pathname}/`;
+  if (scannedPath !== pagePath || scanned.search !== '') return null;
+  return parseJoinHash(scanned.hash)?.token ?? null;
+}
+
+export function matchCodeShareText(code: string): string {
+  return `Join my padel match in Padel Counter. Code: ${code}`;
+}
+
+export async function sendMatchCode(
+  code: string,
+  nav: {
+    share?: (data: { text: string }) => Promise<void>;
+    clipboard?: { writeText: (value: string) => Promise<void> };
+  },
+): Promise<'shared' | 'copied' | 'visible'> {
+  const text = matchCodeShareText(code);
+  if (nav.share) {
+    try {
+      await nav.share({ text });
+      return 'shared';
+    } catch (error) {
+      const name = error instanceof Error ? error.name : '';
+      if (name === 'AbortError') return 'visible';
+    }
+  }
+  if (nav.clipboard) {
+    try {
+      await nav.clipboard.writeText(text);
+      return 'copied';
+    } catch {
+      return 'visible';
+    }
+  }
+  return 'visible';
+}
+
 export function parseJoinHash(hash: string): { token: string } | null {
   const raw = hash.startsWith('#') ? hash.slice(1) : hash;
   const match = /^\/join\?([^#]*)$/i.exec(raw);

@@ -16,6 +16,7 @@ export type {
   TeamId,
 } from './types';
 
+export { networkPrefix } from './address';
 export { canonicalEventId, createMatchId, isUuid } from './id';
 export {
   DEFAULT_TEAM_NAMES,
@@ -23,7 +24,9 @@ export {
   MAX_TEAM_NAME_UTF16_UNITS,
   UNSAFE_CHARS,
   MAX_LIVE_TEAM_NAME_LENGTH,
+  clampLiveTeamName,
   clampTeamNameDraft,
+  acceptsLiveBaseName,
   codePointLength,
   isValidStoredName,
   liveTeamSide,
@@ -55,11 +58,22 @@ export {
   setWinner,
   tiebreakHint,
 } from './rules';
-export { assignMatchId, createMatch, matchReducer, replayScore } from './reducer';
+export { assignMatchId, createMatch, matchReducer, prepareLiveLog, replayScore } from './reducer';
 export { MAX_EVENTS, MAX_RAW_LENGTH, parseMatchLog, parseStoredEvent } from './parse';
 export type { MatchLog } from './parse';
 export { actionForEvent, canPerform, isRole } from './access';
 export type { Credential, MatchAction, Role } from './access';
+export {
+  CODE_ALARM_GLOBAL,
+  CODE_ATTEMPTS_PER_PREFIX,
+  JOIN_CODE_ALPHABET,
+  JOIN_CODE_LENGTH,
+  JOIN_CODE_SPACE,
+  MAX_MINTED_TOKENS,
+  joinCodeCompact,
+  normalizeJoinCode,
+  randomJoinCode,
+} from './joinCode';
 export {
   HOST_TOKEN_TTL_MS,
   JOIN_TOKEN_BYTES,

@@ -11,6 +11,7 @@ export function screenFromHistory(state: unknown): ArchiveScreen {
   const record = state as Record<string, unknown>;
   if (record.padelArchive === 'matches') return { view: 'matches' };
   if (record.padelArchive === 'privacy') return { view: 'privacy' };
+  if (record.padelArchive === 'join') return { view: 'court' };
   if (record.padelArchive === 'detail' && isUuid(record.id)) return { view: 'detail', id: record.id.toLowerCase() };
   return { view: 'court' };
 }
@@ -25,4 +26,8 @@ export function detailHistoryState(id: string): { readonly padelArchive: 'detail
 
 export function privacyHistoryState(): { readonly padelArchive: 'privacy' } {
   return { padelArchive: 'privacy' };
+}
+
+export function joinHistoryState(): { readonly padelArchive: 'join' } {
+  return { padelArchive: 'join' };
 }
