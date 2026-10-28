@@ -46,12 +46,30 @@ describe('sanitizeTeamName', () => {
     expect(sanitizeTeamName('🎾', 'b')).toBe('🎾');
   });
 
+  it('keeps real names and falls back when the name is only variation selectors', () => {
+    const names = ['भारतीय टीम', 'สวัสดีครับ', 'বাংলাদেশ', 'مَرْحَبًا', 'שָׁלוֹם', 'ऑस्ट्रेलिया'];
+    for (const name of names) {
+      expect(sanitizeTeamName(name, 'a')).toBe(name);
+      expect(sanitizeTeamName(name, 'b')).toBe(name);
+      expect(isValidStoredName(name)).toBe(true);
+    }
+    const stacked = `5${'\u0301'.repeat(8)}`;
+    expect(sanitizeTeamName(stacked, 'a')).toBe(stacked);
+    expect(isValidStoredName(stacked)).toBe(true);
+    expect(sanitizeTeamName('\uFE0F\uFE0F', 'a')).toBe('Team A');
+    expect(sanitizeTeamName('\uFE0F\uFE0F', 'b')).toBe('Team B');
+    expect(sanitizeTeamName('\u{E0100}', 'a')).toBe('Team A');
+    expect(sanitizeTeamName('❤️', 'b')).toBe('❤️');
+  });
+
   it('rejects tampered stored names instead of repairing them', () => {
     expect(isValidStoredName('Team A')).toBe(true);
     expect(isValidStoredName('A'.repeat(MAX_TEAM_NAME_LENGTH))).toBe(true);
     expect(isValidStoredName('A'.repeat(MAX_TEAM_NAME_LENGTH + 1))).toBe(false);
-    expect(isValidStoredName('\u3164')).toBe(false);
-    expect(isValidStoredName('\u2800')).toBe(false);
+    expect(isValidStoredName('\u3164')).toBe(true);
+    expect(isValidStoredName('\u2800')).toBe(true);
+    expect(isValidStoredName('A\u00A0B')).toBe(true);
+    expect(isValidStoredName('A\u0301')).toBe(false);
     expect(isValidStoredName(' Bad')).toBe(false);
     expect(isValidStoredName('A\u200B')).toBe(false);
     expect(isValidStoredName('A\uD800')).toBe(false);

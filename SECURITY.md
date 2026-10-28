@@ -267,9 +267,16 @@ Production deploy aborted with `production environment needs a required reviewer
 - A `team_renamed` frame is applied whenever its server sequence is newer, including when the event id is this phone’s own. Two phones that rename at the same time end on the name the server stored last.
 - Team names use one limit, `MAX_TEAM_NAME_LENGTH` (24), on the court, in the archive, and in the worker. D1 does not store team names. A played match with a 24-character name stays in History after a reload.
 - `{ type: 'event', event: { type: 'team/rename' } }` is refused. Renames go through `team_renamed`, which keeps the 3-per-second limit and rejects a name instead of shortening it.
-- A name is refused when it is only a blank filler (`U+3164`, `U+115F`, `U+2800`), only variation selectors, or more than two combining marks.
+- A new name is refused when it is only a blank filler (`U+3164`, `U+115F`, `U+2800`) or only variation selectors. Review 16 limits combining marks per base character.
 - A successful New code clears the error that an earlier attempt left on the court.
 - The match still holds at most 500 events. Three connections renaming at the limit can fill that in about a minute, the same way repeated score taps can. After that the room refuses further changes. New code still disconnects phones that joined with the old code. This is noted, not changed.
+
+## Review 16, 2026-10-28
+
+- Combining marks are limited per base character, at most four in a row. They are not counted across the whole name. A Hindi, Thai, Bengali, Arabic, or Hebrew name is stored unchanged. `sanitizeTeamName` does not drop or reorder marks that are already valid.
+- `isValidStoredName` checks that a saved name is NFC, already trimmed, free of control and format characters, free of an unpaired surrogate, and at most 24 characters. It does not rewrite a no-break space. The filler and mark rules apply only to a new name, so a name saved by an older build still loads.
+- A local name that is only variation selectors becomes Team A or Team B. The server already refuses that name.
+- A phone still on 2.1.3 sends a live rename as `{ type: 'event', event: { type: 'team/rename' } }`. The server refuses that path. That phone can rename a team in a live match only after it updates.
 
 ## Out of scope
 
