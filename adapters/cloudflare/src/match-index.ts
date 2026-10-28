@@ -1,6 +1,6 @@
 import {
-  CODE_FAILS_GLOBAL,
-  CODE_FAILS_PER_IP,
+  CODE_ALARM_GLOBAL,
+  CODE_ATTEMPTS_PER_PREFIX,
   HISTORY_RETAIN_MS,
   JOINS_PER_DEVICE,
   JOINS_PER_NETWORK,
@@ -25,7 +25,14 @@ const UPSERT_JOIN =
   'INSERT INTO join_quota (subject_hash, window, n, cap) VALUES (?, ?, 1, ?) ON CONFLICT(subject_hash, window) DO UPDATE SET n = n + 1';
 const DELETE_OLD_JOIN = 'DELETE FROM join_quota WHERE window < ?';
 const INSERT_CREDENTIAL =
-  'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?)';
+  'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at, device_id) VALUES (?, ?, ?, ?, ?, ?)';
+const REVOKE_CREDENTIAL = 'UPDATE credentials SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL';
+const FIND_MINTED =
+  'SELECT token_hash, expires_at FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL AND expires_at > ?';
+const COUNT_MINTED =
+  'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND expires_at > ?';
+const REVOKE_SHARED_CREDS =
+  'UPDATE credentials SET revoked_at = ? WHERE match_id = ? AND host = 0 AND revoked_at IS NULL';
 const FIND_CREDENTIAL =
   'SELECT token_hash, match_id, host, expires_at, revoked_at FROM credentials WHERE token_hash = ?';
 const REVOKE_PLAYERS =
@@ -74,6 +81,7 @@ export interface CredentialRow {
   readonly host: boolean;
   readonly expiresAt: number;
   readonly revokedAt: number | null;
+  readonly deviceId?: string | null;
 }
 
 export interface JoinCodeRow {
@@ -95,8 +103,13 @@ export interface MatchIndex {
   releaseCreateQuota(deviceHash: string, ipHash: string, now: number): Promise<void>;
   takeJoinDevice(deviceHash: string, now: number): Promise<{ ok: true } | { ok: false; reason: 'device' }>;
   noteJoinFailure(ipHash: string, now: number): Promise<{ ok: true } | { ok: false; reason: 'network' }>;
-  noteCodeFailure(ipHash: string, globalHash: string, now: number): Promise<{ ok: true } | { ok: false }>;
+  takeCodeAttempt(ipHash: string, now: number): Promise<{ ok: true } | { ok: false }>;
+  noteCodeAlarm(globalHash: string, now: number): Promise<void>;
   findJoinCode(codeHash: string): Promise<JoinCodeRow | null>;
+  countMinted(matchId: string, now: number): Promise<number>;
+  findMinted(matchId: string, deviceId: string, now: number): Promise<{ tokenHash: string } | null>;
+  revokeCredential(tokenHash: string, now: number): Promise<void>;
+  revokeSharedAccess(matchId: string, now: number): Promise<void>;
   putJoinCode(matchId: string, now: number, row: JoinCodeRow): Promise<void>;
   insertCredential(row: CredentialRow): Promise<void>;
   findCredential(tokenHash: string): Promise<CredentialRow | null>;
@@ -195,17 +208,22 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
         return { ok: false, reason: 'network' };
       }
     },
-    async noteCodeFailure(ipHash, globalHash, now) {
+    async takeCodeAttempt(ipHash, now) {
       const window = joinWindow(now);
       try {
-        await db.batch([
-          db.prepare(UPSERT_JOIN).bind(ipHash, window, CODE_FAILS_PER_IP),
-          db.prepare(UPSERT_JOIN).bind(globalHash, window, CODE_FAILS_GLOBAL),
-        ]);
+        await db.prepare(UPSERT_JOIN).bind(ipHash, window, CODE_ATTEMPTS_PER_PREFIX).run();
         return { ok: true };
       } catch (error) {
         if (!isQuotaCap(error)) throw error;
         return { ok: false };
+      }
+    },
+    async noteCodeAlarm(globalHash, now) {
+      const window = joinWindow(now);
+      try {
+        await db.prepare(UPSERT_JOIN).bind(globalHash, window, CODE_ALARM_GLOBAL).run();
+      } catch (error) {
+        if (!isQuotaCap(error)) throw error;
       }
     },
     async findJoinCode(codeHash) {
@@ -225,6 +243,25 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
         revokedAt,
       };
     },
+    async countMinted(matchId, now) {
+      const row = await db.prepare(COUNT_MINTED).bind(matchId, now).first();
+      const count = row ? integer(row.n) : 0;
+      return count ?? 0;
+    },
+    async findMinted(matchId, deviceId, now) {
+      const row = await db.prepare(FIND_MINTED).bind(matchId, deviceId, now).first();
+      if (!row || typeof row.token_hash !== 'string') return null;
+      return { tokenHash: row.token_hash };
+    },
+    async revokeCredential(tokenHash, now) {
+      await db.prepare(REVOKE_CREDENTIAL).bind(now, tokenHash).run();
+    },
+    async revokeSharedAccess(matchId, now) {
+      await db.batch([
+        db.prepare(REVOKE_SHARED_CREDS).bind(now, matchId),
+        db.prepare(REVOKE_CODES).bind(now, matchId),
+      ]);
+    },
     async putJoinCode(matchId, now, row) {
       await db.batch([
         db.prepare(REVOKE_CODES).bind(now, matchId),
@@ -234,7 +271,7 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
     async insertCredential(row) {
       await db
         .prepare(INSERT_CREDENTIAL)
-        .bind(row.tokenHash, row.matchId, row.host ? 1 : 0, row.expiresAt, row.revokedAt)
+        .bind(row.tokenHash, row.matchId, row.host ? 1 : 0, row.expiresAt, row.revokedAt, row.deviceId ?? null)
         .run();
     },
     async findCredential(tokenHash) {
@@ -255,7 +292,7 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
     async replacePlayerCredential(matchId, now, row) {
       await db.batch([
         db.prepare(REVOKE_PLAYERS).bind(now, matchId),
-        db.prepare(INSERT_CREDENTIAL).bind(row.tokenHash, row.matchId, row.host ? 1 : 0, row.expiresAt, row.revokedAt),
+        db.prepare(INSERT_CREDENTIAL).bind(row.tokenHash, row.matchId, row.host ? 1 : 0, row.expiresAt, row.revokedAt, row.deviceId ?? null),
       ]);
     },
     async moveCredential(tokenHash, fromMatchId, toMatchId) {

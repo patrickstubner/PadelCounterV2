@@ -193,6 +193,10 @@ export function markActivityTouch(sql: RoomSql, now: number): void {
   sql.exec('UPDATE meta SET activity_touch = ? WHERE id = 1', now);
 }
 
+export function revokeInviteHash(sql: RoomSql, tokenHash: string, now: number): void {
+  sql.exec('UPDATE invites SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL', now, tokenHash);
+}
+
 export function revokePlayerInvites(sql: RoomSql, now: number): void {
   sql.exec('UPDATE invites SET revoked_at = ? WHERE host = 0 AND revoked_at IS NULL', now);
 }

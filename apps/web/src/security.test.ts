@@ -60,6 +60,11 @@ describe('shipped source stays local and text-only', () => {
     expect(html).toContain('Content-Security-Policy');
     expect(html).toContain("media-src 'none'");
     expect(html).toContain("worker-src 'self'");
+    const notice = readFileSync(join(repoRoot, 'public/NOTICE.txt'), 'utf8');
+    expect(notice).toContain('qr 0.7.2');
+    expect(notice).toContain('Copyright (c) 2023 Paul Miller');
+    expect(notice).toContain('qrcode 1.5.4');
+    expect(notice).toContain('Copyright (c) 2012 Ryan Day');
     expect(html).not.toContain('unsafe-inline');
     expect(html).not.toContain('unsafe-eval');
     const rsbuild = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');

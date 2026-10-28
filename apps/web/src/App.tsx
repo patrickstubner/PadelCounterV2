@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isOpenMatch, lastChangeAt, planNewMatch, type NewMatchPlan } from '@padel/core';
-import { detailHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
+import { detailHistoryState, joinHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
 import { JoinMatchPage } from './components/JoinMatchPage';
@@ -135,7 +135,11 @@ export function App() {
   }, [applyJoin, room.host, room.status]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const onPop = (event: PopStateEvent) => setScreen(screenFromHistory(event.state));
+    const onPop = (event: PopStateEvent) => {
+      const state = event.state as { padelArchive?: string } | null;
+      if (!state || state.padelArchive !== 'join') setJoinOpen(false);
+      setScreen(screenFromHistory(event.state));
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
@@ -169,7 +173,15 @@ export function App() {
   const openConnect = () => {
     setConnectOpen(true);
   };
+  const closeJoin = () => {
+    if (typeof history !== 'undefined' && (history.state as { padelArchive?: string } | null)?.padelArchive === 'join') {
+      history.back();
+      return;
+    }
+    setJoinOpen(false);
+  };
   const openJoin = () => {
+    if (typeof history !== 'undefined') history.pushState(joinHistoryState(), '');
     setJoinOpen(true);
   };
   const closeArchive = () => {
@@ -546,7 +558,7 @@ export function App() {
             setJoinOpen(false);
             room.connect(token);
           }}
-          onClose={() => setJoinOpen(false)}
+          onClose={closeJoin}
         />
       ) : null}
       {confirming === 'end' ? (

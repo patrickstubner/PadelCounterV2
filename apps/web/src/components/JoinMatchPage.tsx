@@ -13,6 +13,12 @@ interface JoinMatchPageProps {
   readonly scanFrame?: (video: HTMLVideoElement) => Promise<string | null>;
 }
 
+function focusable(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter(
+    (node) => !node.hasAttribute('disabled'),
+  );
+}
+
 function stopStream(stream: MediaStream | null): void {
   stream?.getTracks().forEach((track) => {
     track.stop();
@@ -29,6 +35,8 @@ export function JoinMatchPage({
   scanFrame,
 }: JoinMatchPageProps) {
   const titleId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [camera, setCamera] = useState(false);
   const [draft, setDraft] = useState('');
@@ -37,6 +45,38 @@ export function JoinMatchPage({
   const onCloseRef = useRef(onClose);
   onTokenRef.current = onToken;
   onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const items = focusable(panel);
+      if (items.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const index = items.indexOf(document.activeElement as HTMLElement);
+      event.preventDefault();
+      const next = event.shiftKey
+        ? items[(index <= 0 ? items.length : index) - 1]
+        : items[index < 0 || index === items.length - 1 ? 0 : index + 1];
+      next?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      previous?.focus();
+    };
+  }, []);
 
   useEffect(() => {
     if (!camera) return;
@@ -117,6 +157,7 @@ export function JoinMatchPage({
       if (event.target === event.currentTarget) onCloseRef.current();
     }}>
       <div
+        ref={panelRef}
         className="connect-dialog"
         role="dialog"
         aria-modal="true"
@@ -125,7 +166,7 @@ export function JoinMatchPage({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="connect-dialog-bar">
-          <button type="button" className="connect-x" data-testid="join-match-close" aria-label="Close" onClick={onClose}>
+          <button ref={closeRef} type="button" className="connect-x" data-testid="join-match-close" aria-label="Close" onClick={onClose}>
             X
           </button>
         </div>
@@ -166,7 +207,7 @@ export function JoinMatchPage({
             autoCapitalize="characters"
             autoComplete="off"
             spellCheck={false}
-            maxLength={12}
+            maxLength={16}
             inputMode="text"
             onChange={(event) => setDraft(event.target.value)}
           />

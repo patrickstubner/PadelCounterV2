@@ -1,10 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
-import { acceptsLiveBaseName, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, replayScore, type Credential, type Role } from '@padel/core';
+import { connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
-import { CLIENT_IP_HEADER, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
+import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
 import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange } from './room';
-import { ensureActivityColumn, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, revokePlayerInvites, type RoomSql } from './store';
+import { ensureActivityColumn, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, revokeInviteHash, revokePlayerInvites, type RoomSql } from './store';
 import { quotaMac, safeEqualHex, sha256Hex } from './tokens';
 
 /** Fixed scope. A minute in the MAC would split one address across two pending caps. */
@@ -295,6 +295,11 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         const sql = this.sql();
         insertEvent(sql, result.event);
         ensureActivityColumn(sql);
+        if (result.event.event.type === 'match/end') {
+          const endedAt = Date.now();
+          revokePlayerInvites(sql, endedAt);
+          await d1MatchIndex(this.env.DB).revokeSharedAccess(room.base.matchId, endedAt);
+        }
       } catch {
         this.reject(ws, 'unavailable', record.eventId);
         return;
@@ -346,10 +351,12 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     if (openRoomForCreate(this.sql())) return json(409, { error: 'unavailable' });
     const body = await readBody(request, 96_000);
     if (!body || typeof body !== 'object') return json(400, { error: 'invalid_match' });
-    const log = parseMatchLog((body as { log?: unknown }).log);
+    const parsed = parseMatchLog((body as { log?: unknown }).log);
     const hostToken = (body as { hostToken?: unknown }).hostToken;
-    if (!log || !isJoinToken(hostToken)) return json(400, { error: 'invalid_match' });
-    if (!acceptsLiveBaseName(log.base.teams.a.name) || !acceptsLiveBaseName(log.base.teams.b.name)) {
+    if (!parsed || !isJoinToken(hostToken)) return json(400, { error: 'invalid_match' });
+    const log = prepareLiveLog(parsed);
+    const played = replayScore(log.base, log.events);
+    if (parseLiveTeamName(played.teams.a.name) !== played.teams.a.name || parseLiveTeamName(played.teams.b.name) !== played.teams.b.name) {
       return json(400, { error: 'invalid_match' });
     }
     const now = Date.now();
@@ -427,7 +434,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   private async playerInvite(request: Request): Promise<Response> {
     const body = await readBody(request, 2000);
     const fields = body && typeof body === 'object'
-      ? (body as { token?: unknown; deviceId?: unknown; expiresAt?: unknown })
+      ? (body as { token?: unknown; deviceId?: unknown; expiresAt?: unknown; replaceHash?: unknown })
       : {};
     if (!isJoinToken(fields.token) || typeof fields.expiresAt !== 'number' || !Number.isInteger(fields.expiresAt)) {
       return json(400, { error: 'invalid_match' });
@@ -436,6 +443,9 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       return json(400, { error: 'invalid_match' });
     }
     if (!readRoom(this.sql())) return json(404, { error: 'unavailable' });
+    if (typeof fields.replaceHash === 'string' && /^[0-9a-f]{64}$/.test(fields.replaceHash)) {
+      revokeInviteHash(this.sql(), fields.replaceHash, Date.now());
+    }
     insertInvite(this.sql(), {
       tokenHash: await sha256Hex(fields.token),
       role: 'player',

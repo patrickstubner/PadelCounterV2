@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { HOST_TOKEN_TTL_MS, acceptsLiveBaseName, isJoinToken, isRoomCode, isUuid, JOIN_TOKEN_TTL_MS, ROOM_MESSAGES, normalizeJoinCode, type MatchEvent, type MatchLog } from '@padel/core';
+import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isUuid, JOIN_TOKEN_TTL_MS, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, type MatchEvent, type MatchLog } from '@padel/core';
 import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
@@ -399,7 +399,7 @@ export function useLive(
     rememberOffer(null);
   };
 
-  const open = (token: string, asJoin: boolean) => {
+  const open = (token: string, asJoin: boolean, existingTicket?: string) => {
     const held = tokenRef.current;
     if (held?.token === token && (opening.current || socketIsUp(socketRef.current))) return;
     if (held && held.token !== token) {
@@ -460,32 +460,34 @@ export function useLive(
       setStatus('connecting');
       if (asJoin) setJoinError(null);
       else if (!hadLive.current) setError(null);
-      let ticket: string | undefined;
-      try {
-        const response = await fetch(`${api}/join`, {
-          method: 'POST',
-          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ device: thisDevice() }),
-        });
-        if (generation.current !== mine) return;
-        if (!response.ok) {
-          fail(await errorText(response));
-          return;
-        }
-        const body = (await response.json()) as { ticket?: unknown };
-        if (typeof body.ticket !== 'string') {
+      let ticket: string | undefined = existingTicket;
+      if (!ticket) {
+        try {
+          const response = await fetch(`${api}/join`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ device: thisDevice() }),
+          });
+          if (generation.current !== mine) return;
+          if (!response.ok) {
+            fail(await errorText(response));
+            return;
+          }
+          const body = (await response.json()) as { ticket?: unknown };
+          if (typeof body.ticket !== 'string') {
+            fail(ROOM_MESSAGES.offline);
+            return;
+          }
+          ticket = body.ticket;
+          if (!asJoin) {
+            setError(null);
+            setJoinError(null);
+          }
+        } catch {
+          if (generation.current !== mine) return;
           fail(ROOM_MESSAGES.offline);
           return;
         }
-        ticket = body.ticket;
-        if (!asJoin) {
-          setError(null);
-          setJoinError(null);
-        }
-      } catch {
-        if (generation.current !== mine) return;
-        fail(ROOM_MESSAGES.offline);
-        return;
       }
       if (!ticket || generation.current !== mine) return;
       const ws = new WebSocket(socketUrl(api, ticket));
@@ -900,14 +902,14 @@ export function useLive(
           setJoinError(await errorText(response));
           return false;
         }
-        const body = (await response.json()) as { token?: unknown };
-        if (!isJoinToken(body.token)) {
+        const body = (await response.json()) as { token?: unknown; ticket?: unknown };
+        if (!isJoinToken(body.token) || typeof body.ticket !== 'string') {
           setJoinError(ROOM_MESSAGES.join_code);
           return false;
         }
         setJoining(true);
         setJoinError(null);
-        open(body.token, true);
+        open(body.token, true, body.ticket);
         return true;
       } catch {
         setJoinError(ROOM_MESSAGES.offline);
@@ -936,11 +938,7 @@ export function useLive(
           setError(ROOM_MESSAGES.not_configured);
           return;
         }
-        if (!acceptsLiveBaseName(log.base.teams.a.name) || !acceptsLiveBaseName(log.base.teams.b.name)) {
-          setError('That team name cannot be used in a live match.');
-          setStatus('off');
-          return;
-        }
+        const liveLog = prepareLiveLog(log);
         setStatus('connecting');
         setError(null);
         try {
@@ -948,7 +946,7 @@ export function useLive(
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              log,
+              log: liveLog,
               device: thisDevice(),
               ...(options?.previousHostToken
                 ? { previousHostToken: options.previousHostToken, carry: options.carry === true }

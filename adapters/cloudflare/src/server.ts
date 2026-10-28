@@ -2,10 +2,14 @@ import {
   HOST_TOKEN_TTL_MS,
   JOIN_TOKEN_TTL_MS,
   ROOM_MESSAGES,
-  acceptsLiveBaseName,
+  MAX_MINTED_TOKENS,
   assignMatchId,
   joinCodeCompact,
   joinWindow,
+  networkPrefix,
+  parseLiveTeamName,
+  prepareLiveLog,
+  replayScore,
   carryTokenHashes,
   createMatchId,
   isJoinToken,
@@ -150,7 +154,9 @@ async function createMatch(request: Request, env: ServerEnv): Promise<Response> 
   const record = body as { log?: unknown; device?: unknown; previousHostToken?: unknown; carry?: unknown };
   const parsed = parseMatchLog(record.log);
   if (!parsed) return Response.json({ error: 'invalid_match' }, { status: 400 });
-  if (!acceptsLiveBaseName(parsed.base.teams.a.name) || !acceptsLiveBaseName(parsed.base.teams.b.name)) {
+  const settled = prepareLiveLog(parsed);
+  const played = replayScore(settled.base, settled.events);
+  if (parseLiveTeamName(played.teams.a.name) !== played.teams.a.name || parseLiveTeamName(played.teams.b.name) !== played.teams.b.name) {
     return Response.json({ error: 'invalid_match' }, { status: 400 });
   }
   if (typeof record.device !== 'string' || !DEVICE_ID.test(record.device)) {
@@ -172,7 +178,7 @@ async function createMatch(request: Request, env: ServerEnv): Promise<Response> 
   let lastConflict = false;
   for (let attempt = 0; attempt < CREATE_ATTEMPTS; attempt += 1) {
     const matchId = createMatchId();
-    const log = assignMatchId(parsed, matchId);
+    const log = assignMatchId(settled, matchId);
     if (!log) {
       await release();
       return Response.json({ error: 'invalid_match' }, { status: 400 });
@@ -294,6 +300,8 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
   const index = d1MatchIndex(env.DB);
   const inviteHash = await sha256Hex(inviteToken);
   const now = Date.now();
+  const secret = env.QUOTA_HMAC_KEY;
+  if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
   await index.replacePlayerCredential(matchId, now, {
     tokenHash: inviteHash,
     matchId,
@@ -306,7 +314,7 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
     const next = randomJoinCode();
     try {
       await index.putJoinCode(matchId, now, {
-        codeHash: await sha256Hex(joinCodeCompact(next)),
+        codeHash: await quotaMac(secret, 'join-code', joinCodeCompact(next), 'code'),
         matchId,
         tokenHash: inviteHash,
         expiresAt,
@@ -413,16 +421,26 @@ function joinCodeRejected(): Response {
   );
 }
 
+function codeLimited(): Response {
+  return Response.json(
+    { error: 'slow_down', message: ROOM_MESSAGES.slow_down },
+    { status: 429, headers: { 'cache-control': 'no-store' } },
+  );
+}
+
 async function redeemJoinCode(request: Request, env: ServerEnv, device: string, rawCode: string): Promise<Response> {
   const secret = env.QUOTA_HMAC_KEY;
   if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
   const index = d1MatchIndex(env.DB);
   const now = Date.now();
   const window = String(joinWindow(now));
-  const ipHash = await quotaMac(secret, 'code-ip', clientAddress(request), window);
-  const globalHash = await quotaMac(secret, 'code-global', 'all', window);
+  const prefix = networkPrefix(clientAddress(request));
+  const ipHash = await quotaMac(secret, 'code-ip', prefix, window);
+  const attempt = await index.takeCodeAttempt(ipHash, now);
+  await index.noteCodeAlarm(await quotaMac(secret, 'code-global', 'all', window), now);
+  if (!attempt.ok) return codeLimited();
   const normalized = normalizeJoinCode(rawCode);
-  const codeHash = await sha256Hex(normalized ? joinCodeCompact(normalized) : 'invalid');
+  const codeHash = await quotaMac(secret, 'join-code', normalized ? joinCodeCompact(normalized) : 'invalid', 'code');
   const row = normalized ? await index.findJoinCode(codeHash) : null;
   const codeMatches = safeEqualHex(row?.codeHash ?? '0'.repeat(64), codeHash);
   const credential = row && codeMatches ? await index.findCredential(row.tokenHash) : null;
@@ -439,21 +457,29 @@ async function redeemJoinCode(request: Request, env: ServerEnv, device: string, 
     safeEqualHex(credential.tokenHash, row.tokenHash) &&
     (await index.find(credential.matchId)),
   );
-  if (!live || !credential) {
-    const limited = await index.noteCodeFailure(ipHash, globalHash, now);
-    if (!limited.ok) {
-      return Response.json(
-        { error: 'slow_down', message: ROOM_MESSAGES.slow_down },
-        { status: 429, headers: { 'cache-control': 'no-store' } },
-      );
-    }
-    return joinCodeRejected();
+  if (!live || !credential || !row) return joinCodeRejected();
+  const deviceHash = await quotaMac(secret, 'join-device', device, window);
+  const deviceQuota = await index.takeJoinDevice(deviceHash, now);
+  if (!deviceQuota.ok) {
+    return Response.json(
+      { error: 'join_device_limit', message: ROOM_MESSAGES.join_device_limit },
+      { status: 429, headers: { 'cache-control': 'no-store' } },
+    );
   }
+  const existing = await index.findMinted(credential.matchId, device, now);
+  const minted = await index.countMinted(credential.matchId, now);
+  if (!existing && minted >= MAX_MINTED_TOKENS) return joinCodeRejected();
+  if (existing) await index.revokeCredential(existing.tokenHash, now);
   const token = randomToken();
   const stub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(credential.matchId));
   const added = await stub.fetch('https://match.internal/player-invite', {
     method: 'POST',
-    body: JSON.stringify({ token, deviceId: device, expiresAt: credential.expiresAt }),
+    body: JSON.stringify({
+      token,
+      deviceId: device,
+      expiresAt: credential.expiresAt,
+      ...(existing ? { replaceHash: existing.tokenHash } : {}),
+    }),
   });
   if (!added.ok) return Response.json({ error: 'unavailable' }, { status: 503 });
   await index.insertCredential({
@@ -462,9 +488,13 @@ async function redeemJoinCode(request: Request, env: ServerEnv, device: string, 
     host: false,
     expiresAt: credential.expiresAt,
     revokedAt: null,
+    deviceId: device,
   });
+  const ticket = randomToken();
+  const ticketExpiresAt = now + TICKET_TTL_MS;
+  await index.putTicket(await sha256Hex(ticket), credential.matchId, ticketExpiresAt);
   return Response.json(
-    { token, expiresAt: credential.expiresAt },
+    { token, expiresAt: credential.expiresAt, ticket, ticketExpiresAt },
     { status: 201, headers: { 'cache-control': 'no-store' } },
   );
 }

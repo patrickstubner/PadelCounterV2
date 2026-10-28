@@ -125,6 +125,27 @@ export function sanitizeTeamName(input: string, team: TeamId): string {
   return cleaned;
 }
 
+/** Drop marks past four in a row, then keep only a name parseLiveTeamName would accept. */
+export function clampLiveTeamName(input: string, team: TeamId): string {
+  INVISIBLE_NAME.lastIndex = 0;
+  let run = 0;
+  const limited = Array.from(stripUnsafe(input.normalize('NFC').replace(/\u00A0/g, ' ')).replace(INVISIBLE_NAME, '')).filter((char) => {
+    if (isVariationSelector(char)) return true;
+    if (!isCombiningMark(char)) {
+      run = 0;
+      return true;
+    }
+    run += 1;
+    return run <= MAX_CONSECUTIVE_MARKS;
+  }).join('');
+  const shortened = limitCodePoints(limited.trim(), MAX_TEAM_NAME_LENGTH).trim();
+  const cleaned = stripUnpairedSurrogates(shortened).trim().normalize('NFC').trim();
+  if (cleaned.length === 0 || codePointLength(withoutVariationSelectors(cleaned).trim()) === 0) {
+    return DEFAULT_TEAM_NAMES[team];
+  }
+  return parseLiveTeamName(cleaned) ?? DEFAULT_TEAM_NAMES[team];
+}
+
 /** A base name for a new live match. The per-base mark rule applies here, as it does for a rename. */
 export function acceptsLiveBaseName(value: unknown): value is string {
   return typeof value === 'string' && parseLiveTeamName(value) === value;

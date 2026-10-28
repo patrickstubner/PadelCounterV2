@@ -1,8 +1,8 @@
-import { CODE_FAILS_GLOBAL, CODE_FAILS_PER_IP, ROOM_MESSAGES, createMatch } from '@padel/core';
+import { CODE_ATTEMPTS_PER_PREFIX, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, parseLiveTeamName } from '@padel/core';
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
-import { quotaMac } from './tokens';
+import { quotaMac, sha256Hex } from './tokens';
 
 const ORIGIN = 'https://patrickstubner.github.io';
 const HOST_DEVICE = 'd11111111';
@@ -293,10 +293,6 @@ describe('live match in workerd', () => {
     );
     expect((ended.event as { by?: string }).by).toBe('host');
 
-    sendEvent(player.ws, { type: 'match/resume', at: 4 });
-    const refused = await player.messages.waitFor((message) => message.type === 'error');
-    expect(refused.code).toBe('forbidden');
-
     sendEvent(host.ws, { type: 'match/resume', at: 5 });
     await player.messages.waitFor(
       (message) => message.type === 'event' && (message.event as { type?: string }).type === 'match/resume',
@@ -382,18 +378,26 @@ function redeem(code: string, device: string, ip?: string): Promise<Response> {
 describe('short match codes', () => {
   it('mints a player token from the code and leaves the QR token working', async () => {
     const invited = await issuedCode('d12121212');
-    expect(invited.code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{3}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{3}$/);
+    expect(invited.code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}$/);
     expect(invited.code).not.toMatch(/[01ILO]/);
     const typed = invited.code.toLowerCase().replace('-', '');
     const response = await redeem(typed, 'd23232323');
     expect(response.status).toBe(201);
-    const body = (await response.json()) as { token?: string; matchId?: string; code?: string };
+    const body = (await response.json()) as { token?: string; ticket?: string; matchId?: string; code?: string };
     expect(body.matchId).toBeUndefined();
     expect(body.code).toBeUndefined();
     expect(typeof body.token).toBe('string');
+    expect(typeof body.ticket).toBe('string');
     expect(JSON.stringify(body)).not.toContain(invited.code.replace('-', ''));
     const token = body.token ?? '';
-    await connect(token, 'd23232323');
+    const opened = await call(`/ws/${body.ticket}`, { headers: { upgrade: 'websocket' } });
+    const socket = opened.webSocket;
+    if (!socket) throw new Error('socket missing');
+    socket.accept();
+    const messages = inbox(socket);
+    socket.send(JSON.stringify({ type: 'hello', protocol: 1, token, device: 'd23232323' }));
+    const snapshot = await messages.waitFor((message) => message.type === 'snapshot');
+    expect(snapshot.protocol).toBe(1);
 
     const wrongTicket = await ticketFor(token, 'd34343434');
     const wrong = await call(`/ws/${wrongTicket}`, { headers: { upgrade: 'websocket' } });
@@ -410,7 +414,7 @@ describe('short match codes', () => {
 
   it('uses one error for an unknown code and an expired code', async () => {
     const invited = await issuedCode('d56565656');
-    const unknown = await redeem('K7M-42Q', 'd67676767');
+    const unknown = await redeem('ZZZZ-ZZZZ', 'd67676767');
     expect(unknown.status).toBe(401);
     expect(await unknown.json()).toEqual(NEUTRAL);
     await env.DB.prepare('UPDATE join_codes SET expires_at = ? WHERE match_id = ?').bind(1, invited.matchId).run();
@@ -446,50 +450,116 @@ describe('short match codes', () => {
     await connect(body.token, 'dcdcdcdc2');
   });
 
-  it('limits failed guesses per address and across every address', async () => {
-    const ip = '198.51.100.77';
-    for (let n = 0; n < CODE_FAILS_PER_IP; n += 1) {
-      const response = await redeem('ZZZ-ZZZ', 'd01010101', ip);
+  it('checks the address budget before the code, including a valid one, and shares an IPv6 /64', async () => {
+    const invited = await issuedCode('d01010101');
+    const prefix = '2001:db8:1:2::1';
+    const samePrefix = '2001:db8:1:2::abcd';
+    for (let n = 0; n < CODE_ATTEMPTS_PER_PREFIX; n += 1) {
+      const response = await redeem('ZZZZ-ZZZZ', 'd01010101', prefix);
       expect(response.status).toBe(401);
-      expect(await response.json()).toEqual(NEUTRAL);
     }
-    const blocked = await redeem('YYY-YYY', 'd01010101', ip);
+    const blocked = await redeem(invited.code, 'd01010101', samePrefix);
     expect(blocked.status).toBe(429);
     expect(((await blocked.json()) as { error?: string }).error).toBe('slow_down');
-    let accepted = 0;
-    for (let n = 0; n < CODE_FAILS_GLOBAL; n += 1) {
-      const device = `d${(n + 16).toString(16).padStart(8, '0')}`;
-      const response = await redeem('WWW-WWW', device);
-      if (response.status === 429) break;
-      expect(response.status).toBe(401);
-      accepted += 1;
-    }
-    expect(accepted).toBeGreaterThan(0);
-    expect(accepted).toBeLessThanOrEqual(CODE_FAILS_GLOBAL);
-    const global = await redeem('VVV-VVV', 'd03030303');
-    expect(global.status).toBe(429);
-    expect(((await global.json()) as { error?: string }).error).toBe('slow_down');
+    const other = await redeem(invited.code, 'd01010101', '2001:db8:9:9::1');
+    expect(other.status).toBe(201);
   });
 
-  it('refuses a stacked base name and keeps a Hindi name', async () => {
-    const stacked = `5${'\u0301'.repeat(8)}`;
-    const refused = await call('/matches', {
+  it('does not let the global alarm lock out another address', async () => {
+    const invited = await issuedCode('d02020202');
+    for (let n = 0; n < 61; n += 1) {
+      const response = await redeem('YYYY-YYYY', `d${(n + 32).toString(16).padStart(8, '0')}`);
+      expect(response.status).toBe(401);
+    }
+    const kept = await redeem(invited.code, 'd03030303');
+    expect(kept.status).toBe(201);
+  });
+
+  it('stores an HMAC of the code, reuses one token per device, and stops at eight', async () => {
+    const invited = await issuedCode('d04040404');
+    const compact = invited.code.replace('-', '');
+    const row = await env.DB.prepare('SELECT code_hash FROM join_codes WHERE match_id = ?').bind(invited.matchId).first();
+    const expected = await quotaMac('test-quota-hmac-key', 'join-code', compact, 'code');
+    expect(row?.code_hash).toBe(expected);
+    expect(row?.code_hash).not.toBe(await sha256Hex(compact));
+    const first = await redeem(invited.code, 'd05050505');
+    const firstBody = (await first.json()) as { token: string };
+    const second = await redeem(invited.code, 'd05050505');
+    expect(second.status).toBe(201);
+    const secondBody = (await second.json()) as { token: string };
+    expect(secondBody.token).not.toBe(firstBody.token);
+    const active = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
+    ).bind(invited.matchId, 'd05050505').first();
+    expect(active?.n).toBe(1);
+    const stale = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${firstBody.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'd05050505' }),
+    });
+    expect(stale.status).toBe(401);
+    for (let n = 0; n < MAX_MINTED_TOKENS - 1; n += 1) {
+      const device = `d${(n + 64).toString(16).padStart(8, '0')}`;
+      const response = await redeem(invited.code, device);
+      expect(response.status).toBe(201);
+    }
+    const extra = await redeem(invited.code, 'd0e0e0e0e');
+    expect(extra.status).toBe(401);
+    expect(await extra.json()).toEqual(NEUTRAL);
+    const minted = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL',
+    ).bind(invited.matchId).first();
+    expect(minted?.n).toBe(MAX_MINTED_TOKENS);
+  });
+
+  it('revokes the code and the invite when the match ends', async () => {
+    const invited = await issuedCode('d06060606');
+    const host = await connect(invited.hostToken, 'd06060606');
+    host.ws.send(JSON.stringify({
+      type: 'event',
+      eventId: '00000000-0000-4000-8000-0000000000ee',
+      event: { type: 'match/end', at: 1_700_000_000_100 },
+    }));
+    await host.messages.waitFor((message) => message.type === 'event');
+    const code = await redeem(invited.code, 'd07070707');
+    expect(code.status).toBe(401);
+    expect(await code.json()).toEqual(NEUTRAL);
+    const invite = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${invited.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'd07070707' }),
+    });
+    expect(invite.status).toBe(401);
+  });
+
+  it('stores a replayed name only after the extra marks are removed', async () => {
+    const stacked = `x${'\u0301'.repeat(8)}y`;
+    const base = createMatch(1_700_000_000_000);
+    const created = await call('/matches', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        device: 'd04040404',
-        log: { schemaVersion: 2, base: createMatch(1_700_000_000_000, undefined, { a: stacked }), events: [] },
+        device: 'd08080808',
+        log: {
+          schemaVersion: 2,
+          base,
+          events: [{ type: 'team/rename', team: 'a', name: stacked, at: base.createdAt + 1 }],
+        },
       }),
     });
-    expect(refused.status).toBe(400);
-    const text = await refused.text();
-    expect(text).toContain('invalid_match');
-    expect(text).not.toContain('\u0301');
-    const kept = await call('/matches', {
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as { hostToken: string };
+    const host = await connect(body.hostToken, 'd08080808');
+    const snap = await host.messages.waitFor((message) => message.type === 'snapshot');
+    const events = (snap.log as { events: { type: string; name?: string }[] }).events;
+    const rename = events.find((event) => event.type === 'team/rename');
+    expect(rename?.name).not.toBe(stacked);
+    expect(parseLiveTeamName(rename?.name)).toBe(rename?.name);
+    const hindi = await call('/matches', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        device: 'd05050505',
+        device: 'd09090909',
         log: {
           schemaVersion: 2,
           base: createMatch(1_700_000_000_000, undefined, { a: 'भारतीय टीम' }),
@@ -497,6 +567,6 @@ describe('short match codes', () => {
         },
       }),
     });
-    expect(kept.status).toBe(201);
+    expect(hindi.status).toBe(201);
   });
 });

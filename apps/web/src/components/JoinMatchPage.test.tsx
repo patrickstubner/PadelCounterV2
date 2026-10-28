@@ -134,12 +134,38 @@ describe('join match in the app', () => {
     if (!input || !form) throw new Error('code field missing');
     act(() => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      setter?.call(input, 'k7m42q');
+      setter?.call(input, 'k7m42qab');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     act(() => {
       document.querySelector<HTMLButtonElement>('[data-testid="join-by-code"]')?.click();
     });
-    expect(codes).toEqual(['K7M-42Q']);
+    expect(codes).toEqual(['K7M4-2QAB']);
+  });
+
+  it('closes on Escape and keeps focus inside the dialog', () => {
+    let closed = false;
+    render(
+      <JoinMatchPage
+        configured
+        error={null}
+        pageHref={PAGE}
+        onCode={() => undefined}
+        onToken={() => undefined}
+        onClose={() => {
+          closed = true;
+        }}
+      />,
+    );
+    expect(document.activeElement).toBe(document.querySelector('[data-testid="join-match-close"]'));
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.querySelector('[data-testid="join-match-dialog"]')?.contains(document.activeElement)).toBe(true);
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(closed).toBe(true);
   });
 });

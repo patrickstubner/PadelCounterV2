@@ -90,6 +90,10 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   if (url.endsWith('/join')) {
     if (joinMode === 'expired') return Response.json({ error: 'expired', message: '<b>expired</b>' }, { status: 401 });
     if (joinMode === 'bad') return Response.json({ error: 'bad_token', message: '<img src=x onerror=alert(1)>' }, { status: 401 });
+    const parsed = init?.body ? JSON.parse(String(init.body)) as { code?: unknown } : {};
+    if (typeof parsed.code === 'string') {
+      return Response.json({ token: INVITE, ticket: TICKET, expiresAt: Date.now() + 3_600_000 }, { status: 201 });
+    }
     return Response.json({ ticket: TICKET }, { status: 201 });
   }
   if (url.endsWith('/matches')) {
@@ -167,6 +171,44 @@ describe('connect overlay and scanned join', () => {
     localStorage.clear();
     sessionStorage.clear();
     window.history.replaceState(null, '', '/');
+  });
+
+  it('closes Join match on Escape and on Back, and joins with one ticket request', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const view = await mount();
+    mounted.push(view);
+    await press('join-open');
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).not.toBeNull();
+    expect(window.history.state).toEqual({ padelArchive: 'join' });
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.querySelector('[data-testid="join-match-dialog"]')?.contains(document.activeElement)).toBe(true);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
+
+    await press('join-open');
+    await act(async () => {
+      window.history.back();
+    });
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
+
+    await press('join-open');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => sockets.length > 0);
+    const joins = fetchCalls.filter((call) => call.url.endsWith('/join'));
+    expect(joins).toHaveLength(1);
+    expect(String(joins[0]?.init?.body)).toContain('K7M4-2QAB');
+    expect(sockets[0]?.url).toContain(`/ws/${TICKET}`);
   });
 
   it('opens the QR over the court and closes from X, Close, backdrop, and Esc', async () => {
