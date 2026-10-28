@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { isOpenMatch, lastChangeAt, planNewMatch, type NewMatchPlan } from '@padel/core';
-import { connectHistoryState, detailHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
+import { detailHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
 import { CourtHeader, type CourtAction } from './components/CourtHeader';
@@ -26,7 +26,7 @@ import { colonSetScore, currentHistory } from './domain/history';
 import { RULES_SUMMARY, celebrationWinner, matchWinner, serveCourtLabel, servePickPrompt, tiebreakHint } from './domain/rules';
 import { useInstallOffer } from './hooks/useInstallOffer';
 import { useMatch } from './hooks/useMatch';
-import { JOIN_KEY } from './live/protocol';
+import { forgetJoinToken, readJoinToken } from './live/protocol';
 import { useLive } from './live/useLive';
 import { INSTALL_LABEL, IOS_INSTALL_HINT } from './installOffer';
 import { watchControllerChange } from './registerServiceWorker';
@@ -75,31 +75,42 @@ export function App() {
   const fanfarePlayed = useRef<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [screen, setScreen] = useState<ArchiveScreen>(() => {
-    if (typeof history !== 'undefined') {
-      const fromHistory = screenFromHistory(history.state);
-      if (fromHistory.view !== 'court') return fromHistory;
-    }
+    if (typeof history === 'undefined') return { view: 'court' };
+    return screenFromHistory(history.state);
+  });
+  const [connectOpen, setConnectOpen] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const joinStarted = useRef(false);
+  const awaitingJoin = useRef(false);
+  useEffect(() => {
+    if (joinStarted.current || typeof window === 'undefined') return;
+    joinStarted.current = true;
     try {
-      if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(JOIN_KEY)) return { view: 'connect' };
+      const attempt = readJoinToken(window.location, window.history, window.sessionStorage);
+      if (attempt.ok) {
+        awaitingJoin.current = true;
+        setScanning(true);
+        room.connect(attempt.token);
+        return;
+      }
+      if (attempt.invalid) {
+        setScanning(true);
+        room.rejectToken();
+      }
     } catch {
       // Storage may be blocked. The court still opens.
     }
-    return { view: 'court' };
-  });
-  const joinStarted = useRef(false);
-  useEffect(() => {
-    if (joinStarted.current) return;
-    joinStarted.current = true;
-    try {
-      const raw = sessionStorage.getItem(JOIN_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as { token?: unknown };
-      if (typeof parsed.token !== 'string') return;
-      room.connect(parsed.token);
-    } catch {
-      // A bad saved code is ignored. The connect screen explains the failure if the socket opens.
-    }
   }, [room]);
+  useEffect(() => {
+    if (!awaitingJoin.current || typeof window === 'undefined') return;
+    if (room.status !== 'live' && room.error === null) return;
+    awaitingJoin.current = false;
+    try {
+      forgetJoinToken(window.sessionStorage);
+    } catch {
+      // Storage may be blocked. The address bar is already clear.
+    }
+  }, [room.status, room.error]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onPop = (event: PopStateEvent) => setScreen(screenFromHistory(event.state));
@@ -133,7 +144,15 @@ export function App() {
     setScreen({ view: 'detail', id });
   };
   const openPrivacy = () => openScreen({ view: 'privacy' }, privacyHistoryState());
-  const openConnect = () => openScreen({ view: 'connect' }, connectHistoryState());
+  const openConnect = () => {
+    setConnectOpen(true);
+    if (!room.configured || room.qr) return;
+    if (room.status === 'live') {
+      room.rotate();
+      return;
+    }
+    if (room.status === 'off') room.share(match.log);
+  };
   const closeArchive = () => {
     setDeletingId(null);
     if (typeof history === 'undefined') {
@@ -216,33 +235,6 @@ export function App() {
     return (
       <div className="app">
         <PrivacyPage onBack={closeArchive} />
-        <p className="app-version" data-testid="app-version">{`v${import.meta.env.APP_VERSION}`}</p>
-        {updateButton}
-      </div>
-    );
-  }
-
-  if (screen.view === 'connect') {
-    return (
-      <div className="app">
-        <ConnectPage
-          configured={room.configured}
-          status={room.status}
-          players={room.players}
-          qr={room.qr}
-          error={room.error}
-          onShare={() => room.share(match.log)}
-          onRotate={room.rotate}
-          onLeave={() => {
-            room.disconnect();
-            try {
-              sessionStorage.removeItem(JOIN_KEY);
-            } catch {
-              // Storage may be blocked.
-            }
-          }}
-          onBack={closeArchive}
-        />
         <p className="app-version" data-testid="app-version">{`v${import.meta.env.APP_VERSION}`}</p>
         {updateButton}
       </div>
@@ -389,6 +381,15 @@ export function App() {
               {pick}
             </p>
           ) : null}
+          {scanning && room.status === 'connecting' ? (
+            <p className="join-status" data-testid="join-status">Connecting to the match…</p>
+          ) : null}
+          {scanning && room.error ? (
+            <div className="join-error" role="alert" data-testid="join-error">
+              <p>Could not join this match.</p>
+              <p>{room.error}</p>
+            </div>
+          ) : null}
         </div>
         <TeamPanel
           team="b"
@@ -453,6 +454,26 @@ export function App() {
           cancelTestId="dismiss-join"
           onCancel={room.dismissOffer}
           onConfirm={room.acceptOffer}
+        />
+      ) : null}
+      {connectOpen ? (
+        <ConnectPage
+          configured={room.configured}
+          status={room.status}
+          players={room.players}
+          qr={room.qr}
+          error={scanning ? null : room.error}
+          onShare={() => room.share(match.log)}
+          onRotate={room.rotate}
+          onLeave={() => {
+            room.disconnect();
+            try {
+              forgetJoinToken(window.sessionStorage);
+            } catch {
+              // Storage may be blocked.
+            }
+          }}
+          onClose={() => setConnectOpen(false)}
         />
       ) : null}
       {confirming === 'end' ? (

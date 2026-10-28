@@ -1,5 +1,5 @@
 import { useRef, useState, type MutableRefObject } from 'react';
-import { isRoomCode, ROOM_MESSAGES, type MatchEvent, type MatchLog } from '@padel/core';
+import { isJoinToken, isRoomCode, ROOM_MESSAGES, type MatchEvent, type MatchLog } from '@padel/core';
 import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
@@ -21,6 +21,7 @@ export interface LiveController {
   readonly share: (log: MatchLog, options?: ShareOptions) => void;
   readonly rotate: () => void;
   readonly connect: (token: string) => void;
+  readonly rejectToken: () => void;
   readonly disconnect: () => void;
   readonly acceptOffer: () => void;
   readonly dismissOffer: () => void;
@@ -47,12 +48,19 @@ function thisDevice(): string {
   }
 }
 
+function apiBase(): string {
+  const fromEnv = String(import.meta.env.PUBLIC_API_URL ?? '').replace(/\/$/, '');
+  if (fromEnv) return fromEnv;
+  const testApi = (globalThis as { __PADEL_TEST_API__?: unknown }).__PADEL_TEST_API__;
+  return typeof testApi === 'string' ? testApi.replace(/\/$/, '') : '';
+}
+
 export function useLive(
   liveRef: MutableRefObject<LiveSend | null>,
   replaceLog: (log: MatchLog) => void,
   applyLive: (event: MatchEvent) => void,
 ): LiveController {
-  const api = String(import.meta.env.PUBLIC_API_URL ?? '').replace(/\/$/, '');
+  const api = apiBase();
   const [status, setStatus] = useState<'off' | 'connecting' | 'live'>('off');
   const [host, setHost] = useState(true);
   const [players, setPlayers] = useState(0);
@@ -89,6 +97,11 @@ export function useLive(
   };
 
   const open = (token: string) => {
+    if (!isJoinToken(token)) {
+      setError(ROOM_MESSAGES.bad_token);
+      setStatus('off');
+      return;
+    }
     const mine = generation.current + 1;
     generation.current = mine;
     void (async () => {
@@ -246,6 +259,10 @@ export function useLive(
     },
     connect: (token) => {
       open(token);
+    },
+    rejectToken: () => {
+      setError(ROOM_MESSAGES.bad_token);
+      setStatus('off');
     },
     share: (log, options) => {
       void (async () => {

@@ -10,5 +10,6 @@ describe('archive back stack', () => {
     expect(screenFromHistory(detailHistoryState(ID))).toEqual({ view: 'detail', id: ID });
     expect(screenFromHistory({ padelArchive: 'detail', id: 'not-a-match' })).toEqual({ view: 'court' });
     expect(screenFromHistory({ padelArchive: 'court' })).toEqual({ view: 'court' });
+    expect(screenFromHistory({ padelArchive: 'connect' })).toEqual({ view: 'court' });
   });
 });

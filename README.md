@@ -9,7 +9,7 @@ Padel Counter V2 keeps the score of a padel match on your phone. You can play al
 ## What the app does
 
 - **Scoring.** A set is won with 6 games and a lead of 2, or 7–5. At 6–6 the next game is the tiebreak and counts as one game, so the set can finish 7–6. A match is best of 3 sets. You can always open an extra set. Tap **+** to give a team a game. Tap **−** to take a game back.
-- **QR join, up to 4 players.** The phone that starts the live match shows a QR code. Other phones scan it and can change the score. At most 4 phones can be in the match. The next phone is told: “This match already has 4 players.”
+- **QR join, up to 4 players.** The phone that starts the live match shows a QR code over the court. Other phones scan it and land on the live score. At most 4 phones can be in the match. The next phone is told: “This match already has 4 players.”
 - **End match and reopen.** End match finishes the match at any score and locks the court. The phone that started the match can reopen it. If another phone ended it, that phone can reopen it too, unless the starting phone was the one that ended it. The starting phone can always reopen it.
 - **Corrections.** **+** and **−** still work after a set has finished. A set that shows 6:0 can be corrected to 5:1. History keeps every change, with the time and which phone made it. Nothing is overwritten.
 - **New match and reconnect.** If a match is still open, New match asks “Finish current match and start a new one?”. Cancel leaves the current match. Finish & new ends it, saves it in History, and starts a fresh one. If the last change was within the last hour, the same question can offer “Reconnect players from last match”. Only phones that were already connected are invited. Each of them sees “Join new match?” and joins with one tap, without scanning. A phone that does not confirm stays out. If the last change was more than an hour ago, share a new QR code. A phone that did not start the match can start its own match. That leaves the shared match on that phone only. The starter’s match stays open.
@@ -22,7 +22,7 @@ The privacy note in the menu says the same thing in the app. It is not legal adv
 
 1. Open the app. The court shows Team A and Team B, both on 0.
 2. Tap **+** beside a team when that team wins a game. Tap **−** if that game should not have counted.
-3. To share the match, open the menu and choose **Connect players**. Hold up the QR code. The other phones scan it. Up to four phones can score.
+3. To share the match, open the menu and choose **Connect players**. The QR code opens over the court. Close it with X, Close, or a tap outside. The other phones scan it and see the live score. Up to four phones can score.
 4. When you are done, open the menu and choose **End match**, then confirm. The score stays. Choose **Resume** later if the match should continue.
 5. To start another match, open the menu and choose **New match**. If the current match is still open, choose **Finish & new** or **Cancel**. Within one hour you can turn on **Reconnect players from last match**. Those phones tap **Join** on “Join new match?”.
 6. Open **History** in the menu to read the games, who changed them, and the score after each change.
@@ -78,7 +78,7 @@ Do not create sign-in providers yet. They belong to a later change: a Google cli
 
 Details are in `SECURITY.md`. The short version:
 
-- The QR code carries a 128-bit token in the URL fragment (`#/join?t=<token>`), not in the query string and not next to the match id.
+- The QR code carries a 128-bit token in the URL fragment (`#/join?t=<token>`), not in the query string and not next to the match id. The scanning phone removes that fragment with `history.replaceState` and then joins.
 - The token expires after 2 hours. The creating phone’s credential expires after 12 hours and is kept in memory only, so a refresh cannot mint a new code until you share again.
 - A new code revokes the previous code. Phones that are already connected stay connected.
 - The worker stores SHA-256 hashes of tokens. The raw token is returned once.
