@@ -255,6 +255,13 @@ Production deploy aborted with `production environment needs a required reviewer
 - A failed New code leaves the live connection up. A retry does not clear the error banner; the snapshot still does.
 - The README and `docs/architektur-report.md` no longer say that production deploy waits for a required reviewer. Production is a manual workflow on `main`, and the deployment branch policy contains only `main`.
 
+## Review 14, 2026-10-28
+
+- A connected phone can rename a team. The server stores `team/rename` in the match log, so the name is in the history, and it broadcasts `{ type: 'team_renamed', team, name, seq }`. The name is trimmed, at most 24 characters, and is refused when it contains a control character. The court renders that name as text. A later `seq` wins. Renames are limited to 3 per second on one connection. A match that is not live still renames only on that phone, with the existing 20-character field.
+- `slow_down` waits at least two seconds, and that wait is used once. The next retry uses the normal backoff. A successful reconnect clears the previous error. Repeated `online` events inside two seconds do not each open a socket.
+- A join fragment in the host tab does not replace the host token in `sessionStorage`. Reloading the tab does not extend `expiresAt`.
+- The dialog and the README say that New code disconnects the phones that joined with the current code.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.

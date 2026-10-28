@@ -80,7 +80,7 @@ Details are in `SECURITY.md`. The short version:
 
 - The QR code carries a 128-bit token in the URL fragment (`#/join?t=<token>`), not in the query string and not next to the match id. The scanning phone removes that fragment with `history.replaceState` and then joins.
 - The token expires after 2 hours. The creating phone’s credential expires after 12 hours and is kept in this tab’s `sessionStorage`, so a refresh can show the current code. It is not in `localStorage`.
-- New code revokes the previous code. Showing the current code does not. Phones that are already connected stay connected.
+- New code revokes the previous code and disconnects the phones that joined with it. Showing the current code does not.
 - The worker stores SHA-256 hashes of tokens. The raw token is returned once.
 - The role is stored with the token. This version issues `player` only. `spectator` is rejected with “View-only links are not available yet.”
 - The Durable Object admits at most 4 player sockets, including the creator. Disconnecting frees a place.

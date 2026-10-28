@@ -1,6 +1,8 @@
 import {
   canonicalEventId,
   connectionCloses,
+  liveTeamSide,
+  parseLiveTeamName,
   HOST_TOKEN_TTL_MS,
   isJoinToken,
   isUuid,
@@ -60,10 +62,18 @@ export function isTerminalMessage(message: string): boolean {
 
 export function reconnectDelayMs(attempt: number, slowDown: boolean, random = Math.random()): number {
   const spread = Number.isFinite(random) ? Math.min(1, Math.max(0, random)) : 0;
-  if (slowDown) return 2_000 + Math.floor(spread * 400);
   const step = Math.min(8, Math.max(0, Math.floor(attempt)));
   const base = Math.min(30_000, 400 * 2 ** step);
-  return base + Math.floor(spread * base * 0.25);
+  const delay = base + Math.floor(spread * base * 0.25);
+  if (!slowDown) return delay;
+  return Math.max(2_000 + Math.floor(spread * 400), delay);
+}
+
+/** Ignore a burst of browser online events. One retry in this window is enough. */
+export const ONLINE_RETRY_GAP_MS = 2_000;
+
+export function onlineRetryAllowed(lastAt: number, now: number): boolean {
+  return now - lastAt >= ONLINE_RETRY_GAP_MS;
 }
 
 export interface PendingLiveEvent<T> {
@@ -155,6 +165,20 @@ function rememberJoin(storage: Storage, token: string): void {
   storage.setItem(JOIN_KEY, JSON.stringify({ token }));
 }
 
+/** A host record in this tab is not replaced by a scanned join fragment. */
+function storedHostToken(storage: Storage, now: number): string | null {
+  try {
+    const raw = storage.getItem(JOIN_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { token?: unknown; host?: unknown; expiresAt?: unknown };
+    if (parsed.host !== true || !isJoinToken(parsed.token)) return null;
+    if (typeof parsed.expiresAt === 'number' && parsed.expiresAt <= now) return null;
+    return parsed.token;
+  } catch {
+    return null;
+  }
+}
+
 /** Drop a join fragment so the address bar cannot keep the invite. */
 function replaceCourt(locationLike: JoinLocation, historyLike: JoinHistory): void {
   historyLike.replaceState({ padelArchive: 'court' }, '', `${locationLike.pathname}${locationLike.search}`);
@@ -182,6 +206,8 @@ export function readJoinToken(
   }
   if (fromHash) {
     if (storage) {
+      const hostToken = storedHostToken(storage, Date.now());
+      if (hostToken) return { ok: true, token: hostToken };
       try {
         rememberJoin(storage, fromHash.token);
       } catch {
@@ -233,8 +259,9 @@ export function captureJoinHash(
 }
 
 export type LiveNotice =
-  | { readonly kind: 'log'; readonly log: MatchLog; readonly players: number; readonly host: boolean; readonly eventIds: readonly string[] }
+  | { readonly kind: 'log'; readonly log: MatchLog; readonly players: number; readonly host: boolean; readonly eventIds: readonly string[]; readonly nameSeq: number }
   | { readonly kind: 'delta'; readonly eventId: string; readonly event: MatchEvent; readonly duplicate: boolean; readonly players: number }
+  | { readonly kind: 'rename'; readonly eventId: string; readonly team: 'a' | 'b'; readonly name: string; readonly seq: number }
   | { readonly kind: 'presence'; readonly players: number }
   | { readonly kind: 'join_offer'; readonly token: string }
   | { readonly kind: 'error'; readonly message: string; readonly close: boolean; readonly code: RoomCode | null; readonly eventId: string | null }
@@ -265,6 +292,16 @@ export function interpretMessage(data: unknown): LiveNotice {
   if (record.type === 'presence' && typeof record.players === 'number' && record.players >= 0 && record.players <= 4) {
     return { kind: 'presence', players: record.players };
   }
+  if (record.type === 'team_renamed') {
+    const eventId = canonicalEventId(record.eventId);
+    const team = liveTeamSide(record.team);
+    const name = parseLiveTeamName(record.name);
+    const seq = typeof record.seq === 'number' && Number.isInteger(record.seq) && record.seq > 0 ? record.seq : null;
+    if (!eventId || !team || !name || seq === null) {
+      return { kind: 'error', message: 'The live match did not accept that.', close: false, code: null, eventId };
+    }
+    return { kind: 'rename', eventId, team, name, seq };
+  }
   if (record.type === 'event') {
     const eventId = canonicalEventId(record.eventId);
     const event = parseStoredEvent(record.event);
@@ -287,7 +324,10 @@ export function interpretMessage(data: unknown): LiveNotice {
     const eventIds = Array.isArray(record.eventIds)
       ? record.eventIds.filter((id): id is string => isUuid(id)).map((id) => id.toLowerCase())
       : [];
-    return { kind: 'log', log, players: playerCount(record.players), host: record.host === true, eventIds };
+    const nameSeq = typeof record.nameSeq === 'number' && Number.isInteger(record.nameSeq) && record.nameSeq > 0
+      ? record.nameSeq
+      : 0;
+    return { kind: 'log', log, players: playerCount(record.players), host: record.host === true, eventIds, nameSeq };
   }
   if (record.type === 'join_offer' && isJoinToken(record.token)) {
     return { kind: 'join_offer', token: record.token };

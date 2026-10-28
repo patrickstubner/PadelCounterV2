@@ -135,6 +135,62 @@ describe('live match in workerd', () => {
     expect(Date.now() - back).toBeLessThan(500);
   });
 
+  it('broadcasts a team rename, keeps the later name, and limits the rate', async () => {
+    const created = await createLive('d77777777');
+    const host = await connect(created.hostToken, 'd77777777');
+    const invite = await call(`/matches/${created.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${created.hostToken}` },
+      body: JSON.stringify({ role: 'player' }),
+    });
+    expect(invite.status).toBe(201);
+    const invited = (await invite.json()) as { token: string };
+    const player = await connect(invited.token, 'd88888888');
+    const opened = await host.messages.waitFor((message) => message.type === 'snapshot' && message.names !== undefined);
+    expect((opened.names as { A?: string }).A).toBe('Team A');
+
+    const firstId = '00000000-0000-4000-8000-0000000000c1';
+    host.ws.send(JSON.stringify({ type: 'team_renamed', eventId: firstId, team: 'A', name: '  Lobos  ' }));
+    const seen = await player.messages.waitFor((message) => message.type === 'team_renamed' && message.eventId === firstId);
+    expect(seen.team).toBe('A');
+    expect(seen.name).toBe('Lobos');
+    expect(typeof seen.seq).toBe('number');
+
+    host.ws.send(JSON.stringify({
+      type: 'team_renamed',
+      eventId: '00000000-0000-4000-8000-0000000000c2',
+      team: 'B',
+      name: `N${'o'.repeat(24)}`,
+    }));
+    const refused = await host.messages.waitFor((message) => message.type === 'error' && message.code === 'not_applied');
+    expect(refused.eventId).toBe('00000000-0000-4000-8000-0000000000c2');
+
+    host.ws.send(JSON.stringify({
+      type: 'team_renamed',
+      eventId: '00000000-0000-4000-8000-0000000000c3',
+      team: 'A',
+      name: 'Lobos\n',
+    }));
+    await host.messages.waitFor((message) => message.type === 'error' && message.eventId === '00000000-0000-4000-8000-0000000000c3');
+
+    const laterId = '00000000-0000-4000-8000-0000000000c4';
+    player.ws.send(JSON.stringify({ type: 'team_renamed', eventId: laterId, team: 'a', name: 'Wolves' }));
+    const later = await host.messages.waitFor((message) => message.type === 'team_renamed' && message.eventId === laterId);
+    expect(later.name).toBe('Wolves');
+    expect(later.seq as number).toBeGreaterThan(seen.seq as number);
+
+    for (const name of ['One', 'Two', 'Three']) {
+      host.ws.send(JSON.stringify({
+        type: 'team_renamed',
+        eventId: crypto.randomUUID(),
+        team: 'B',
+        name,
+      }));
+    }
+    const limited = await host.messages.waitFor((message) => message.type === 'error' && message.code === 'slow_down');
+    expect(limited.code).toBe('slow_down');
+  });
+
   it('returns the event id on a refusal and stores a mixed-case id once', async () => {
     const created = await createLive('d66666666');
     const host = await connect(created.hostToken, 'd66666666');

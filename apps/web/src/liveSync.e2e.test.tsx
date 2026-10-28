@@ -62,6 +62,14 @@ class FakeSocket {
       });
       return;
     }
+    if (parsed.type === 'team_renamed') {
+      queueMicrotask(() => {
+        this.onmessage?.({
+          data: JSON.stringify({ ...parsed, seq: (parsed as { seq?: number }).seq ?? 1 }),
+        });
+      });
+      return;
+    }
     if (parsed.type !== 'event' || !parsed.eventId) return;
     if (FakeSocket.eventMode === 'drop-once' && !FakeSocket.dropped) {
       FakeSocket.dropped = true;
@@ -442,4 +450,51 @@ describe('live socket reconnect', () => {
     for (let attempt = 0; attempt < 15 && joins <= settled; attempt += 1) await wait(20);
     expect(joins).toBeGreaterThan(settled);
   }, 12_000);
+
+  it('shows a renamed team on this phone and in the history', async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: TICKET }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    const socket = FakeSocket.sockets.at(-1);
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          type: 'team_renamed',
+          eventId: '00000000-0000-4000-8000-0000000000d1',
+          team: 'A',
+          name: 'Lobos',
+          seq: 2,
+        }),
+      });
+    });
+    expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Lobos');
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          type: 'team_renamed',
+          eventId: '00000000-0000-4000-8000-0000000000d0',
+          team: 'A',
+          name: 'Old name',
+          seq: 1,
+        }),
+      });
+    });
+    expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Lobos');
+    const toggle = document.querySelector<HTMLButtonElement>('[data-testid="menu-toggle"]');
+    if (toggle) {
+      await act(async () => {
+        toggle.click();
+      });
+    }
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="history-open"]')?.click();
+    });
+    expect(document.body.textContent).toContain('Name A · Lobos');
+    expect(document.body.textContent).not.toContain('<b>');
+  });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parseLiveTeamName } from './names';
 import { connectionCloses } from './messages';
 import { createMatch, assignMatchId, matchReducer, replayScore } from './reducer';
 import { matchWinner, setWinner } from './rules';
@@ -136,5 +137,26 @@ describe('socket close policy', () => {
     expect(connectionCloses('join_device_limit')).toBe(false);
     expect(connectionCloses('join_network_limit')).toBe(false);
     expect(connectionCloses('invalid_device')).toBe(false);
+  });
+});
+
+describe('live team names', () => {
+  it('accepts a trimmed name of 24 characters and refuses controls or a longer name', () => {
+    const full = 'L'.repeat(24);
+    expect(parseLiveTeamName(`  ${full}  `)).toBe(full);
+    expect(parseLiveTeamName(`${full}X`)).toBeNull();
+    expect(parseLiveTeamName('Lobos\n')).toBeNull();
+    expect(parseLiveTeamName('')).toBeNull();
+    expect(parseLiveTeamName(12)).toBeNull();
+    const kept = matchReducer(createMatch(T0), { type: 'team/rename', team: 'a', name: full, at: T0 + 1 });
+    expect(kept.teams.a.name).toBe(full);
+    const local = matchReducer(createMatch(T0), {
+      type: 'team/rename',
+      team: 'b',
+      name: `  ${'W'.repeat(30)}\u0007`,
+      at: T0 + 1,
+    });
+    expect([...local.teams.b.name].length).toBeLessThanOrEqual(20);
+    expect(local.teams.b.name).not.toContain('\u0007');
   });
 });

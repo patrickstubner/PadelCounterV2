@@ -200,3 +200,15 @@ export function revokePlayerInvites(sql: RoomSql, now: number): void {
 export function insertEvent(sql: RoomSql, event: StoredEvent): void {
   sql.exec('INSERT INTO events (event_id, payload) VALUES (?, ?)', event.eventId, JSON.stringify(event.event));
 }
+
+export function readEventSeq(sql: RoomSql, eventId: string): number | null {
+  const row = sql.exec('SELECT seq FROM events WHERE event_id = ?', eventId).toArray()[0];
+  const seq = row?.seq;
+  return typeof seq === 'number' && Number.isInteger(seq) && seq > 0 ? seq : null;
+}
+
+export function latestEventSeq(sql: RoomSql): number {
+  const row = sql.exec('SELECT seq FROM events ORDER BY seq DESC LIMIT 1').toArray()[0];
+  const seq = row?.seq;
+  return typeof seq === 'number' && Number.isInteger(seq) && seq > 0 ? seq : 0;
+}

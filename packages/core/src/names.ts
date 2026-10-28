@@ -2,6 +2,9 @@ import type { TeamId } from './types';
 
 export const MAX_TEAM_NAME_LENGTH = 20;
 
+/** Live names are checked on the server. A local rename still uses {@link MAX_TEAM_NAME_LENGTH}. */
+export const MAX_LIVE_TEAM_NAME_LENGTH = 24;
+
 /**
  * HTML `maxLength` counts UTF-16 code units. A code point is at most two units,
  * so the field can still hold {@link MAX_TEAM_NAME_LENGTH} code points.
@@ -39,6 +42,34 @@ function stripUnpairedSurrogates(value: string): string {
 /** Draft text for the name field: code-point cap, no lone surrogates. */
 export function clampTeamNameDraft(value: string): string {
   return stripUnpairedSurrogates(limitCodePoints(value, MAX_TEAM_NAME_LENGTH));
+}
+
+/**
+ * A live name is trimmed, at most 24 characters, and has no control characters.
+ * Anything else is refused. The caller does not store the raw text.
+ */
+export function parseLiveTeamName(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const normalized = input.normalize('NFC').replace(/\u00A0/g, ' ');
+  UNSAFE_CHARS.lastIndex = 0;
+  UNPAIRED_SURROGATE.lastIndex = 0;
+  if (UNSAFE_CHARS.test(normalized) || UNPAIRED_SURROGATE.test(normalized)) return null;
+  const trimmed = normalized.trim();
+  const length = codePointLength(trimmed);
+  if (length === 0 || length > MAX_LIVE_TEAM_NAME_LENGTH) return null;
+  return trimmed;
+}
+
+/** `A` or `B` on the wire. Lower case is accepted and stored as `a` or `b`. */
+export function liveTeamSide(input: unknown): TeamId | null {
+  if (input === 'A' || input === 'a') return 'a';
+  if (input === 'B' || input === 'b') return 'b';
+  return null;
+}
+
+/** Keep a valid live name, including one longer than the local field. Otherwise use the local rules. */
+export function storedTeamName(input: string, team: TeamId): string {
+  return parseLiveTeamName(input) ?? sanitizeTeamName(input, team);
 }
 
 export function sanitizeTeamName(input: string, team: TeamId): string {

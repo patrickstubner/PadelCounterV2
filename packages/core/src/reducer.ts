@@ -1,6 +1,6 @@
 import { createMatchId, isUuid } from './id';
 import type { MatchLog } from './parse';
-import { sanitizeTeamName } from './names';
+import { sanitizeTeamName, storedTeamName } from './names';
 import { canDecrement, gamesPlayed, isPlausibleSetScore, matchWinner, rotateServe, setWinner } from './rules';
 import { SCHEMA_VERSION, isNewMatchEvent, isPlayerSlot, isSetIndex, isTeamId, isTimestamp, type MatchEvent, type MatchState, type Server, type SetIndex, type SetScore, type TeamId } from './types';
 
@@ -142,7 +142,7 @@ export function matchReducer(state: MatchState, event: MatchEvent): MatchState {
       });
     case 'team/rename': {
       if (!isTeamId(event.team) || typeof event.name !== 'string') return state;
-      const name = sanitizeTeamName(event.name, event.team);
+      const name = storedTeamName(event.name, event.team);
       if (name === state.teams[event.team].name) return state;
       const teams =
         event.team === 'a'
