@@ -321,7 +321,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       this.reject(ws, 'bad_token', record.eventId);
       return;
     }
-    const result = applyLiveEvent(room, invite, state.actor, record.eventId, record.event, Date.now());
+    const result = applyLiveEvent(room, invite, state.actor, record.eventId, record.event, Date.now(), record.claim);
     if (!result.ok) {
       this.reject(ws, result.code, record.eventId);
       return;
@@ -347,9 +347,11 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         event: result.event.event,
         duplicate: result.duplicate,
         players: this.admittedCount(),
+        reconciled: result.reconciled,
       }),
     );
-    this.broadcast(payload, ws);
+    // An already-counted point is not a new score. Other phones must not apply it.
+    if (result.reconciled !== 'already') this.broadcast(payload, ws);
     try {
       ws.send(payload);
     } catch {

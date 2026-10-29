@@ -17,7 +17,7 @@ import {
 
 export const MAX_EVENTS = 500;
 export const MAX_RAW_LENGTH = 96_000;
-const MAX_REVISION = 10_000_000;
+export const MAX_REVISION = 10_000_000;
 
 export interface MatchLog {
   readonly schemaVersion: typeof SCHEMA_VERSION;

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.4
+
+- A live point now says which score it came from and which score it produces. When a phone reconnects, a point whose result is already on the match is not counted again. Two phones that both move 4:1 to 4:3 while one of them is offline stay at 4:3.
+- If one phone scored further than the other, only the extra points are added. A correction, a set change, or a real disagreement is handled on purpose: the match on the server stays as it is when the two phones diverged, and that phone shows “The other phone already changed this match. This phone is using that score.” The history of the match is the server’s list of points. A point that was not applied is not written into that list.
+- A score that is the wrong shape, the wrong type, or not a possible padel score is refused. The same event id is still stored only once.
+
 ## 2.2.3
 
 - While a match is running, the screen stays on. Ending the match, or leaving the app, lets the phone sleep again. Coming back asks for the screen lock again, and so does the next tap on the court if the lock was dropped.

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { isOpenMatch, lastChangeAt, planNewMatch, type NewMatchPlan } from '@padel/core';
+import { isOpenMatch, lastChangeAt, planNewMatch, scoreClaimFor, type NewMatchPlan } from '@padel/core';
 import { detailHistoryState, joinHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
@@ -13,7 +13,7 @@ import { Victory } from './components/Victory';
 import { listMatches } from './domain/archive';
 import { deviceId } from './domain/device';
 import { fanfareEnabled, playFanfare, setFanfareEnabled, shouldPlayFanfare } from './domain/fanfare';
-import { appendEvent } from './domain/log';
+import { appendEvent, replay } from './domain/log';
 import { commitNewMatch, newMatchCopy } from './domain/newMatch';
 import {
   acknowledgeCelebrated,
@@ -496,8 +496,9 @@ export function App() {
             const at = Date.now();
             const by = plan.kind === 'leave' ? deviceId(localStorage) : 'host';
             const commit = commitNewMatch(plan, at, by);
+            const endEvent = commit.events[0] ?? { type: 'match/end' as const, at, by };
             const previous = commit.endOnServer && room.status === 'live' && room.host
-              ? room.finishShared(commit.events[0] ?? { type: 'match/end', at, by })
+              ? room.finishShared(endEvent, scoreClaimFor(replay(match.log), endEvent))
               : null;
             if (!commit.endOnServer) room.disconnect();
             let shared = match.log;

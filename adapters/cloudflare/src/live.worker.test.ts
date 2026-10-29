@@ -1,4 +1,4 @@
-import { CODE_ALARM_GLOBAL, CODE_ATTEMPTS_PER_PREFIX, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, joinWindow, parseLiveTeamName } from '@padel/core';
+import { CODE_ALARM_GLOBAL, CODE_ATTEMPTS_PER_PREFIX, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, joinWindow, matchReducer, parseLiveTeamName, replayScore, scoreBoard, scoreClaimFor, type MatchEvent, type MatchState, type ScoreBoard, type ScoreClaim, type TeamId } from '@padel/core';
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
@@ -26,12 +26,27 @@ function callFrom(ip: string, path: string, init: RequestInit = {}): Promise<Res
   return exports.default.fetch(new Request(`https://padel.example${path}`, { ...init, headers }));
 }
 
-async function createLive(device: string): Promise<{ matchId: string; hostToken: string; lastActivity: number }> {
+const T0 = 1_700_000_000_000;
+
+function seededMatch(teams: readonly TeamId[]): { state: MatchState; log: { schemaVersion: 2; base: MatchState; events: MatchEvent[] } } {
+  const base = createMatch(T0);
+  let state = base;
+  const events: MatchEvent[] = [];
+  for (const team of teams) {
+    const event: MatchEvent = { type: 'game/increment', team, at: T0 + events.length + 1 };
+    events.push(event);
+    state = matchReducer(state, event);
+  }
+  return { state, log: { schemaVersion: 2, base, events } };
+}
+
+async function createLive(device: string, teams: readonly TeamId[] = []): Promise<{ matchId: string; hostToken: string; lastActivity: number; state: MatchState }> {
+  const seeded = seededMatch(teams);
   const response = await call('/matches', {
     method: 'POST',
     body: JSON.stringify({
       device,
-      log: { schemaVersion: 2, base: createMatch(1_700_000_000_000), events: [] },
+      log: seeded.log,
     }),
   });
   expect(response.status).toBe(201);
@@ -39,7 +54,7 @@ async function createLive(device: string): Promise<{ matchId: string; hostToken:
   const row = await env.DB.prepare('SELECT last_activity FROM matches WHERE id = ?').bind(body.matchId).first();
   const lastActivity = row?.last_activity;
   if (typeof lastActivity !== 'number') throw new Error('missing last_activity');
-  return { matchId: body.matchId, hostToken: body.hostToken, lastActivity };
+  return { matchId: body.matchId, hostToken: body.hostToken, lastActivity, state: seeded.state };
 }
 
 async function ticketFor(token: string, device: string): Promise<string> {
@@ -97,8 +112,10 @@ async function connect(token: string, device: string): Promise<{ ws: WebSocket; 
   return { ws, messages };
 }
 
-function sendEvent(ws: WebSocket, event: Record<string, unknown>): void {
-  ws.send(JSON.stringify({ type: 'event', eventId: crypto.randomUUID(), event }));
+function sendEvent(ws: WebSocket, state: MatchState, event: MatchEvent): MatchState {
+  const claim = scoreClaimFor(state, event);
+  ws.send(JSON.stringify({ type: 'event', eventId: crypto.randomUUID(), event, ...(claim ? { claim } : {}) }));
+  return claim ? matchReducer(state, event) : state;
 }
 
 describe('live match in workerd', () => {
@@ -116,11 +133,13 @@ describe('live match in workerd', () => {
 
     const hostEvent = '00000000-0000-4000-8000-0000000000a1';
     const playerEvent = '00000000-0000-4000-8000-0000000000a2';
+    const hostPoint: MatchEvent = { type: 'game/increment', team: 'a', at: 1_700_000_000_100 };
     const started = Date.now();
     host.ws.send(JSON.stringify({
       type: 'event',
       eventId: hostEvent,
-      event: { type: 'game/increment', team: 'a', at: 1_700_000_000_100 },
+      event: hostPoint,
+      claim: scoreClaimFor(created.state, hostPoint),
     }));
     const onPlayer = await player.messages.waitFor((message) => message.type === 'event' && message.eventId === hostEvent);
     expect((onPlayer.event as { team?: string }).team).toBe('a');
@@ -128,10 +147,12 @@ describe('live match in workerd', () => {
     expect(Date.now() - started).toBeLessThan(500);
 
     const back = Date.now();
+    const playerPoint: MatchEvent = { type: 'game/increment', team: 'b', at: 1_700_000_000_200 };
     player.ws.send(JSON.stringify({
       type: 'event',
       eventId: playerEvent,
-      event: { type: 'game/increment', team: 'b', at: 1_700_000_000_200 },
+      event: playerPoint,
+      claim: scoreClaimFor(matchReducer(created.state, hostPoint), playerPoint),
     }));
     const onHost = await host.messages.waitFor((message) => message.type === 'event' && message.eventId === playerEvent);
     expect((onHost.event as { team?: string }).team).toBe('b');
@@ -240,10 +261,12 @@ describe('live match in workerd', () => {
     expect(refused.eventId).toBe(refusedId.toLowerCase());
 
     const scoredId = 'BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB';
+    const scoredEvent: MatchEvent = { type: 'game/increment', team: 'a', at: 1_700_000_000_200 };
     host.ws.send(JSON.stringify({
       type: 'event',
       eventId: scoredId,
-      event: { type: 'game/increment', team: 'a', at: 1_700_000_000_200 },
+      event: scoredEvent,
+      claim: scoreClaimFor(created.state, scoredEvent),
     }));
     const scored = await host.messages.waitFor((message) => message.type === 'event' && message.eventId === scoredId.toLowerCase());
     expect(scored.duplicate).toBe(false);
@@ -262,8 +285,9 @@ describe('live match in workerd', () => {
     const opened = await host.messages.waitFor((message) => message.type === 'snapshot');
     expect(opened.host).toBe(true);
 
-    sendEvent(host.ws, { type: 'game/increment', team: 'a', at: 1 });
-    sendEvent(host.ws, { type: 'game/increment', team: 'a', at: 2 });
+    let state = first.state;
+    state = sendEvent(host.ws, state, { type: 'game/increment', team: 'a', at: 1 });
+    state = sendEvent(host.ws, state, { type: 'game/increment', team: 'a', at: 2 });
     await host.messages.waitFor((message) => message.type === 'event' && (message.event as { type?: string }).type === 'game/increment');
     const activity = await env.DB.prepare('SELECT last_activity FROM matches WHERE id = ?').bind(first.matchId).first();
     expect(activity?.last_activity).toBe(first.lastActivity);
@@ -287,13 +311,13 @@ describe('live match in workerd', () => {
     expect(joined.host).toBe(false);
     expect(joined.role).toBe('player');
 
-    sendEvent(host.ws, { type: 'match/end', at: 3 });
+    state = sendEvent(host.ws, state, { type: 'match/end', at: 3 });
     const ended = await player.messages.waitFor(
       (message) => message.type === 'event' && (message.event as { type?: string }).type === 'match/end',
     );
     expect((ended.event as { by?: string }).by).toBe('host');
 
-    sendEvent(host.ws, { type: 'match/resume', at: 5 });
+    sendEvent(host.ws, state, { type: 'match/resume', at: 5 });
     await player.messages.waitFor(
       (message) => message.type === 'event' && (message.event as { type?: string }).type === 'match/resume',
     );
@@ -654,10 +678,12 @@ describe('short match codes', () => {
   it('revokes the code and the invite when the match ends', async () => {
     const invited = await issuedCode('d06060606');
     const host = await connect(invited.hostToken, 'd06060606');
+    const endEvent: MatchEvent = { type: 'match/end', at: 1_700_000_000_100 };
     host.ws.send(JSON.stringify({
       type: 'event',
       eventId: '00000000-0000-4000-8000-0000000000ee',
-      event: { type: 'match/end', at: 1_700_000_000_100 },
+      event: endEvent,
+      claim: scoreClaimFor(createMatch(T0), endEvent),
     }));
     await host.messages.waitFor((message) => message.type === 'event');
     const code = await redeem(invited.code, 'd07070707');
@@ -707,5 +733,163 @@ describe('short match codes', () => {
       }),
     });
     expect(hindi.status).toBe(201);
+  });
+});
+
+function stepId(n: number): string {
+  return `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+}
+
+function offlineFrom(
+  start: MatchState,
+  teams: readonly TeamId[],
+  type: 'game/increment' | 'game/decrement' = 'game/increment',
+): { event: MatchEvent; claim: ScoreClaim }[] {
+  const steps: { event: MatchEvent; claim: ScoreClaim }[] = [];
+  let state = start;
+  for (const team of teams) {
+    const event: MatchEvent = { type, team, at: state.updatedAt + 50 + steps.length };
+    const claim = scoreClaimFor(state, event);
+    if (!claim) throw new Error('claim');
+    steps.push({ event, claim });
+    state = matchReducer(state, event);
+  }
+  return steps;
+}
+
+async function invitePlayer(matchId: string, hostToken: string, device: string) {
+  const invite = await call(`/matches/${matchId}/invites`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${hostToken}` },
+    body: JSON.stringify({ role: 'player' }),
+  });
+  expect(invite.status).toBe(201);
+  const invited = (await invite.json()) as { token: string };
+  return connect(invited.token, device);
+}
+
+async function push(
+  ws: WebSocket,
+  messages: ReturnType<typeof inbox>,
+  id: string,
+  event: MatchEvent,
+  claim: unknown,
+): Promise<Record<string, unknown>> {
+  ws.send(JSON.stringify({ type: 'event', eventId: id, event, claim }));
+  return messages.waitFor((message) => message.eventId === id);
+}
+
+async function storedBoard(token: string, device: string): Promise<ScoreBoard> {
+  const again = await connect(token, device);
+  const snap = await again.messages.waitFor((message) => message.type === 'snapshot');
+  const log = snap.log as { base: MatchState; events: MatchEvent[] };
+  again.ws.close();
+  return scoreBoard(replayScore(log.base, log.events));
+}
+
+describe('offline score reconcile in the durable object', () => {
+  it('stays 4:3 when phone A replays the two points phone B already stored', async () => {
+    const created = await createLive('d0c000001', ['a', 'a', 'a', 'a', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000002');
+    const opening = await phoneB.messages.waitFor((message) => message.type === 'snapshot');
+    const opened = opening.log as { base: MatchState; events: MatchEvent[] };
+    expect(scoreBoard(replayScore(opened.base, opened.events)).sets[0]).toEqual({ a: 4, b: 1 });
+    const online = offlineFrom(created.state, ['b', 'b']);
+    for (let index = 0; index < online.length; index += 1) {
+      const step = online[index];
+      if (!step) continue;
+      const ack = await push(phoneB.ws, phoneB.messages, stepId(100 + index), step.event, step.claim);
+      expect(ack.type).toBe('event');
+      expect(ack.duplicate).toBe(false);
+    }
+    const phoneA = await connect(created.hostToken, 'd0c000001');
+    const queued = offlineFrom(created.state, ['b', 'b']);
+    const first = await push(phoneA.ws, phoneA.messages, stepId(110), queued[0]!.event, queued[0]!.claim);
+    expect(first).toMatchObject({ type: 'error', code: 'score_kept' });
+    const second = await push(phoneA.ws, phoneA.messages, stepId(111), queued[1]!.event, queued[1]!.claim);
+    expect(second).toMatchObject({ type: 'event', duplicate: true, reconciled: 'already' });
+    expect((await storedBoard(created.hostToken, 'd0c000001')).sets[0]).toEqual({ a: 4, b: 3 });
+  });
+
+  it('counts the third offline point when the server only has two', async () => {
+    const created = await createLive('d0c000011', ['a', 'a', 'a', 'a', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000012');
+    const online = offlineFrom(created.state, ['b', 'b']);
+    for (let index = 0; index < online.length; index += 1) {
+      const step = online[index];
+      if (!step) continue;
+      await push(phoneB.ws, phoneB.messages, stepId(120 + index), step.event, step.claim);
+    }
+    const phoneA = await connect(created.hostToken, 'd0c000011');
+    const queued = offlineFrom(created.state, ['b', 'b', 'b']);
+    expect((await push(phoneA.ws, phoneA.messages, stepId(130), queued[0]!.event, queued[0]!.claim)).type).toBe('error');
+    expect((await push(phoneA.ws, phoneA.messages, stepId(131), queued[1]!.event, queued[1]!.claim)).reconciled).toBe('already');
+    const extra = await push(phoneA.ws, phoneA.messages, stepId(132), queued[2]!.event, queued[2]!.claim);
+    expect(extra).toMatchObject({ type: 'event', duplicate: false });
+    expect((await storedBoard(created.hostToken, 'd0c000011')).sets[0]).toEqual({ a: 4, b: 4 });
+  });
+
+  it('applies a minus once, and keeps the server score when the phones diverge', async () => {
+    const correction = await createLive('d0c000021', ['a', 'a', 'a', 'a', 'b', 'b', 'b']);
+    const host = await connect(correction.hostToken, 'd0c000021');
+    const minus = offlineFrom(correction.state, ['a'], 'game/decrement')[0];
+    if (!minus) throw new Error('minus');
+    const applied = await push(host.ws, host.messages, stepId(140), minus.event, minus.claim);
+    expect(applied.type).toBe('event');
+    const twice = await push(host.ws, host.messages, stepId(141), minus.event, minus.claim);
+    expect(twice.reconciled).toBe('already');
+    expect((await storedBoard(correction.hostToken, 'd0c000021')).sets[0]).toEqual({ a: 3, b: 3 });
+
+    const created = await createLive('d0c000031', ['a', 'a', 'a', 'a', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000032');
+    const theirs = offlineFrom(created.state, ['a'])[0];
+    if (!theirs) throw new Error('point');
+    await push(phoneB.ws, phoneB.messages, stepId(150), theirs.event, theirs.claim);
+    const phoneA = await connect(created.hostToken, 'd0c000031');
+    const queued = offlineFrom(created.state, ['b', 'b']);
+    expect((await push(phoneA.ws, phoneA.messages, stepId(151), queued[0]!.event, queued[0]!.claim)).code).toBe('score_kept');
+    expect((await push(phoneA.ws, phoneA.messages, stepId(152), queued[1]!.event, queued[1]!.claim)).code).toBe('score_kept');
+    expect((await storedBoard(created.hostToken, 'd0c000031')).sets[0]).toEqual({ a: 5, b: 1 });
+  });
+
+  it('keeps the following game when the set was already closed on the server', async () => {
+    const created = await createLive('d0c000041', ['a', 'a', 'a', 'a', 'a', 'b', 'b', 'b', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000042');
+    const queued = offlineFrom(created.state, ['a', 'a']);
+    const closed = await push(phoneB.ws, phoneB.messages, stepId(160), queued[0]!.event, queued[0]!.claim);
+    expect(closed.type).toBe('event');
+    const phoneA = await connect(created.hostToken, 'd0c000041');
+    expect((await push(phoneA.ws, phoneA.messages, stepId(161), queued[0]!.event, queued[0]!.claim)).reconciled).toBe('already');
+    const next = await push(phoneA.ws, phoneA.messages, stepId(162), queued[1]!.event, queued[1]!.claim);
+    expect(next).toMatchObject({ type: 'event', duplicate: false });
+    const board = await storedBoard(created.hostToken, 'd0c000041');
+    expect(board.sets[0]).toEqual({ a: 6, b: 4 });
+    expect(board.sets[1]).toEqual({ a: 1, b: 0 });
+    expect(board.activeSet).toBe(1);
+  });
+
+  it('rejects a malformed score claim and still accepts a later valid point', async () => {
+    const created = await createLive('d0c000051');
+    const host = await connect(created.hostToken, 'd0c000051');
+    const event: MatchEvent = { type: 'game/increment', team: 'a', at: T0 + 10 };
+    const valid = scoreClaimFor(created.state, event);
+    if (!valid) throw new Error('claim');
+    const malformed = [
+      undefined,
+      { ...valid, baseRevision: -1 },
+      { ...valid, baseRevision: 1.5 },
+      { ...valid, after: { ...valid.after, sets: [{ a: 8, b: 0 }, { a: 0, b: 0 }, { a: 0, b: 0 }] } },
+      { ...valid, after: { ...valid.after, activeSet: 3 } },
+      { ...valid, after: { ...valid.after, ended: 'no' } },
+      { ...valid, note: 'extra' },
+      { ...valid, after: { ...valid.after, sets: [{ a: 4, b: 3 }, { a: 0, b: 0 }, { a: 0, b: 0 }] } },
+    ];
+    for (let index = 0; index < malformed.length; index += 1) {
+      const ack = await push(host.ws, host.messages, stepId(170 + index), event, malformed[index]);
+      expect(ack).toMatchObject({ type: 'error', code: 'not_applied' });
+    }
+    const scored = await push(host.ws, host.messages, stepId(180), event, valid);
+    expect(scored).toMatchObject({ type: 'event', duplicate: false });
+    expect((await storedBoard(created.hostToken, 'd0c000051')).sets[0]).toEqual({ a: 1, b: 0 });
   });
 });

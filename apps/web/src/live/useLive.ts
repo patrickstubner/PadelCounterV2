@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isUuid, JOIN_TOKEN_TTL_MS, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, type MatchEvent, type MatchLog } from '@padel/core';
+import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, MAX_PENDING_EVENTS, reconcilePending, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, type MatchEvent, type MatchLog, type ScoreClaim } from '@padel/core';
 import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
@@ -50,7 +50,7 @@ export interface LiveController {
   readonly acceptOffer: () => void;
   readonly dismissOffer: () => void;
   /** Sends the end event, then drops this phone's socket. Returns the host token when this phone created the match. */
-  readonly finishShared: (event: MatchEvent) => string | null;
+  readonly finishShared: (event: MatchEvent, claim: ScoreClaim | null) => string | null;
 }
 
 async function errorText(response: Response): Promise<string> {
@@ -81,6 +81,7 @@ function devApiOverride(): string {
 interface PendingPoint extends PendingLiveEvent<MatchEvent> {
   sentAt: number;
   resent: boolean;
+  claim: ScoreClaim | null;
 }
 
 function apiBase(): string {
@@ -133,6 +134,7 @@ export function useLive(
   const offlineTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seenRef = useRef(new Set<string>());
+  const conflictNote = useRef(false);
   const unackedRef = useRef<PendingPoint[]>([]);
   const queueRef = useRef<PendingPoint[]>([]);
   const wakeRef = useRef<() => void>(() => undefined);
@@ -322,7 +324,12 @@ export function useLive(
     if (ws.readyState !== WebSocket.OPEN) return false;
     const body = item.event.type === 'team/rename'
       ? { type: 'team_renamed', eventId: item.id, team: item.event.team.toUpperCase(), name: item.event.name }
-      : { type: 'event', eventId: item.id, event: item.event };
+      : {
+          type: 'event',
+          eventId: item.id,
+          event: item.event,
+          ...(item.claim ? { claim: item.claim } : {}),
+        };
     try {
       ws.send(JSON.stringify(body));
     } catch {
@@ -333,10 +340,14 @@ export function useLive(
   };
 
   const armSender = () => {
-    liveRef.current = (courtEvent: MatchEvent) => {
+    liveRef.current = (courtEvent: MatchEvent, claim: ScoreClaim | null) => {
       const eventId = canonicalEventId(createMatchId());
       const held = tokenRef.current;
       if (!eventId || !held) return false;
+      if (unackedRef.current.length >= MAX_PENDING_EVENTS) {
+        noteError(ROOM_MESSAGES.slow_down);
+        return true;
+      }
       const point: PendingPoint = {
         id: eventId,
         event: courtEvent,
@@ -344,6 +355,7 @@ export function useLive(
         matchId: matchRef.current,
         sentAt: Date.now(),
         resent: false,
+        claim,
       };
       seenRef.current.add(eventId);
       unackedRef.current.push(point);
@@ -358,17 +370,28 @@ export function useLive(
     };
   };
 
-  const resendOutstanding = (ws: WebSocket, matchId: string) => {
+  const resendOutstanding = (ws: WebSocket, matchId: string, log: MatchLog) => {
     const token = tokenRef.current?.token ?? '';
     const outstanding = unackedAfterSnapshot(
       [...unackedRef.current, ...queueRef.current],
       token,
       matchId,
       [...seenRef.current],
-    ).map((item): PendingPoint => ({ ...item, sentAt: Date.now(), resent: false }));
+    ).map((item): PendingPoint => ({ ...item, claim: item.claim ?? null, sentAt: Date.now(), resent: false }));
+    const plan = reconcilePending(
+      replayScore(log.base, log.events),
+      outstanding.map((item) => ({ id: item.id, event: item.event, claim: item.claim })),
+    );
+    const keep = new Set(plan.send.map((item) => item.id));
+    const sending = outstanding.filter((item) => keep.has(item.id));
     queueRef.current = [];
-    unackedRef.current = outstanding;
-    for (const item of outstanding) {
+    unackedRef.current = sending;
+    if (plan.reason === 'conflict') {
+      conflictNote.current = true;
+      noteError(ROOM_MESSAGES.score_kept);
+      return;
+    }
+    for (const item of sending) {
       if (!sendPoint(ws, item)) queueRef.current.push(item);
     }
   };
@@ -510,6 +533,13 @@ export function useLive(
         }
         if (notice.kind === 'pong') return;
         if (notice.kind === 'error') {
+          if (notice.code === 'score_kept') {
+            clearPending();
+            conflictNote.current = true;
+            noteError(notice.message);
+            reconnectNowRef.current();
+            return;
+          }
           if (notice.code === 'slow_down') slowDown.current = true;
           if (notice.eventId) {
             const failed = unackedRef.current.find((item) => item.id === notice.eventId);
@@ -551,10 +581,8 @@ export function useLive(
         if (notice.kind === 'delta') {
           unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
           queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
-          if (!seenRef.current.has(notice.eventId)) {
-            seenRef.current.add(notice.eventId);
-            applyRef.current(notice.event);
-          }
+          if (!notice.duplicate && !seenRef.current.has(notice.eventId)) applyRef.current(notice.event);
+          seenRef.current.add(notice.eventId);
           setPlayers(notice.players);
           clearSlowBanner();
           return;
@@ -604,7 +632,11 @@ export function useLive(
           opening.current = false;
           clearWake();
           armSender();
-          resendOutstanding(ws, matchId);
+          resendOutstanding(ws, matchId, notice.log);
+          if (conflictNote.current) {
+            conflictNote.current = false;
+            noteError(ROOM_MESSAGES.score_kept);
+          }
         }
       };
       ws.onerror = () => {
@@ -854,7 +886,7 @@ export function useLive(
       open(token, true);
     },
     dismissOffer: () => rememberOffer(null),
-    finishShared: (event) => {
+    finishShared: (event, claim) => {
       const previous = hostRef.current?.token ?? null;
       const ws = socketRef.current;
       dropToken();
@@ -863,8 +895,13 @@ export function useLive(
       showLocalCourt();
       liveRef.current = null;
       readyRef.current = false;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'event', eventId: createMatchId(), event }));
+      if (ws && ws.readyState === WebSocket.OPEN && (claim || !isScoreEvent(event.type))) {
+        ws.send(JSON.stringify({
+          type: 'event',
+          eventId: createMatchId(),
+          event,
+          ...(claim ? { claim } : {}),
+        }));
       }
       generation.current += 1;
       detachSocket(ws);

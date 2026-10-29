@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { isScoreEvent, scoreClaimFor, type ScoreClaim } from '@padel/core';
 import { loadArchive, saveArchive } from '../domain/archive';
 import { forgetCelebratedMatch } from '../domain/celebration';
 import { createMatchId } from '../domain/id';
-import { createLog, replay, type MatchLog } from '../domain/log';
+import { appendEvent, createLog, replay, type MatchLog } from '../domain/log';
 import { loadLog, saveLog } from '../domain/persistence';
 import { serveChoice } from '../domain/rules';
 import { sessionReducer, type Session } from '../domain/session';
 import type { MatchEvent, SetIndex, TeamId } from '../domain/types';
 
 /** Return true when the live server accepted the event and the local log must wait for it. */
-export type LiveSend = (event: MatchEvent) => boolean;
+export type LiveSend = (event: MatchEvent, claim: ScoreClaim | null) => boolean;
 
 function initialSession(): Session {
   return {
@@ -22,6 +23,8 @@ export function useMatch() {
   const [session, dispatch] = useReducer(sessionReducer, undefined, initialSession);
   const [saveFailed, setSaveFailed] = useState(false);
   const liveRef = useRef<LiveSend | null>(null);
+  const logRef = useRef(session.log);
+  logRef.current = session.log;
   const { log } = session;
   const state = useMemo(() => replay(log), [log]);
 
@@ -34,7 +37,11 @@ export function useMatch() {
   const at = () => Date.now();
   const record = (event: MatchEvent) => dispatch({ type: 'record', event });
   const publish = (event: MatchEvent) => {
-    if (liveRef.current?.(event)) return;
+    const current = replay(logRef.current);
+    const claim = isScoreEvent(event.type) ? scoreClaimFor(current, event) : null;
+    if (isScoreEvent(event.type) && !claim) return;
+    if (liveRef.current?.(event, claim)) return;
+    logRef.current = appendEvent(logRef.current, event);
     record(event);
   };
 
@@ -62,9 +69,18 @@ export function useMatch() {
         at: at(),
       });
     },
-    replaceLog: (next: MatchLog) => dispatch({ type: 'replace', log: next }),
-    applyLive: (event: MatchEvent) => dispatch({ type: 'record', event }),
-    revertLive: (event: MatchEvent) => dispatch({ type: 'revert', event }),
+    replaceLog: (next: MatchLog) => {
+      logRef.current = next;
+      dispatch({ type: 'replace', log: next });
+    },
+    applyLive: (event: MatchEvent) => {
+      logRef.current = appendEvent(logRef.current, event);
+      dispatch({ type: 'record', event });
+    },
+    revertLive: (event: MatchEvent) => {
+      logRef.current = sessionReducer({ log: logRef.current, archive: session.archive }, { type: 'revert', event }).log;
+      dispatch({ type: 'revert', event });
+    },
     deleteMatch: (id: string) => {
       if (state.matchId === id) return;
       if (!session.archive.some((match) => match.id === id)) return;

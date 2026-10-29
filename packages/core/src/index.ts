@@ -59,6 +59,18 @@ export {
   tiebreakHint,
 } from './rules';
 export { assignMatchId, createMatch, matchReducer, prepareLiveLog, replayScore } from './reducer';
+export {
+  MAX_PENDING_EVENTS,
+  claimMatchesEvent,
+  decideScore,
+  isScoreEvent,
+  parseScoreClaim,
+  reconcilePending,
+  sameBoard,
+  scoreBoard,
+  scoreClaimFor,
+} from './scoreSync';
+export type { PendingScore, ReconcilePlan, ScoreBoard, ScoreClaim, ScoreDecision } from './scoreSync';
 export { MAX_EVENTS, MAX_RAW_LENGTH, parseMatchLog, parseStoredEvent } from './parse';
 export type { MatchLog } from './parse';
 export { actionForEvent, canPerform, isRole } from './access';

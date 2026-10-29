@@ -14,6 +14,7 @@ import {
   type MatchEvent,
   type MatchLog,
   type RoomCode,
+  type ScoreClaim,
 } from '@padel/core';
 import { PAGE_BASE } from '../base';
 
@@ -82,6 +83,7 @@ export interface PendingLiveEvent<T> {
   readonly event: T;
   readonly token: string;
   readonly matchId: string;
+  readonly claim?: ScoreClaim | null;
 }
 
 /** Unacked points for this token and match that the snapshot did not already contain. */

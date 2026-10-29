@@ -1,5 +1,5 @@
 /** @vitest-environment happy-dom */
-import { createMatch } from '@padel/core';
+import { createMatch, matchReducer, type MatchEvent, type MatchState } from '@padel/core';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -24,6 +24,8 @@ class FakeSocket {
   /** Later hellos stay quiet unless a test needs the court to become live again. */
   static snapshotMode: 'first' | 'every' = 'first';
   static echoRename = true;
+  /** When set, each hello consumes one log. The default hello stays an empty match. */
+  static scriptedLogs: { schemaVersion: 2; base: MatchState; events: MatchEvent[] }[] | null = null;
   url: string;
   readyState = 0;
   onopen: ((event: Event) => void) | null = null;
@@ -48,7 +50,9 @@ class FakeSocket {
     if (parsed.type === 'hello') {
       FakeSocket.hellos += 1;
       if (FakeSocket.snapshotMode === 'first' && FakeSocket.hellos > 1) return;
-      const base = createMatch(1_700_000_000_000, MATCH);
+      const scripted = FakeSocket.scriptedLogs?.shift() ?? null;
+      const base = scripted?.base ?? createMatch(1_700_000_000_000, MATCH);
+      const events = scripted?.events ?? [];
       queueMicrotask(() => {
         this.onmessage?.({
           data: JSON.stringify({
@@ -56,8 +60,10 @@ class FakeSocket {
             protocol: 1,
             host: false,
             players: 2,
-            eventIds: [],
-            log: { schemaVersion: 2, base, events: [] },
+            eventIds: scripted
+              ? events.map((_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`)
+              : [],
+            log: { schemaVersion: 2, base, events },
           }),
         });
       });
@@ -136,6 +142,7 @@ describe('live socket reconnect', () => {
     FakeSocket.dropped = false;
     FakeSocket.snapshotMode = 'first';
     FakeSocket.echoRename = true;
+    FakeSocket.scriptedLogs = null;
     joins = 0;
     visible = 'visible';
     localStorage.clear();
@@ -211,6 +218,8 @@ describe('live socket reconnect', () => {
     expect(document.querySelector('.sr-only')?.textContent).toContain('Team A 1');
     const bodies = FakeSocket.sockets.flatMap((socket) => socket.sent);
     expect(bodies.join('\n')).toContain('game/increment');
+    expect(bodies.join('\n')).toContain('"claim"');
+    expect(bodies.join('\n')).toContain('"baseRevision"');
 
     const old = FakeSocket.sockets.at(-1);
     const started = Date.now();
@@ -551,4 +560,109 @@ describe('live socket reconnect', () => {
     });
     expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Mine');
   });
+
+  function played(teams: readonly ('a' | 'b')[]) {
+    const base = createMatch(1_700_000_000_000, MATCH);
+    const events: MatchEvent[] = [];
+    let state = base;
+    for (const team of teams) {
+      const event: MatchEvent = { type: 'game/increment', team, at: base.createdAt + events.length + 1 };
+      events.push(event);
+      state = matchReducer(state, event);
+    }
+    return { schemaVersion: 2 as const, base, events, state };
+  }
+
+  const scoreLine = () => document.querySelector('.sr-only')?.textContent ?? '';
+
+  async function reconnectOffline(nextLog: ReturnType<typeof played>, taps: readonly ('a' | 'b')[]) {
+    let blockJoin = true;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        if (blockJoin) return Response.json({ error: 'offline' }, { status: 503 });
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    FakeSocket.snapshotMode = 'every';
+    await act(async () => {
+      FakeSocket.sockets.at(-1)?.close();
+    });
+    for (const team of taps) {
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>(`[data-testid="increment-${team}"]`)?.click();
+      });
+    }
+    const mark = FakeSocket.sockets.length;
+    FakeSocket.scriptedLogs = [nextLog, nextLog, nextLog];
+    blockJoin = false;
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+    });
+    for (let attempt = 0; attempt < 40 && FakeSocket.sockets.length === mark; attempt += 1) await wait(50);
+    await wait(80);
+    return FakeSocket.sockets.slice(mark);
+  }
+
+  it('does not turn 4:3 into 4:5 when the offline phone counted the same points', async () => {
+    const fourOne = ['a', 'a', 'a', 'a', 'b'] as const;
+    FakeSocket.scriptedLogs = [played(fourOne)];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    expect(scoreLine()).toContain('Team A 4, Team B 1');
+    const fresh = await reconnectOffline(played([...fourOne, 'b', 'b']), ['b', 'b']);
+    expect(scoreLine()).toContain('Team A 4, Team B 3');
+    expect(scoreLine()).not.toContain('Team B 5');
+    const resent = fresh.flatMap((socket) => socket.sent).filter((line) => line.includes('game/increment'));
+    expect(resent).toEqual([]);
+  }, 8_000);
+
+  it('sends only the offline point the server has not already counted', async () => {
+    const fourOne = ['a', 'a', 'a', 'a', 'b'] as const;
+    FakeSocket.scriptedLogs = [played(fourOne)];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    const fresh = await reconnectOffline(played([...fourOne, 'b', 'b']), ['b', 'b', 'b']);
+    await wait(50);
+    expect(scoreLine()).toContain('Team A 4, Team B 4');
+    expect(scoreLine()).not.toContain('Team B 6');
+    const resent = fresh.flatMap((socket) => socket.sent).filter((line) => line.includes('game/increment'));
+    expect(resent).toHaveLength(1);
+    const body = JSON.parse(resent[0] ?? '{}') as { claim?: { before?: { sets?: { b?: number }[] }; after?: { sets?: { b?: number }[] } } };
+    expect(body.claim?.before?.sets?.[0]?.b).toBe(3);
+    expect(body.claim?.after?.sets?.[0]?.b).toBe(4);
+  }, 8_000);
+
+  it('drops a diverged offline point and keeps the server score', async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    expect(scoreLine()).toContain('Team A 0, Team B 0');
+    const fresh = await reconnectOffline(played(['b']), ['a']);
+    expect(scoreLine()).toContain('Team A 0, Team B 1');
+    expect(scoreLine()).not.toContain('Team A 1');
+    const resent = fresh.flatMap((socket) => socket.sent).filter((line) => line.includes('game/increment'));
+    expect(resent).toEqual([]);
+    expect(document.querySelector('[data-testid="live-error"]')?.textContent).toBe(
+      'The other phone already changed this match. This phone is using that score.',
+    );
+  }, 8_000);
 });

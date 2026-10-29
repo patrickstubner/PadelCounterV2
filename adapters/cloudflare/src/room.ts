@@ -13,6 +13,8 @@ import {
   credentialAllowsEvent,
   decideJoin,
   lastChangeAt,
+  decideScore,
+  isScoreEvent,
   parseStoredEvent,
   replayScore,
   roomAcceptsScore,
@@ -230,8 +232,15 @@ export function applyLiveEvent(
   eventId: string,
   rawEvent: unknown,
   now: number,
+  claim?: unknown,
 ):
-  | { readonly ok: true; readonly record: RoomRecord; readonly event: StoredEvent; readonly duplicate: boolean }
+  | {
+      readonly ok: true;
+      readonly record: RoomRecord;
+      readonly event: StoredEvent;
+      readonly duplicate: boolean;
+      readonly reconciled?: 'already';
+    }
   | RoomFailure {
   const blocked = credentialAllowsEvent({
     role: invite.role,
@@ -250,7 +259,7 @@ export function applyLiveEvent(
     });
     if (!allowed) return fail('forbidden');
   }
-  return applyPlay(record, credentialFor(invite), eventId, rawEvent, now, actor);
+  return applyPlay(record, credentialFor(invite), eventId, rawEvent, now, actor, claim);
 }
 
 export function applyPlay(
@@ -260,8 +269,15 @@ export function applyPlay(
   rawEvent: unknown,
   now: number,
   actor?: string,
+  claim?: unknown,
 ):
-  | { readonly ok: true; readonly record: RoomRecord; readonly event: StoredEvent; readonly duplicate: boolean }
+  | {
+      readonly ok: true;
+      readonly record: RoomRecord;
+      readonly event: StoredEvent;
+      readonly duplicate: boolean;
+      readonly reconciled?: 'already';
+    }
   | RoomFailure {
   const canonical = canonicalEventId(eventId);
   if (!canonical) return fail('not_applied');
@@ -273,9 +289,25 @@ export function applyPlay(
   const action = actionForEvent(parsed.type);
   if (!action || !canPerform(credential, action)) return fail('forbidden');
   if (parsed.type === 'match/new' || parsed.type === 'match/reset') return fail('not_applied');
-  if (record.events.length >= MAX_EVENTS) return fail('not_applied');
 
   const stamped: MatchEvent = actorId(actor) ? { ...parsed, at: now, by: actorId(actor) } : { ...parsed, at: now };
+  if (isScoreEvent(stamped.type)) {
+    const current = replayScore(record.base, record.events.map((item) => item.event));
+    const decision = decideScore(current, stamped, claim);
+    if (decision.kind === 'reject') return fail('not_applied');
+    if (decision.kind === 'conflict') return fail('score_kept');
+    if (decision.kind === 'already') {
+      return {
+        ok: true,
+        record,
+        duplicate: true,
+        reconciled: 'already',
+        event: { eventId: canonical, event: stamped },
+      };
+    }
+  }
+  if (record.events.length >= MAX_EVENTS) return fail('not_applied');
+
   const current = replayScore(record.base, record.events.map((item) => item.event));
   const next = replayScore(current, [stamped]);
   if (next === current) return fail('not_applied');
@@ -289,12 +321,14 @@ export function eventDelta(input: {
   readonly event: MatchEvent;
   readonly duplicate: boolean;
   readonly players: number;
+  readonly reconciled?: 'already';
 }): {
   readonly type: 'event';
   readonly eventId: string;
   readonly event: MatchEvent;
   readonly duplicate: boolean;
   readonly players: number;
+  readonly reconciled?: 'already';
 } {
   return {
     type: 'event',
@@ -302,6 +336,7 @@ export function eventDelta(input: {
     event: input.event,
     duplicate: input.duplicate,
     players: input.players,
+    ...(input.reconciled ? { reconciled: input.reconciled } : {}),
   };
 }
 
