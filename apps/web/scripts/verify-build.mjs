@@ -40,6 +40,8 @@ const html = readFileSync(htmlPath, 'utf8');
 if (!html.includes('Content-Security-Policy')) fail('CSP meta tag missing');
 if (!html.includes("default-src 'self'")) fail('CSP is not restricted to self');
 if (html.includes('unsafe-inline') || html.includes('unsafe-eval')) fail('CSP allows inline or eval');
+const mediaSrc = html.match(/media-src ([^;"]+)/)?.[1] ?? '';
+if (mediaSrc !== "'self'") fail(`CSP media-src must be 'self', got ${mediaSrc}`);
 const apiUrl = process.env.PUBLIC_API_URL ?? '';
 let htmlUrls = html;
 if (apiUrl) {
@@ -89,6 +91,7 @@ const precached = [
   'favicon-32.png',
   'manifest.webmanifest',
   'NOTICE.txt',
+  'stay-awake.mp4',
 ];
 const sw = readFileSync(join(dist, 'sw.js'), 'utf8');
 for (const file of precached) {
@@ -102,7 +105,7 @@ if (!notice.includes('qr 0.7.2') || !notice.includes('Paul Miller')) fail('NOTIC
 if (!notice.includes('qrcode 1.5.4') || !notice.includes('Ryan Day')) fail('NOTICE missing the qrcode drawer');
 
 for (const file of walk(dist)) {
-  if (file.endsWith('.png') || file.endsWith('.ico')) continue;
+  if (file.endsWith('.png') || file.endsWith('.ico') || file.endsWith('.mp4')) continue;
   const text = readFileSync(file, 'utf8');
   if (text.includes('__PADEL_TEST_API__')) fail(`test API hook shipped in ${file}`);
   for (const host of banned) {

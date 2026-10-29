@@ -69,7 +69,7 @@ export function App() {
   const match = useMatch();
   const room = useLive(match.liveRef, match.replaceLog, match.applyLive, match.revertLive);
   const install = useInstallOffer();
-  useWakeLock();
+  useWakeLock(!match.state.ended);
   const updateReady = useUpdateReady();
   const updateButton = updateReady ? <UpdateReady onReload={() => window.location.reload()} /> : null;
   const [confirming, setConfirming] = useState<'end' | null>(null);

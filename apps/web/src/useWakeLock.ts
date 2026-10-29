@@ -1,31 +1,31 @@
 import { useEffect } from 'react';
-import { acquireScreenWakeLock, type WakeLockHandle } from './wakeLock';
+import { createStayAwakeVideo, STAY_AWAKE_FILE } from './stayAwakeVideo';
+import { withBase } from './url';
+import { createStayAwake, screenWakeLockRequest } from './wakeLock';
 
-export function useWakeLock(): void {
+/** Keep the screen on while a match is running. `running` is false after End match. */
+export function useWakeLock(running: boolean): void {
   useEffect(() => {
-    let stopped = false;
-    let sentinel: WakeLockHandle | null = null;
-
-    const arm = (): void => {
-      void acquireScreenWakeLock().then((next) => {
-        if (stopped || !next) {
-          void next?.release().catch(() => undefined);
-          return;
-        }
-        sentinel = next;
-      });
-    };
-
+    const video = createStayAwakeVideo(withBase(STAY_AWAKE_FILE));
+    const stay = createStayAwake({
+      requestWakeLock: screenWakeLockRequest(),
+      video,
+      isVisible: () => document.visibilityState === 'visible',
+    });
+    stay.setRunning(running);
     const onVisibility = (): void => {
-      if (document.visibilityState === 'visible') arm();
+      stay.onVisibility();
     };
-
-    arm();
+    const onGesture = (): void => {
+      stay.onGesture();
+    };
     document.addEventListener('visibilitychange', onVisibility);
+    document.addEventListener('pointerdown', onGesture, true);
     return () => {
-      stopped = true;
       document.removeEventListener('visibilitychange', onVisibility);
-      void sentinel?.release().catch(() => undefined);
+      document.removeEventListener('pointerdown', onGesture, true);
+      stay.dispose();
+      video.destroy();
     };
-  }, []);
+  }, [running]);
 }

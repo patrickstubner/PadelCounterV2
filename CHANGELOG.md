@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.3
+
+- While a match is running, the screen stays on. Ending the match, or leaving the app, lets the phone sleep again. Coming back asks for the screen lock again, and so does the next tap on the court if the lock was dropped.
+- iPhone Safari, including the home-screen app on older iOS, plays a tiny silent video from this app when the screen lock is missing or refused. The video starts on a tap and stops when the match ends or the app is in the background.
+
 ## 2.2.2
 
 - iPhone Safari can join a live match from the in-app camera. The scanner reads a centred square of about 480-720 pixels instead of the full camera frame, and it does not start a second decode while one is still running.

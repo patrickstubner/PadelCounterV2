@@ -29,6 +29,7 @@ describe('connect-src websocket scheme', () => {
     expect(policy).toContain("connect-src 'self'");
     expect(policy).toContain(`${API} wss://padel-counter.example.workers.dev`);
     expect(policy).not.toContain('ws://padel-counter.example.workers.dev');
+    expect(policy.match(/media-src ([^;]+)/)?.[1]).toBe("'self'");
 
     execFileSync('pnpm', ['exec', 'rsbuild', 'build'], {
       cwd: root,
