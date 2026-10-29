@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createMatch, matchReducer, MAX_PLAYERS, MAX_PLAYER_ACTOR, ROOM_CLOSE_MS, ROOM_MESSAGES } from '@padel/core';
+import { createMatch, matchReducer, MAX_PLAYERS, MAX_PLAYER_ACTOR, replayScore, ROOM_CLOSE_MS, ROOM_MESSAGES, scoreBoard, scoreClaimFor, type MatchEvent, type MatchState, type ScoreClaim, type TeamId } from '@padel/core';
 import { admit, applyLiveEvent, applyPlay, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange, type InviteRow, type RoomRecord } from './room';
 
 const NOW = 1_700_000_000_000;
@@ -13,6 +13,10 @@ function started(): RoomRecord {
     events: [],
   };
   return createRoom(log, HOST, NOW).record;
+}
+
+function claimFor(record: RoomRecord, event: MatchEvent) {
+  return scoreClaimFor(replayScore(record.base, record.events.map((item) => item.event)), event);
 }
 
 function withInvite(record: RoomRecord): RoomRecord {
@@ -71,8 +75,8 @@ describe('role checks', () => {
   it('lets a player change the score and refuses a spectator', () => {
     const record = started();
     const eventId = '00000000-0000-4000-8000-0000000000bb';
-    const raw = { type: 'game/increment', team: 'a', at: NOW };
-    const played = applyPlay(record, { role: 'player', host: false }, eventId, raw, NOW + 5);
+    const raw: MatchEvent = { type: 'game/increment', team: 'a', at: NOW };
+    const played = applyPlay(record, { role: 'player', host: false }, eventId, raw, NOW + 5, undefined, claimFor(record, raw));
     expect(played.ok).toBe(true);
     if (played.ok) {
       expect(played.event.event).toMatchObject({ type: 'game/increment', team: 'a' });
@@ -110,22 +114,28 @@ describe('role checks', () => {
 
   it('applies scoring from two players in arrival order', () => {
     let record = started();
+    const firstEvent: MatchEvent = { type: 'game/increment', team: 'a', at: 1 };
     const first = applyPlay(
       record,
       { role: 'player', host: true },
       '00000000-0000-4000-8000-0000000000d1',
-      { type: 'game/increment', team: 'a', at: 1 },
+      firstEvent,
       NOW + 1,
+      undefined,
+      claimFor(record, firstEvent),
     );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     record = first.record;
+    const secondEvent: MatchEvent = { type: 'game/increment', team: 'b', at: 1 };
     const second = applyPlay(
       record,
       { role: 'player', host: false },
       '00000000-0000-4000-8000-0000000000d2',
-      { type: 'game/increment', team: 'b', at: 1 },
+      secondEvent,
       NOW + 2,
+      undefined,
+      claimFor(record, secondEvent),
     );
     expect(second.ok).toBe(true);
     if (!second.ok) return;
@@ -185,17 +195,20 @@ describe('event gate', () => {
 
   it('lets the creator reopen after anyone ends, and only the creator after the creator ends', () => {
     const record = withInvite(started());
-    const ended = applyLiveEvent(record, invite({ host: true, tokenHash: HOST }), 'host', eventId, { type: 'match/end', at: 1 }, NOW);
+    const endEvent: MatchEvent = { type: 'match/end', at: 1 };
+    const ended = applyLiveEvent(record, invite({ host: true, tokenHash: HOST }), 'host', eventId, endEvent, NOW, claimFor(record, endEvent));
     expect(ended.ok).toBe(true);
     if (!ended.ok) return;
     expect(ended.record.base.ended || ended.event.event.type === 'match/end').toBe(true);
+    const resumeEvent: MatchEvent = { type: 'match/resume', at: 1 };
     const joiner = applyLiveEvent(
       ended.record,
       invite(),
       'p2',
       '00000000-0000-4000-8000-0000000000e2',
-      { type: 'match/resume', at: 1 },
+      resumeEvent,
       NOW,
+      claimFor(ended.record, resumeEvent),
     );
     expect(joiner.ok).toBe(false);
     if (!joiner.ok) expect(joiner.code).toBe('forbidden');
@@ -204,8 +217,9 @@ describe('event gate', () => {
       invite({ host: true, tokenHash: HOST }),
       'host',
       '00000000-0000-4000-8000-0000000000e3',
-      { type: 'match/resume', at: 1 },
+      resumeEvent,
       NOW,
+      claimFor(ended.record, resumeEvent),
     );
     expect(host.ok).toBe(true);
   });
@@ -247,7 +261,7 @@ describe('event gate', () => {
 
 describe('server clock', () => {
   const eventId = '00000000-0000-4000-8000-0000000000e1';
-  const raw = { type: 'game/increment', team: 'a', at: 1 };
+  const raw: MatchEvent = { type: 'game/increment', team: 'a', at: 1 };
 
   function invite(): InviteRow {
     return { tokenHash: INVITE, role: 'player', host: false, expiresAt: NOW + ROOM_CLOSE_MS, revokedAt: null };
@@ -261,7 +275,7 @@ describe('server clock', () => {
         {
           schemaVersion: 2,
           base: createMatch(at, '00000000-0000-4000-8000-0000000000aa'),
-          events: [{ type: 'game/increment', team: 'a', at, by: 'p4' }],
+          events: [{ type: 'game/increment', team: 'a', at, capturedAt: at, by: 'p4' }],
         },
         HOST,
         NOW,
@@ -270,11 +284,12 @@ describe('server clock', () => {
       expect(created.record.base.createdAt).toBe(NOW);
       expect(created.record.base.updatedAt).toBe(NOW);
       expect(created.record.events[0]?.event.at).toBe(NOW);
+      expect(created.record.events[0]?.event.capturedAt).toBe(NOW);
       expect(created.record.events[0]?.event.by).toBe('host');
       expect(serverLastChange(created.record)).toBe(NOW);
       const issued = issueInvite(created.record, HOST, 'player', INVITE, NOW);
       if (!issued.ok) throw new Error('invite');
-      const scored = applyLiveEvent(issued.record, invite(), 'p2', eventId, raw, NOW + 1000);
+      const scored = applyLiveEvent(issued.record, invite(), 'p2', eventId, raw, NOW + 1000, claimFor(issued.record, raw));
       expect(scored.ok).toBe(true);
     }
   });
@@ -289,7 +304,7 @@ describe('server clock', () => {
       ],
     };
     expect(serverLastChange(seeded)).toBe(NOW);
-    const open = applyLiveEvent(seeded, invite(), 'p2', eventId, raw, NOW + 1000);
+    const open = applyLiveEvent(seeded, invite(), 'p2', eventId, raw, NOW + 1000, claimFor(seeded, raw));
     expect(open.ok).toBe(true);
 
     const ahead: RoomRecord = { ...record, serverCreatedAt: NOW + 60_000 };
@@ -351,5 +366,162 @@ describe('player ids', () => {
         connected: [{ actor: 'p2', deviceId: null }],
       }),
     ).toBe('p3');
+  });
+});
+
+function eventId(n: number): string {
+  return `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+}
+
+function boardOf(record: RoomRecord) {
+  return scoreBoard(replayScore(record.base, record.events.map((item) => item.event)));
+}
+
+function applyTeams(record: RoomRecord, teams: readonly TeamId[], idStart: number): RoomRecord {
+  return teams.reduce((current, team, index) => {
+    const state = replayScore(current.base, current.events.map((item) => item.event));
+    const event: MatchEvent = { type: 'game/increment', team, at: state.updatedAt + 1 };
+    const result = applyPlay(
+      current,
+      { role: 'player', host: true },
+      eventId(idStart + index),
+      event,
+      NOW + idStart + index,
+      'host',
+      scoreClaimFor(state, event),
+    );
+    if (!result.ok) throw new Error(result.code);
+    return result.record;
+  }, record);
+}
+
+function offlineSteps(start: MatchState, teams: readonly TeamId[], type: 'game/increment' | 'game/decrement' = 'game/increment') {
+  const steps: { event: MatchEvent; claim: ScoreClaim }[] = [];
+  let state = start;
+  for (const team of teams) {
+    const event: MatchEvent = { type, team, at: state.updatedAt + 1 };
+    const claim = scoreClaimFor(state, event);
+    if (!claim) throw new Error('claim');
+    steps.push({ event, claim });
+    state = matchReducer(state, event);
+  }
+  return steps;
+}
+
+function pushClaim(record: RoomRecord, id: number, event: MatchEvent, claim: ScoreClaim | undefined, parent?: string | null) {
+  return applyPlay(record, { role: 'player', host: true }, eventId(id), event, NOW + id, 'host', claim, parent);
+}
+
+describe('score reconcile', () => {
+  const fourOne = ['a', 'a', 'a', 'a', 'b'] as const;
+
+  it('does not apply phone A again when the server is already 4:3', () => {
+    const atFourOne = applyTeams(started(), fourOne, 1);
+    expect(boardOf(atFourOne).sets[0]).toEqual({ a: 4, b: 1 });
+    const online = applyTeams(atFourOne, ['b', 'b'], 10);
+    expect(boardOf(online).sets[0]).toEqual({ a: 4, b: 3 });
+    const fork = atFourOne.events[atFourOne.events.length - 1]?.eventId ?? null;
+    const queued = offlineSteps(replayScore(atFourOne.base, atFourOne.events.map((item) => item.event)), ['b', 'b']);
+    const first = pushClaim(online, 30, queued[0]!.event, queued[0]!.claim, fork);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.reconciled).toBe('already');
+    const second = pushClaim(online, 31, queued[1]!.event, queued[1]!.claim, '00000000-0000-4000-8000-000000000099');
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.code).toBe('score_kept');
+    expect(boardOf(online).sets[0]).toEqual({ a: 4, b: 3 });
+  });
+
+  it('applies only the offline point the server has not counted', () => {
+    const atFourOne = applyTeams(started(), fourOne, 1);
+    const online = applyTeams(atFourOne, ['b', 'b'], 10);
+    const fork = atFourOne.events[atFourOne.events.length - 1]?.eventId ?? null;
+    const queued = offlineSteps(replayScore(atFourOne.base, atFourOne.events.map((item) => item.event)), ['b', 'b', 'b']);
+    const rejected = pushClaim(online, 40, queued[0]!.event, queued[0]!.claim, fork);
+    expect(rejected.ok && rejected.reconciled).toBe('already');
+    const extra = pushClaim(online, 42, queued[2]!.event, queued[2]!.claim);
+    expect(extra.ok).toBe(true);
+    if (!extra.ok) return;
+    expect(extra.duplicate).toBe(false);
+    expect(boardOf(extra.record).sets[0]).toEqual({ a: 4, b: 4 });
+  });
+
+  it('applies one phone’s minus, and does not apply that minus twice', () => {
+    const atFourThree = applyTeams(started(), [...fourOne, 'b', 'b'], 1);
+    expect(boardOf(atFourThree).sets[0]).toEqual({ a: 4, b: 3 });
+    const start = replayScore(atFourThree.base, atFourThree.events.map((item) => item.event));
+    const fork = atFourThree.events[atFourThree.events.length - 1]?.eventId ?? null;
+    const minus = offlineSteps(start, ['a'], 'game/decrement');
+    const applied = pushClaim(atFourThree, 50, minus[0]!.event, minus[0]!.claim, fork);
+    expect(applied.ok).toBe(true);
+    if (!applied.ok) return;
+    expect(boardOf(applied.record).sets[0]).toEqual({ a: 3, b: 3 });
+    const again = pushClaim(applied.record, 51, minus[0]!.event, minus[0]!.claim, fork);
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.reconciled).toBe('already');
+    expect(boardOf(again.record).sets[0]).toEqual({ a: 3, b: 3 });
+  });
+
+  it('keeps the next game after a set both phones already closed', () => {
+    const atFiveFour = applyTeams(started(), ['a', 'a', 'a', 'a', 'a', 'b', 'b', 'b', 'b'], 1);
+    const start = replayScore(atFiveFour.base, atFiveFour.events.map((item) => item.event));
+    const fork = atFiveFour.events[atFiveFour.events.length - 1]?.eventId ?? null;
+    const queued = offlineSteps(start, ['a', 'a']);
+    const online = pushClaim(atFiveFour, 60, queued[0]!.event, queued[0]!.claim, fork);
+    expect(online.ok).toBe(true);
+    if (!online.ok) return;
+    expect(boardOf(online.record).activeSet).toBe(1);
+    const repeated = pushClaim(online.record, 61, queued[0]!.event, queued[0]!.claim, fork);
+    expect(repeated.ok && repeated.reconciled).toBe('already');
+    const nextGame = pushClaim(online.record, 62, queued[1]!.event, queued[1]!.claim);
+    expect(nextGame.ok).toBe(true);
+    if (!nextGame.ok) return;
+    expect(boardOf(nextGame.record).sets[0]).toEqual({ a: 6, b: 4 });
+    expect(boardOf(nextGame.record).sets[1]).toEqual({ a: 1, b: 0 });
+    expect(boardOf(nextGame.record).activeSet).toBe(1);
+  });
+
+  it('adds the offline points when the phones scored for different teams', () => {
+    const atFourOne = applyTeams(started(), fourOne, 1);
+    const start = replayScore(atFourOne.base, atFourOne.events.map((item) => item.event));
+    const online = applyTeams(atFourOne, ['a'], 70);
+    expect(boardOf(online).sets[0]).toEqual({ a: 5, b: 1 });
+    const fork = atFourOne.events[atFourOne.events.length - 1]?.eventId ?? null;
+    const queued = offlineSteps(start, ['b', 'b']);
+    const first = pushClaim(online, 80, queued[0]!.event, queued[0]!.claim, fork);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const after = replayScore(first.record.base, first.record.events.map((item) => item.event));
+    const secondEvent = queued[1]!.event;
+    const second = pushClaim(first.record, 81, secondEvent, scoreClaimFor(after, secondEvent) ?? undefined);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(boardOf(second.record).sets[0]).toEqual({ a: 5, b: 3 });
+  });
+
+  it('rejects a malformed or inconsistent claim and still dedupes an event id', () => {
+    const record = started();
+    const event: MatchEvent = { type: 'game/increment', team: 'a', at: NOW };
+    const missing = pushClaim(record, 90, event, undefined);
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.code).toBe('not_applied');
+    const wild = scoreClaimFor(createMatch(NOW), event);
+    const forged = wild
+      ? { ...wild, after: { ...wild.after, sets: [{ a: 4, b: 3 }, { a: 0, b: 0 }, { a: 0, b: 0 }] as ScoreClaim['after']['sets'] } }
+      : undefined;
+    const lied = pushClaim(record, 91, event, forged);
+    expect(lied.ok).toBe(false);
+    if (!lied.ok) expect(lied.code).toBe('not_applied');
+    const good = pushClaim(record, 92, event, scoreClaimFor(createMatch(NOW), event) ?? undefined);
+    expect(good.ok).toBe(true);
+    if (!good.ok) return;
+    const repeat = applyPlay(good.record, { role: 'player', host: true }, eventId(92), event, NOW, 'host', { extra: true });
+    expect(repeat.ok).toBe(true);
+    if (!repeat.ok) return;
+    expect(repeat.duplicate).toBe(true);
+    expect(repeat.reconciled).toBeUndefined();
+    expect(repeat.record.events).toHaveLength(good.record.events.length);
+    expect(boardOf(good.record).sets[0]).toEqual({ a: 1, b: 0 });
   });
 });

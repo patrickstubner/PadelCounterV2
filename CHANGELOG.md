@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.4
+
+- A live point names the server point it was scored on, and the score before and after. Two phones that both move 4:1 to 4:3 stay at 4:3. Points only one phone recorded are added, including a correction. An offline plus and minus of the same game do not undo the other phone's point. History shows when the point was tapped, in this phone's local time.
+- If one phone scored further, only the extra points are added. If the phones scored for different teams, both sides are kept. The court asks before adding points only when it cannot tell which event they follow. A score that is the wrong shape is refused. The same event id is stored only once.
+- Taking turns online keeps every point. A rename or a serve change does not make the same point count twice. Points that could not be matched are listed as such, and counting them again can raise the score a second time. A point that is already in the score is not offered again.
+- Two phones that tap different teams as a set ends show the same score. The correction is only the new events, and a long one is not repeated every tap. After the match ends, only a phone that already joined can open it.
+- Two phones that tap the same team at the same time record one point, and each phone shows that score. Points from three or four phones are counted once each, in any order. Ending the match shows the server's final score. A new code disconnects phones that joined with the old one.
+
 ## 2.2.3
 
 - While a match is running, the screen stays on. Ending the match, or leaving the app, lets the phone sleep again. Coming back asks for the screen lock again, and so does the next tap on the court if the lock was dropped.

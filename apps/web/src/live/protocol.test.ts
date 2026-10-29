@@ -179,6 +179,8 @@ describe('pending live points', () => {
     expect(isTerminalCode('upgrade_required')).toBe(true);
     expect(isTerminalCode('unavailable')).toBe(false);
     expect(isTerminalCode('slow_down')).toBe(false);
+    expect(isTerminalCode('score_kept')).toBe(false);
+    expect(isTerminalMessage(ROOM_MESSAGES.score_kept)).toBe(false);
     expect(isTerminalMessage(ROOM_MESSAGES.revoked)).toBe(true);
     expect(isTerminalMessage(ROOM_MESSAGES.offline)).toBe(false);
     expect(isTerminalMessage(ROOM_MESSAGES.spectator_not_available)).toBe(true);

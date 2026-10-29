@@ -17,7 +17,7 @@ export type {
 } from './types';
 
 export { networkPrefix } from './address';
-export { canonicalEventId, createMatchId, isUuid } from './id';
+export { canonicalCausalId, canonicalEventId, createMatchId, isUuid } from './id';
 export {
   DEFAULT_TEAM_NAMES,
   MAX_TEAM_NAME_LENGTH,
@@ -59,6 +59,23 @@ export {
   tiebreakHint,
 } from './rules';
 export { assignMatchId, createMatch, matchReducer, prepareLiveLog, replayScore } from './reducer';
+export {
+  FUTURE_SLACK_MS,
+  MAX_CLOCK_OFFSET_MS,
+  MAX_PENDING_EVENTS,
+  capturedInstant,
+  claimMatchesEvent,
+  clampClockOffset,
+  decideScore,
+  isScoreEvent,
+  parseParentId,
+  parseScoreClaim,
+  planMerge,
+  sameBoard,
+  scoreBoard,
+  scoreClaimFor,
+} from './scoreSync';
+export type { CausalEvent, MergePlan, PendingScore, ScoreBoard, ScoreClaim, ScoreDecision } from './scoreSync';
 export { MAX_EVENTS, MAX_RAW_LENGTH, parseMatchLog, parseStoredEvent } from './parse';
 export type { MatchLog } from './parse';
 export { actionForEvent, canPerform, isRole } from './access';
@@ -84,7 +101,7 @@ export {
   isJoinToken,
 } from './join';
 export type { JoinDecision } from './join';
-export { ROOM_MESSAGES, connectionCloses, isRoomCode } from './messages';
+export { LIVE_PROTOCOL, ROOM_MESSAGES, connectionCloses, isRoomCode } from './messages';
 export type { RoomCode } from './messages';
 export {
   HISTORY_RETAIN_MS,

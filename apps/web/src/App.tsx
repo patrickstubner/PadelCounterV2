@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { isOpenMatch, lastChangeAt, planNewMatch, type NewMatchPlan } from '@padel/core';
+import { isOpenMatch, lastChangeAt, planNewMatch, scoreClaimFor, type NewMatchPlan } from '@padel/core';
 import { detailHistoryState, joinHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
@@ -13,7 +13,7 @@ import { Victory } from './components/Victory';
 import { listMatches } from './domain/archive';
 import { deviceId } from './domain/device';
 import { fanfareEnabled, playFanfare, setFanfareEnabled, shouldPlayFanfare } from './domain/fanfare';
-import { appendEvent } from './domain/log';
+import { appendEvent, describeEvent, replay } from './domain/log';
 import { commitNewMatch, newMatchCopy } from './domain/newMatch';
 import {
   acknowledgeCelebrated,
@@ -67,7 +67,7 @@ function useUpdateReady(): boolean {
 
 export function App() {
   const match = useMatch();
-  const room = useLive(match.liveRef, match.replaceLog, match.applyLive, match.revertLive);
+  const room = useLive(match.liveRef, match.replaceLog, match.applyLive, match.revertLive, match.readLog);
   const install = useInstallOffer();
   useWakeLock(!match.state.ended);
   const updateReady = useUpdateReady();
@@ -447,6 +447,26 @@ export function App() {
           {room.error ? (
             <p className="live-error" role="alert" data-testid="live-error">{room.error}</p>
           ) : null}
+          {room.pendingRestore.length > 0 ? (
+            <div className="restore-points" data-testid="restore-points">
+              <p>These points could not be matched. Adding them counts them again on top of the current score. They might already be in the match.</p>
+              <ul>
+                {room.pendingRestore.map((item) => (
+                  <li key={item.id}>{describeEvent(item.event)}</li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                className="btn-solid"
+                data-testid="restore-points-add"
+                onClick={() => {
+                  for (const event of room.commitRestore()) match.reapply(event);
+                }}
+              >
+                Count them again
+              </button>
+            </div>
+          ) : null}
         </div>
         <TeamPanel
           team="b"
@@ -496,8 +516,9 @@ export function App() {
             const at = Date.now();
             const by = plan.kind === 'leave' ? deviceId(localStorage) : 'host';
             const commit = commitNewMatch(plan, at, by);
+            const endEvent = commit.events[0] ?? { type: 'match/end' as const, at, by };
             const previous = commit.endOnServer && room.status === 'live' && room.host
-              ? room.finishShared(commit.events[0] ?? { type: 'match/end', at, by })
+              ? room.finishShared(endEvent, scoreClaimFor(replay(match.log), endEvent))
               : null;
             if (!commit.endOnServer) room.disconnect();
             let shared = match.log;

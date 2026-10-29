@@ -1,9 +1,9 @@
 import { DurableObject } from 'cloudflare:workers';
-import { MAX_MINTED_TOKENS, ROOM_MESSAGES, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
+import { LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, canonicalCausalId, clampClockOffset, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
-import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange } from './room';
+import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange, type RoomRecord } from './room';
 import { ensureActivityColumn, grantMintedInvite, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, type RoomSql } from './store';
 import { quotaMac, quotaSecret, safeEqualHex, sha256Hex } from './tokens';
 
@@ -29,6 +29,10 @@ interface AdmittedState {
   readonly actor: string;
   readonly tokenHash: string;
   readonly deviceId: string | null;
+  /** Server clock minus the phone clock at hello. Display only. */
+  readonly clockOffset: number;
+  /** Last time this socket was sent a score tail. Long tails are limited to one every two seconds. */
+  readonly lastResyncAt?: number;
 }
 
 type SocketState = PendingState | AdmittedState;
@@ -169,8 +173,8 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   }
 
   private async hello(ws: WebSocket, record: Record<string, unknown>, pending: SocketState | null): Promise<void> {
-    if (record.protocol !== 1 || !isJoinToken(record.token)) {
-      this.reject(ws, record.protocol === 1 ? 'bad_token' : 'upgrade_required');
+    if (record.protocol !== LIVE_PROTOCOL || !isJoinToken(record.token)) {
+      this.reject(ws, record.protocol === LIVE_PROTOCOL ? 'bad_token' : 'upgrade_required');
       return;
     }
     const room = readRoom(this.sql());
@@ -198,11 +202,20 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       this.reject(ws, result.code);
       return;
     }
+    const playedNow = replayScore(room.base, room.events.map((item) => item.event));
+    if (playedNow.ended && !result.credential.host) {
+      const known = readJoined(this.sql()).some((row) => safeEqualHex(row.tokenHash, tokenHash) && deviceId !== null && row.deviceId === deviceId);
+      if (!known) {
+        this.reject(ws, 'revoked');
+        return;
+      }
+    }
     const actor = this.assignActor(result.credential.host, tokenHash, deviceId);
     if (!actor) {
       this.reject(ws, 'unavailable');
       return;
     }
+    const clockOffset = clampClockOffset(record.clientNow, Date.now());
     const next: AdmittedState = {
       admitted: true,
       credential: result.credential,
@@ -211,11 +224,13 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       actor,
       tokenHash,
       deviceId,
+      clockOffset,
     };
     ws.serializeAttachment(next);
     const played = replayScore(room.base, room.events.map((item) => item.event));
     ws.send(JSON.stringify({
       ...result.payload,
+      clockOffset,
       names: { A: played.teams.a.name, B: played.teams.b.name },
       nameSeq: latestEventSeq(this.sql()),
     }));
@@ -321,7 +336,17 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       this.reject(ws, 'bad_token', record.eventId);
       return;
     }
-    const result = applyLiveEvent(room, invite, state.actor, record.eventId, record.event, Date.now());
+    const result = applyLiveEvent(
+      room,
+      invite,
+      state.actor,
+      record.eventId,
+      record.event,
+      Date.now(),
+      record.claim,
+      record.parentId,
+      state.clockOffset,
+    );
     if (!result.ok) {
       this.reject(ws, result.code, record.eventId);
       return;
@@ -333,8 +358,17 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         ensureActivityColumn(sql);
         if (result.event.event.type === 'match/end') {
           const endedAt = Date.now();
-          revokePlayerInvites(sql, endedAt);
-          await d1MatchIndex(this.env.DB).revokeSharedAccess(room.base.matchId, endedAt);
+          const keep = readJoined(sql).map((row) => row.tokenHash);
+          const kept = new Set(keep);
+          const open = readRoom(sql);
+          if (open) {
+            for (const invite of open.invites) {
+              if (!invite.host && invite.revokedAt === null && !kept.has(invite.tokenHash)) {
+                revokeInviteHash(sql, invite.tokenHash, endedAt);
+              }
+            }
+          }
+          await d1MatchIndex(this.env.DB).revokeSharedAccess(room.base.matchId, endedAt, keep);
         }
       } catch {
         this.reject(ws, 'unavailable', record.eventId);
@@ -347,13 +381,32 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         event: result.event.event,
         duplicate: result.duplicate,
         players: this.admittedCount(),
+        reconciled: result.reconciled,
       }),
     );
-    this.broadcast(payload, ws);
-    try {
-      ws.send(payload);
-    } catch {
-      // The sender already showed the point. The ack is only for reconciliation.
+    // An already-counted point is not a new score. Other phones must not apply it.
+    // A merged point was placed on a board this phone had not seen. The sender reloads the tail.
+    if (result.reconciled === 'already' || result.reconciled === 'merged') {
+      if (result.reconciled === 'merged') this.broadcast(payload, ws);
+      try {
+        ws.send(payload);
+        const parsedParent = canonicalCausalId(record.parentId);
+        const fork = parsedParent !== undefined
+          ? parsedParent
+          : result.reconciled === 'merged'
+            ? result.record.events[result.record.events.length - 2]?.eventId ?? null
+            : result.record.events[result.record.events.length - 1]?.eventId ?? null;
+        this.sendTail(ws, state, result.record, fork);
+      } catch {
+        // The sender already showed the point. The next snapshot replaces it.
+      }
+    } else {
+      this.broadcast(payload, ws);
+      try {
+        ws.send(payload);
+      } catch {
+        // The sender already showed the point. The ack is only for reconciliation.
+      }
     }
     if (!result.duplicate) {
       const at = result.event.event.at;
@@ -368,6 +421,29 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         }
       }
     }
+  }
+
+  /**
+   * Events after the fork only. A long tail is sent at most once every two seconds;
+   * a short tail is sent every time so a set-ending merge can correct the sender.
+   */
+  private sendTail(ws: WebSocket, state: AdmittedState, record: RoomRecord, fork: string | null): void {
+    const index = fork === null ? -1 : record.events.findIndex((item) => item.eventId === fork);
+    const suffix = index >= 0 ? record.events.slice(index + 1) : record.events;
+    const now = Date.now();
+    const previous = state.lastResyncAt ?? 0;
+    if (suffix.length > 8 && previous !== 0 && now - previous < 2_000) return;
+    ws.serializeAttachment({ ...state, lastResyncAt: now });
+    ws.send(JSON.stringify({
+      type: 'tail',
+      since: index >= 0 ? fork : null,
+      protocol: LIVE_PROTOCOL,
+      host: state.credential.host,
+      players: this.admittedCount(),
+      events: suffix.map((item) => item.event),
+      eventIds: suffix.map((item) => item.eventId),
+      nameSeq: latestEventSeq(this.sql()),
+    }));
   }
 
   /** Deliver to admitted court sockets. One closed peer must not stop the rest. */
@@ -426,7 +502,20 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       revokePlayerInvites(sql, now);
       insertInvite(sql, created);
     });
+    this.closeRevokedPlayers();
     return json(201, { role: 'player' satisfies Role, expiresAt: issued.expiresAt });
+  }
+
+  /** A new code revokes the old one. Phones that joined with it leave the live match now. */
+  private closeRevokedPlayers(): void {
+    const room = readRoom(this.sql());
+    if (!room) return;
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      const state = this.readState(socket);
+      if (!state?.admitted || state.credential.host) continue;
+      const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, state.tokenHash));
+      if (!invite || invite.revokedAt !== null) this.reject(socket, 'revoked');
+    }
   }
 
   private assignActor(host: boolean, tokenHash: string, deviceId: string | null): string | null {

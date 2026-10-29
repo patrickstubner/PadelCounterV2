@@ -1,3 +1,6 @@
+/** Hello `protocol` the worker accepts. Older phones are told to update. */
+export const LIVE_PROTOCOL = 2;
+
 /** Fixed sentences shared by the server and the UI. The client renders these, not free text from the network. */
 export const ROOM_MESSAGES = {
   match_full: 'This match is full.',
@@ -8,6 +11,7 @@ export const ROOM_MESSAGES = {
   spectator_not_available: 'View-only links are not available yet.',
   forbidden: 'You cannot change the score from this connection.',
   not_applied: 'That change was not applied.',
+  score_kept: 'The other phone already changed this match. This phone is using that score.',
   slow_down: 'Too many changes. Wait a moment.',
   code_limited: 'Too many tries from this network. Use the QR link instead.',
   upgrade_required: 'Update the app to keep scoring.',

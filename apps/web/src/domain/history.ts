@@ -72,7 +72,7 @@ export function historyRows(start: MatchState, events: readonly MatchEvent[]): H
     const after = matchReducer(before, event);
     state = after;
     rows.push({
-      at: event.at,
+      at: event.capturedAt ?? event.at,
       label: rowLabel(event, after),
       who: whoLabel(event.by),
       score: markedSets(before, after),

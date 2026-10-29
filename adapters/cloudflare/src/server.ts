@@ -1,6 +1,7 @@
 import {
   HOST_TOKEN_TTL_MS,
   JOIN_TOKEN_TTL_MS,
+  LIVE_PROTOCOL,
   ROOM_MESSAGES,
   assignMatchId,
   joinCodeCompact,
@@ -97,7 +98,7 @@ export async function handleFetch(request: Request, env: ServerEnv): Promise<Res
   try {
     if (kind === 'health') {
       return withCors(
-        Response.json({ ok: true, service: 'padel-counter', protocol: 1 }),
+        Response.json({ ok: true, service: 'padel-counter', protocol: LIVE_PROTOCOL }),
         origin,
         environment,
       );
@@ -215,7 +216,7 @@ async function createMatch(request: Request, env: ServerEnv): Promise<Response> 
           matchId,
           hostToken,
           expiresAt: payload.expiresAt ?? expiresAt,
-          protocol: 1,
+          protocol: LIVE_PROTOCOL,
           reconnectOffered: reconnect.offered,
           reconnectPlayers: reconnect.players,
         },
