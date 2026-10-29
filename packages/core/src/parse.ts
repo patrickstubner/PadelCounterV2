@@ -1,4 +1,4 @@
-import { isUuid } from './id';
+import { canonicalCausalId, isUuid } from './id';
 import { isValidStoredName, storedTeamName } from './names';
 import { withActor } from './policy';
 import { isPlausibleSetScore } from './rules';
@@ -108,21 +108,43 @@ function parseState(value: unknown): MatchState | null {
   };
 }
 
+function withClock(event: MatchEvent, record: Record<string, unknown>): MatchEvent | null {
+  let next = event;
+  if (record.parentId !== undefined) {
+    const parentId = canonicalCausalId(record.parentId);
+    if (parentId === undefined) return null;
+    next = { ...next, parentId };
+  }
+  if (record.capturedAt !== undefined) {
+    if (!isTimestamp(record.capturedAt)) return null;
+    next = { ...next, capturedAt: record.capturedAt };
+  }
+  return next;
+}
+
 /** Known court events only. Undo and any other type are rejected. */
 export function parseStoredEvent(value: unknown): MatchEvent | null {
   const record = plain(value);
   if (!record || !isTimestamp(record.at)) return null;
+  const parsed = parseEventBody(record);
+  if (!parsed) return null;
+  return withClock(parsed, record);
+}
+
+function parseEventBody(record: Record<string, unknown>): MatchEvent | null {
+  if (!isTimestamp(record.at)) return null;
+  const at = record.at;
 
   switch (record.type) {
     case 'game/increment':
     case 'game/decrement': {
       if (!isTeamId(record.team)) return null;
-      const event = { type: record.type, team: record.team, at: record.at };
+      const event = { type: record.type, team: record.team, at };
       return withActor(event, record.by);
     }
     case 'set/select': {
       if (!isSetIndex(record.index)) return null;
-      const event = { type: 'set/select' as const, index: record.index, at: record.at };
+      const event = { type: 'set/select' as const, index: record.index, at };
       return withActor(event, record.by);
     }
     case 'team/rename': {
@@ -131,31 +153,31 @@ export function parseStoredEvent(value: unknown): MatchEvent | null {
         type: 'team/rename' as const,
         team: record.team,
         name: storedTeamName(record.name, record.team),
-        at: record.at,
+        at,
       };
       return withActor(event, record.by);
     }
     case 'match/reset':
     case 'match/new': {
       if (typeof record.matchId !== 'string' || !isUuid(record.matchId)) return null;
-      const event = { type: record.type, matchId: record.matchId.toLowerCase(), at: record.at };
+      const event = { type: record.type, matchId: record.matchId.toLowerCase(), at };
       return withActor(event, record.by);
     }
     case 'match/end': {
-      const event = { type: 'match/end' as const, at: record.at };
+      const event = { type: 'match/end' as const, at };
       return withActor(event, record.by);
     }
     case 'match/resume': {
-      const event = { type: 'match/resume' as const, at: record.at };
+      const event = { type: 'match/resume' as const, at };
       return withActor(event, record.by);
     }
     case 'serve/set': {
       if (record.team === null && record.player === null) {
-        const cleared = { type: 'serve/set' as const, team: null, player: null, at: record.at };
+        const cleared = { type: 'serve/set' as const, team: null, player: null, at };
         return withActor(cleared, record.by);
       }
       if (!isTeamId(record.team) || !isPlayerSlot(record.player)) return null;
-      const event = { type: 'serve/set' as const, team: record.team, player: record.player, at: record.at };
+      const event = { type: 'serve/set' as const, team: record.team, player: record.player, at };
       return withActor(event, record.by);
     }
     default:

@@ -2,9 +2,8 @@
 
 ## 2.2.4
 
-- A live point now says which score it came from and which score it produces. When a phone reconnects, a point whose result is already on the match is not counted again. Two phones that both move 4:1 to 4:3 while one of them is offline stay at 4:3.
-- If one phone scored further than the other, only the extra points are added. A correction, a set change, or a real disagreement is handled on purpose: the match on the server stays as it is when the two phones diverged, and that phone shows “The other phone already changed this match. This phone is using that score.” The history of the match is the server’s list of points. A point that was not applied is not written into that list.
-- A score that is the wrong shape, the wrong type, or not a possible padel score is refused. The same event id is still stored only once.
+- A live point names the server point it was scored on, and the score before and after. Two phones that both move 4:1 to 4:3 stay at 4:3. Points only one phone recorded are added, including a correction. An offline plus and minus of the same game do not undo the other phone's point. History shows when the point was tapped, in this phone's local time.
+- If one phone scored further, only the extra points are added. If the phones scored for different teams, both sides are kept. The court asks before adding points only when it cannot tell which event they follow. A score that is the wrong shape is refused. The same event id is stored only once.
 
 ## 2.2.3
 

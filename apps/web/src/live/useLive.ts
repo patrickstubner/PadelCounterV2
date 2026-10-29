@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, MAX_PENDING_EVENTS, reconcilePending, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, type MatchEvent, type MatchLog, type ScoreClaim } from '@padel/core';
+import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, type CausalEvent, type MatchEvent, type MatchLog, type ScoreClaim } from '@padel/core';
 import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
@@ -41,6 +41,8 @@ export interface LiveController {
   readonly joinError: string | null;
   readonly joining: boolean;
   readonly offer: string | null;
+  readonly pendingRestore: readonly { readonly id: string; readonly event: MatchEvent }[];
+  readonly clearRestore: () => void;
   readonly share: (log: MatchLog, options?: ShareOptions) => void;
   readonly rotate: () => void;
   readonly connect: (token: string) => void;
@@ -82,6 +84,7 @@ interface PendingPoint extends PendingLiveEvent<MatchEvent> {
   sentAt: number;
   resent: boolean;
   claim: ScoreClaim | null;
+  parentId: string | null;
 }
 
 function apiBase(): string {
@@ -107,6 +110,7 @@ export function useLive(
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [offer, setOffer] = useState<string | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<readonly { id: string; event: MatchEvent }[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
   const hostRef = useRef<{
     matchId: string;
@@ -135,6 +139,7 @@ export function useLive(
   const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seenRef = useRef(new Set<string>());
   const conflictNote = useRef(false);
+  const headRef = useRef<string | null>(null);
   const unackedRef = useRef<PendingPoint[]>([]);
   const queueRef = useRef<PendingPoint[]>([]);
   const wakeRef = useRef<() => void>(() => undefined);
@@ -327,6 +332,7 @@ export function useLive(
       : {
           type: 'event',
           eventId: item.id,
+          parentId: item.parentId,
           event: item.event,
           ...(item.claim ? { claim: item.claim } : {}),
         };
@@ -348,6 +354,7 @@ export function useLive(
         noteError(ROOM_MESSAGES.slow_down);
         return true;
       }
+      const parentId = headRef.current;
       const point: PendingPoint = {
         id: eventId,
         event: courtEvent,
@@ -356,41 +363,81 @@ export function useLive(
         sentAt: Date.now(),
         resent: false,
         claim,
+        parentId,
       };
+      headRef.current = eventId;
       seenRef.current.add(eventId);
       unackedRef.current.push(point);
       applyRef.current(courtEvent);
       const ws = socketRef.current;
-      if (!ws || !sendPoint(ws, point)) {
+      const queuedIds = new Set(queueRef.current.map((item) => item.id));
+      const waiting = !readyRef.current || unackedRef.current.some((item) => isScoreEvent(item.event.type) && item.id !== eventId && !queuedIds.has(item.id));
+      if (waiting || !ws || !sendPoint(ws, point)) {
         queueRef.current.push(point);
-        if (hadLive.current) setStatus('connecting');
-        wakeRef.current();
+        if (hadLive.current && !waiting) {
+          setStatus('connecting');
+          wakeRef.current();
+        }
       }
       return true;
     };
   };
 
-  const resendOutstanding = (ws: WebSocket, matchId: string, log: MatchLog) => {
+  const flushQueued = (ws: WebSocket) => {
+    if (!readyRef.current) return;
+    const rest: PendingPoint[] = [];
+    let blocked = unackedRef.current.some((item) => isScoreEvent(item.event.type) && !queueRef.current.some((queued) => queued.id === item.id));
+    for (const item of queueRef.current) {
+      if (blocked) {
+        rest.push(item);
+        continue;
+      }
+      if (!sendPoint(ws, item)) {
+        rest.push(item);
+        if (isScoreEvent(item.event.type)) blocked = true;
+        continue;
+      }
+      if (isScoreEvent(item.event.type)) blocked = true;
+    }
+    queueRef.current = rest;
+  };
+
+  const resendOutstanding = (ws: WebSocket, matchId: string, log: MatchLog, eventIds: readonly string[]) => {
     const token = tokenRef.current?.token ?? '';
     const outstanding = unackedAfterSnapshot(
       [...unackedRef.current, ...queueRef.current],
       token,
       matchId,
       [...seenRef.current],
-    ).map((item): PendingPoint => ({ ...item, claim: item.claim ?? null, sentAt: Date.now(), resent: false }));
-    const plan = reconcilePending(
-      replayScore(log.base, log.events),
-      outstanding.map((item) => ({ id: item.id, event: item.event, claim: item.claim })),
+    ).map((item): PendingPoint => ({ ...item, claim: item.claim ?? null, parentId: item.parentId ?? null, sentAt: Date.now(), resent: false }));
+    const server: CausalEvent[] = log.events.flatMap((event, index) => {
+      const id = eventIds[index];
+      if (!id) return [];
+      const previous = index === 0 ? null : eventIds[index - 1] ?? null;
+      return [{
+        id,
+        parentId: event.parentId === undefined ? previous : event.parentId,
+        event,
+        claim: null,
+      }];
+    });
+    const plan = planMerge(
+      log.base,
+      server,
+      outstanding.map((item) => ({ id: item.id, parentId: item.parentId, event: item.event, claim: item.claim })),
     );
-    const keep = new Set(plan.send.map((item) => item.id));
-    const sending = outstanding.filter((item) => keep.has(item.id));
+    const sendById = new Map(plan.send.map((item) => [item.id, item]));
+    const sending = outstanding.flatMap((item) => {
+      const planned = sendById.get(item.id);
+      return planned ? [{ ...item, parentId: planned.parentId }] : [];
+    });
     queueRef.current = [];
     unackedRef.current = sending;
-    if (plan.reason === 'conflict') {
-      conflictNote.current = true;
-      noteError(ROOM_MESSAGES.score_kept);
+    if (plan.reason === 'ambiguous') {
+      setPendingRestore(plan.ambiguous.map((item) => ({ id: item.id, event: item.event })));
       return;
     }
+    setPendingRestore([]);
     for (const item of sending) {
       if (!sendPoint(ws, item)) queueRef.current.push(item);
     }
@@ -419,6 +466,7 @@ export function useLive(
     setMatchCode(null);
     setPlayers(0);
     setError(null);
+    setPendingRestore([]);
     rememberOffer(null);
   };
 
@@ -516,7 +564,7 @@ export function useLive(
       const ws = new WebSocket(socketUrl(api, ticket));
       socketRef.current = ws;
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'hello', protocol: 1, token, device: thisDevice() }));
+        ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token, device: thisDevice(), clientNow: Date.now() }));
       };
       ws.onmessage = (event) => {
         if (socketRef.current !== ws) return;
@@ -534,10 +582,14 @@ export function useLive(
         if (notice.kind === 'pong') return;
         if (notice.kind === 'error') {
           if (notice.code === 'score_kept') {
-            clearPending();
-            conflictNote.current = true;
-            noteError(notice.message);
-            reconnectNowRef.current();
+            const queued = new Set(queueRef.current.map((item) => item.id));
+            const rejected = unackedRef.current.find((item) => item.id === notice.eventId);
+            unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId && queued.has(item.id));
+            if (rejected) {
+              seenRef.current.delete(rejected.id);
+              setPendingRestore((current) => [...current, { id: rejected.id, event: rejected.event }].slice(0, MAX_PENDING_EVENTS));
+            }
+            noteError(ROOM_MESSAGES.score_kept);
             return;
           }
           if (notice.code === 'slow_down') slowDown.current = true;
@@ -585,6 +637,7 @@ export function useLive(
           seenRef.current.add(notice.eventId);
           setPlayers(notice.players);
           clearSlowBanner();
+          flushQueued(ws);
           return;
         }
         if (notice.kind === 'rename') {
@@ -600,6 +653,7 @@ export function useLive(
           const matchId = notice.log.base.matchId.toLowerCase();
           matchRef.current = matchId;
           seenRef.current = new Set(notice.eventIds.map((id) => id.toLowerCase()));
+          headRef.current = notice.eventIds[notice.eventIds.length - 1] ?? null;
           replaceRef.current(notice.log);
           readyRef.current = true;
           hadLive.current = true;
@@ -632,7 +686,7 @@ export function useLive(
           opening.current = false;
           clearWake();
           armSender();
-          resendOutstanding(ws, matchId, notice.log);
+          resendOutstanding(ws, matchId, notice.log, notice.eventIds);
           if (conflictNote.current) {
             conflictNote.current = false;
             noteError(ROOM_MESSAGES.score_kept);
@@ -877,6 +931,8 @@ export function useLive(
     joinError,
     joining,
     offer,
+    pendingRestore,
+    clearRestore: () => setPendingRestore([]),
     disconnect,
     acceptOffer: () => {
       const token = offerRef.current;
@@ -899,6 +955,7 @@ export function useLive(
         ws.send(JSON.stringify({
           type: 'event',
           eventId: createMatchId(),
+          parentId: headRef.current,
           event,
           ...(claim ? { claim } : {}),
         }));

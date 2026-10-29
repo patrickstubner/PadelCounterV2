@@ -1,15 +1,39 @@
 # Live score sync
 
-Two phones can score the same match. A phone applies a point on its own screen immediately and sends it when the socket is open. If the socket is down, the point stays in a queue of at most 64. This note is the rule for what happens when that queue meets the match the server already has.
+Two phones can score the same match. A point is applied on the phone that tapped it, and sent when the socket is open. If the socket is down, the point stays in a queue of at most 64.
+
+## Which signal decides a merge
+
+Two designs were compared.
+
+**Clocks.** Each phone sends its time. The server measures the offset and treats two reports of the same game within about a minute as one point. A padel game does take longer than a minute, so the window is plausible. It is still the wrong primary key. A phone clock can jump, two different games can be entered inside the window, and the same game can be entered late. The offset is useful for showing a time. It is a poor way to decide whether a point already exists.
+
+**Parent chain.** Every score event names the server event it was built on, the way a commit names its parent. The server log is a line of those parents, ordered by the server clock (`at` is when the server accepted the event). That chain is unambiguous:
+
+- The same event id is already stored.
+- The parent is the current head, and the board before the point is that head. The point is new. Append it.
+- The parent is an earlier event, and the phone's points repeat what the server already did from that parent. Those points are the same ones. Do not append them.
+- The parent is an earlier event, and the phone also has points the server does not. Append those points on top of the server's later points. A minus that only the offline phone made is one of those points.
+- A plus and a later minus of the same team in the same set, on the offline phone, cancel before this comparison. The minus was undoing that phone's own plus. If the plus was the same point the other phone already stored, the minus must not subtract it. So an offline +1/−1 against an online +1 stays at the online score (4:1 then one game is 4:2, not 4:1). An offline +2/−1 against an online +2 stays at 4:3.
+- The parent id is missing from the server log, or the queued events do not form one chain. That is the only ambiguous case. Nothing is added until someone taps **Add them**.
+
+The phone's clock and the offset are not read by this decision. Server timestamps order the log. They do not decide that two branches are the same point.
+
+## Patrick's 4:3 case
+
+The score is 4:1. Phone A is offline and records two games for team B (4:2, then 4:3). Phone B records the same two games online. A's events name the same parent as B's, and the boards match. Both of A's points are the ones already stored. The match stays **4:3**. It does not become 4:5.
+
+If A recorded three games and B recorded two, the first two match and the third is appended. The match becomes 4:4.
+
+If A recorded games for team B and B recorded a game for team A from the same parent, both are kept. Neither phone's points are dropped.
 
 ## What a score event carries
-
-A score event is `game/increment`, `game/decrement`, `set/select`, `match/end`, or `match/resume`. The message is:
 
 ```json
 {
   "type": "event",
   "eventId": "…uuid…",
+  "parentId": "…the event this point was scored on, or null…",
   "event": { "type": "game/increment", "team": "b", "at": 1700000000000 },
   "claim": {
     "baseRevision": 5,
@@ -19,42 +43,27 @@ A score event is `game/increment`, `game/decrement`, `set/select`, `match/end`, 
 }
 ```
 
-`before` is the board the phone scored from. `after` is the board that point produces, including which set is open and whether the match is ended. `baseRevision` is the revision the phone had for `before`. The server checks that it is an integer from 0 through 10,000,000. The board decides. A matching revision is not required, because a phone that was offline numbers its own later points, and a rename moves the revision without moving the score.
+`parentId` is a lowercase UUID, a seed id such as `seed-3`, or null. Anything else is rejected. `before` and `after` are the three set scores, the open set, and whether the match has ended. `after` must be what the event actually does to `before`. A score outside a possible set, a wrong type, or an extra field is rejected and not stored.
 
-The server checks the shape before it stores anything. The only keys are the ones above. Each set score has to be a possible padel score (the same rule as the court: 6 with a two-game lead, 7–5, or 7–6). `after` must be what this event actually does to `before`. Anything else is `not_applied` and is not stored. The same event id is still stored only once, and a repeat of that id does not look at the claim again.
+Hello uses `protocol: 2`. A phone that still says `protocol: 1` is told to update. The socket closes.
 
-A phone on 2.2.3 sends no claim. The server refuses that score. Serve changes and team renames are not score events.
+Ending a match does not depend on the scoreboard matching. `match/end` is stored when the match is still open.
 
-## Reconnect
+## Time is for History
 
-The server sends the current log in the snapshot. The phone compares its queue with that board before it sends the queue again.
+On hello the phone sends `clientNow`. The server stores `serverNow - clientNow` for that socket, clamped to ±12 hours. A missing or nonsense clock stores an offset of 0. Twelve hours covers a timezone mistake. It does not accept a clock set to another year.
 
-The score events in the queue are one chain: each `after` is the next event’s `before`.
+Each event's `at` on the wire is the phone's capture time. The server stores two instants:
 
-- The server board is already the last `after`. Every score event in the queue is dropped. Nothing is sent. This is the case of two phones counting the same points. 4:1, then both add two games for the same team, ends at 4:3. It does not become 4:5.
-- The server board is some earlier `after` in the chain, and the next event still starts from that board. The phone sends only the tail. Three offline games against two already stored keeps the third. A set both phones already closed, followed by one more game on the offline phone, keeps that game.
-- The server board is the first `before`. The queue is still the next points. It is sent.
-- The server board is not on the chain. The phones diverged. The phone sends nothing and shows “The other phone already changed this match. This phone is using that score.”
+- `at` is the server clock when the event was accepted. The one-day close and the log order use this.
+- `capturedAt` is the capture time plus the offset, clamped so it is not more than five seconds in the future and not before the match was created.
 
-A rename or a serve in the queue is still sent when the score chain matches, because it does not change the board. A diverged chain drops those too. The server’s log is loaded in their place.
+History shows `capturedAt` when it is present, otherwise `at`, in the timezone of the phone that is reading it. An offline point keeps the time it was tapped, not the time it was uploaded. The offset is not used to merge.
 
-The server repeats the check on each event it receives, so a phone that sends the whole queue anyway cannot double-count:
+## Ambiguous chains
 
-- `after` is already the stored board: acknowledge `duplicate` and `reconciled: "already"`. Do not insert. Do not tell the other phones. Their screens must not add the point.
-- `before` is the stored board: insert the point once and broadcast it.
-- Neither: `score_kept`. Do not insert. The phone drops the rest of its queue, reconnects, and loads the server match.
+If the parent is not in the server log, or the queue is not one chain, or the queue is longer than 64, nothing is merged. The court lists those points and shows **Add them**. That button appends them, once, on top of the current server score. It does not try to guess. Sixty-four is the most the phone will queue; a further tap is not applied. The server still stops at 500 stored events.
 
-A point the server refuses with `not_applied` (a bad claim, or a point the game rules reject) is removed on that phone only. `score_kept` is not that. It means the match moved, and this phone now shows the server’s match.
+A point the server marks `duplicate` with `reconciled: "already"` is not broadcast. Another phone must not add it a second time. The phone that receives `duplicate: true` does not apply it again.
 
-## Conflict
-
-A conflict is any queued chain whose boards are not the server board and do not start at the server board. The two usual cases:
-
-- The phones added games for different teams from the same score.
-- One phone took a game back and the other added a different game.
-
-The server board wins. The client replaces its log with the snapshot and drops the stale events. The dropped events are not written into the match history. The history is the server log, in order, with who made each change. Adding a stored note for every rejected event would let a client fill the 500-event cap. The fixed sentence on the phone is the note the players see.
-
-## Limits
-
-The phone queues at most 64 unsent events. A further tap is not applied and the court says to wait. The server still accepts at most 500 stored events, about 8 KB per socket message, and 10 messages a second on one socket. An event that is already counted, or that conflicts, does not write a row.
+A tap made while an earlier score is still waiting for an answer stays on the phone and is sent after that answer. It is not dropped between reconnect and the acknowledgement.

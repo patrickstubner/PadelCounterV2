@@ -407,8 +407,8 @@ function offlineSteps(start: MatchState, teams: readonly TeamId[], type: 'game/i
   return steps;
 }
 
-function pushClaim(record: RoomRecord, id: number, event: MatchEvent, claim: ScoreClaim | undefined) {
-  return applyPlay(record, { role: 'player', host: true }, eventId(id), event, NOW + id, 'host', claim);
+function pushClaim(record: RoomRecord, id: number, event: MatchEvent, claim: ScoreClaim | undefined, parent?: string | null) {
+  return applyPlay(record, { role: 'player', host: true }, eventId(id), event, NOW + id, 'host', claim, parent);
 }
 
 describe('score reconcile', () => {
@@ -419,28 +419,25 @@ describe('score reconcile', () => {
     expect(boardOf(atFourOne).sets[0]).toEqual({ a: 4, b: 1 });
     const online = applyTeams(atFourOne, ['b', 'b'], 10);
     expect(boardOf(online).sets[0]).toEqual({ a: 4, b: 3 });
+    const fork = atFourOne.events[atFourOne.events.length - 1]?.eventId ?? null;
     const queued = offlineSteps(replayScore(atFourOne.base, atFourOne.events.map((item) => item.event)), ['b', 'b']);
-    const first = pushClaim(online, 30, queued[0]!.event, queued[0]!.claim);
-    expect(first.ok).toBe(false);
-    if (!first.ok) expect(first.code).toBe('score_kept');
-    const second = pushClaim(online, 31, queued[1]!.event, queued[1]!.claim);
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    expect(second.duplicate).toBe(true);
-    expect(second.reconciled).toBe('already');
-    expect(second.record.events).toHaveLength(online.events.length);
-    expect(boardOf(second.record).sets[0]).toEqual({ a: 4, b: 3 });
-    expect(boardOf(second.record).sets[0]).not.toEqual({ a: 4, b: 5 });
+    const first = pushClaim(online, 30, queued[0]!.event, queued[0]!.claim, fork);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.reconciled).toBe('already');
+    const second = pushClaim(online, 31, queued[1]!.event, queued[1]!.claim, '00000000-0000-4000-8000-000000000099');
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.code).toBe('score_kept');
+    expect(boardOf(online).sets[0]).toEqual({ a: 4, b: 3 });
   });
 
   it('applies only the offline point the server has not counted', () => {
     const atFourOne = applyTeams(started(), fourOne, 1);
     const online = applyTeams(atFourOne, ['b', 'b'], 10);
+    const fork = atFourOne.events[atFourOne.events.length - 1]?.eventId ?? null;
     const queued = offlineSteps(replayScore(atFourOne.base, atFourOne.events.map((item) => item.event)), ['b', 'b', 'b']);
-    const rejected = pushClaim(online, 40, queued[0]!.event, queued[0]!.claim);
-    expect(rejected.ok).toBe(false);
-    const already = pushClaim(online, 41, queued[1]!.event, queued[1]!.claim);
-    expect(already.ok && already.reconciled).toBe('already');
+    const rejected = pushClaim(online, 40, queued[0]!.event, queued[0]!.claim, fork);
+    expect(rejected.ok && rejected.reconciled).toBe('already');
     const extra = pushClaim(online, 42, queued[2]!.event, queued[2]!.claim);
     expect(extra.ok).toBe(true);
     if (!extra.ok) return;
@@ -452,12 +449,13 @@ describe('score reconcile', () => {
     const atFourThree = applyTeams(started(), [...fourOne, 'b', 'b'], 1);
     expect(boardOf(atFourThree).sets[0]).toEqual({ a: 4, b: 3 });
     const start = replayScore(atFourThree.base, atFourThree.events.map((item) => item.event));
+    const fork = atFourThree.events[atFourThree.events.length - 1]?.eventId ?? null;
     const minus = offlineSteps(start, ['a'], 'game/decrement');
-    const applied = pushClaim(atFourThree, 50, minus[0]!.event, minus[0]!.claim);
+    const applied = pushClaim(atFourThree, 50, minus[0]!.event, minus[0]!.claim, fork);
     expect(applied.ok).toBe(true);
     if (!applied.ok) return;
     expect(boardOf(applied.record).sets[0]).toEqual({ a: 3, b: 3 });
-    const again = pushClaim(applied.record, 51, minus[0]!.event, minus[0]!.claim);
+    const again = pushClaim(applied.record, 51, minus[0]!.event, minus[0]!.claim, fork);
     expect(again.ok).toBe(true);
     if (!again.ok) return;
     expect(again.reconciled).toBe('already');
@@ -467,12 +465,13 @@ describe('score reconcile', () => {
   it('keeps the next game after a set both phones already closed', () => {
     const atFiveFour = applyTeams(started(), ['a', 'a', 'a', 'a', 'a', 'b', 'b', 'b', 'b'], 1);
     const start = replayScore(atFiveFour.base, atFiveFour.events.map((item) => item.event));
+    const fork = atFiveFour.events[atFiveFour.events.length - 1]?.eventId ?? null;
     const queued = offlineSteps(start, ['a', 'a']);
-    const online = pushClaim(atFiveFour, 60, queued[0]!.event, queued[0]!.claim);
+    const online = pushClaim(atFiveFour, 60, queued[0]!.event, queued[0]!.claim, fork);
     expect(online.ok).toBe(true);
     if (!online.ok) return;
     expect(boardOf(online.record).activeSet).toBe(1);
-    const repeated = pushClaim(online.record, 61, queued[0]!.event, queued[0]!.claim);
+    const repeated = pushClaim(online.record, 61, queued[0]!.event, queued[0]!.claim, fork);
     expect(repeated.ok && repeated.reconciled).toBe('already');
     const nextGame = pushClaim(online.record, 62, queued[1]!.event, queued[1]!.claim);
     expect(nextGame.ok).toBe(true);
@@ -482,18 +481,22 @@ describe('score reconcile', () => {
     expect(boardOf(nextGame.record).activeSet).toBe(1);
   });
 
-  it('keeps the server board when the phones diverge', () => {
+  it('adds the offline points when the phones scored for different teams', () => {
     const atFourOne = applyTeams(started(), fourOne, 1);
     const start = replayScore(atFourOne.base, atFourOne.events.map((item) => item.event));
     const online = applyTeams(atFourOne, ['a'], 70);
     expect(boardOf(online).sets[0]).toEqual({ a: 5, b: 1 });
+    const fork = atFourOne.events[atFourOne.events.length - 1]?.eventId ?? null;
     const queued = offlineSteps(start, ['b', 'b']);
-    const first = pushClaim(online, 80, queued[0]!.event, queued[0]!.claim);
-    const second = pushClaim(online, 81, queued[1]!.event, queued[1]!.claim);
-    expect(first.ok).toBe(false);
-    expect(second.ok).toBe(false);
-    if (!first.ok) expect(first.code).toBe('score_kept');
-    expect(boardOf(online).sets[0]).toEqual({ a: 5, b: 1 });
+    const first = pushClaim(online, 80, queued[0]!.event, queued[0]!.claim, fork);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const after = replayScore(first.record.base, first.record.events.map((item) => item.event));
+    const secondEvent = queued[1]!.event;
+    const second = pushClaim(first.record, 81, secondEvent, scoreClaimFor(after, secondEvent) ?? undefined);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(boardOf(second.record).sets[0]).toEqual({ a: 5, b: 3 });
   });
 
   it('rejects a malformed or inconsistent claim and still dedupes an event id', () => {

@@ -1,4 +1,4 @@
-import { CODE_ALARM_GLOBAL, CODE_ATTEMPTS_PER_PREFIX, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, joinWindow, matchReducer, parseLiveTeamName, replayScore, scoreBoard, scoreClaimFor, type MatchEvent, type MatchState, type ScoreBoard, type ScoreClaim, type TeamId } from '@padel/core';
+import { CODE_ALARM_GLOBAL, CODE_ATTEMPTS_PER_PREFIX, LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, joinWindow, matchReducer, parseLiveTeamName, replayScore, scoreBoard, scoreClaimFor, type MatchEvent, type MatchState, type ScoreBoard, type ScoreClaim, type TeamId } from '@padel/core';
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
@@ -68,7 +68,7 @@ async function ticketFor(token: string, device: string): Promise<string> {
   return body.ticket;
 }
 
-function inbox(ws: WebSocket): { waitFor(match: (message: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> } {
+function inbox(ws: WebSocket): { waitFor(match: (message: Record<string, unknown>) => boolean): Promise<Record<string, unknown>>; all(): Record<string, unknown>[] } {
   const messages: Record<string, unknown>[] = [];
   let notify = (): void => {};
   ws.addEventListener('message', (event: MessageEvent) => {
@@ -76,6 +76,7 @@ function inbox(ws: WebSocket): { waitFor(match: (message: Record<string, unknown
     notify();
   });
   return {
+    all: () => messages.slice(),
     waitFor(match) {
       const start = Date.now();
       return new Promise((resolve, reject) => {
@@ -106,9 +107,9 @@ async function connect(token: string, device: string): Promise<{ ws: WebSocket; 
   if (!ws) throw new Error(`websocket upgrade failed: ${response.status}`);
   ws.accept();
   const messages = inbox(ws);
-  ws.send(JSON.stringify({ type: 'hello', protocol: 1, token, device }));
+  ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token, device, clientNow: Date.now() }));
   const snapshot = await messages.waitFor((message) => message.type === 'snapshot');
-  expect(snapshot.protocol).toBe(1);
+  expect(snapshot.protocol).toBe(LIVE_PROTOCOL);
   return { ws, messages };
 }
 
@@ -365,7 +366,7 @@ describe('live match in workerd', () => {
     expect(JSON.stringify(pending)).not.toContain(address);
 
     const messages = inbox(ws);
-    ws.send(JSON.stringify({ type: 'hello', protocol: 1, token: created.hostToken, device: 'd33333333' }));
+    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: created.hostToken, device: 'd33333333' }));
     await messages.waitFor((message) => message.type === 'snapshot');
     const admitted = await readIps();
     expect(admitted).toContain(expected);
@@ -419,9 +420,9 @@ describe('short match codes', () => {
     if (!socket) throw new Error('socket missing');
     socket.accept();
     const messages = inbox(socket);
-    socket.send(JSON.stringify({ type: 'hello', protocol: 1, token, device: 'd23232323' }));
+    socket.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token, device: 'd23232323' }));
     const snapshot = await messages.waitFor((message) => message.type === 'snapshot');
-    expect(snapshot.protocol).toBe(1);
+    expect(snapshot.protocol).toBe(LIVE_PROTOCOL);
 
     const wrongTicket = await ticketFor(token, 'd34343434');
     const wrong = await call(`/ws/${wrongTicket}`, { headers: { upgrade: 'websocket' } });
@@ -429,7 +430,7 @@ describe('short match codes', () => {
     if (!wrongSocket) throw new Error('socket missing');
     wrongSocket.accept();
     const wrongMessages = inbox(wrongSocket);
-    wrongSocket.send(JSON.stringify({ type: 'hello', protocol: 1, token, device: 'd34343434' }));
+    wrongSocket.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token, device: 'd34343434' }));
     const refused = await wrongMessages.waitFor((message) => message.type === 'error');
     expect(refused.code).toBe('bad_token');
 
@@ -574,7 +575,7 @@ describe('short match codes', () => {
     if (!ws) throw new Error('socket missing');
     ws.accept();
     const messages = inbox(ws);
-    ws.send(JSON.stringify({ type: 'hello', protocol: 1, token: body.token, device: 'daa000005' }));
+    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: body.token, device: 'daa000005' }));
     const refused = await messages.waitFor((message) => message.type === 'error');
     expect(refused.code).toBe('match_full');
     expect(ROOM_MESSAGES.match_full).toBe('This match is full.');
@@ -774,8 +775,9 @@ async function push(
   id: string,
   event: MatchEvent,
   claim: unknown,
+  parentId?: string | null,
 ): Promise<Record<string, unknown>> {
-  ws.send(JSON.stringify({ type: 'event', eventId: id, event, claim }));
+  ws.send(JSON.stringify({ type: 'event', eventId: id, event, claim, ...(parentId !== undefined ? { parentId } : {}) }));
   return messages.waitFor((message) => message.eventId === id);
 }
 
@@ -795,18 +797,22 @@ describe('offline score reconcile in the durable object', () => {
     const opened = opening.log as { base: MatchState; events: MatchEvent[] };
     expect(scoreBoard(replayScore(opened.base, opened.events)).sets[0]).toEqual({ a: 4, b: 1 });
     const online = offlineFrom(created.state, ['b', 'b']);
+    let parent = 'seed-5';
     for (let index = 0; index < online.length; index += 1) {
       const step = online[index];
       if (!step) continue;
-      const ack = await push(phoneB.ws, phoneB.messages, stepId(100 + index), step.event, step.claim);
+      const id = stepId(100 + index);
+      const ack = await push(phoneB.ws, phoneB.messages, id, step.event, step.claim, parent);
       expect(ack.type).toBe('event');
       expect(ack.duplicate).toBe(false);
+      parent = id;
     }
     const phoneA = await connect(created.hostToken, 'd0c000001');
     const queued = offlineFrom(created.state, ['b', 'b']);
-    const first = await push(phoneA.ws, phoneA.messages, stepId(110), queued[0]!.event, queued[0]!.claim);
-    expect(first).toMatchObject({ type: 'error', code: 'score_kept' });
-    const second = await push(phoneA.ws, phoneA.messages, stepId(111), queued[1]!.event, queued[1]!.claim);
+    const first = await push(phoneA.ws, phoneA.messages, stepId(110), queued[0]!.event, queued[0]!.claim, 'seed-5');
+    expect(first).toMatchObject({ type: 'event', duplicate: true, reconciled: 'already' });
+    expect(phoneB.messages.all().some((message) => message.eventId === stepId(110))).toBe(false);
+    const second = await push(phoneA.ws, phoneA.messages, stepId(111), queued[1]!.event, queued[1]!.claim, stepId(100));
     expect(second).toMatchObject({ type: 'event', duplicate: true, reconciled: 'already' });
     expect((await storedBoard(created.hostToken, 'd0c000001')).sets[0]).toEqual({ a: 4, b: 3 });
   });
@@ -815,15 +821,17 @@ describe('offline score reconcile in the durable object', () => {
     const created = await createLive('d0c000011', ['a', 'a', 'a', 'a', 'b']);
     const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000012');
     const online = offlineFrom(created.state, ['b', 'b']);
+    let parent = 'seed-5';
     for (let index = 0; index < online.length; index += 1) {
       const step = online[index];
       if (!step) continue;
-      await push(phoneB.ws, phoneB.messages, stepId(120 + index), step.event, step.claim);
+      const id = stepId(120 + index);
+      await push(phoneB.ws, phoneB.messages, id, step.event, step.claim, parent);
+      parent = id;
     }
     const phoneA = await connect(created.hostToken, 'd0c000011');
     const queued = offlineFrom(created.state, ['b', 'b', 'b']);
-    expect((await push(phoneA.ws, phoneA.messages, stepId(130), queued[0]!.event, queued[0]!.claim)).type).toBe('error');
-    expect((await push(phoneA.ws, phoneA.messages, stepId(131), queued[1]!.event, queued[1]!.claim)).reconciled).toBe('already');
+    expect((await push(phoneA.ws, phoneA.messages, stepId(130), queued[0]!.event, queued[0]!.claim, 'seed-5')).reconciled).toBe('already');
     const extra = await push(phoneA.ws, phoneA.messages, stepId(132), queued[2]!.event, queued[2]!.claim);
     expect(extra).toMatchObject({ type: 'event', duplicate: false });
     expect((await storedBoard(created.hostToken, 'd0c000011')).sets[0]).toEqual({ a: 4, b: 4 });
@@ -834,9 +842,9 @@ describe('offline score reconcile in the durable object', () => {
     const host = await connect(correction.hostToken, 'd0c000021');
     const minus = offlineFrom(correction.state, ['a'], 'game/decrement')[0];
     if (!minus) throw new Error('minus');
-    const applied = await push(host.ws, host.messages, stepId(140), minus.event, minus.claim);
+    const applied = await push(host.ws, host.messages, stepId(140), minus.event, minus.claim, 'seed-7');
     expect(applied.type).toBe('event');
-    const twice = await push(host.ws, host.messages, stepId(141), minus.event, minus.claim);
+    const twice = await push(host.ws, host.messages, stepId(141), minus.event, minus.claim, 'seed-7');
     expect(twice.reconciled).toBe('already');
     expect((await storedBoard(correction.hostToken, 'd0c000021')).sets[0]).toEqual({ a: 3, b: 3 });
 
@@ -844,22 +852,23 @@ describe('offline score reconcile in the durable object', () => {
     const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000032');
     const theirs = offlineFrom(created.state, ['a'])[0];
     if (!theirs) throw new Error('point');
-    await push(phoneB.ws, phoneB.messages, stepId(150), theirs.event, theirs.claim);
+    await push(phoneB.ws, phoneB.messages, stepId(150), theirs.event, theirs.claim, 'seed-5');
     const phoneA = await connect(created.hostToken, 'd0c000031');
     const queued = offlineFrom(created.state, ['b', 'b']);
-    expect((await push(phoneA.ws, phoneA.messages, stepId(151), queued[0]!.event, queued[0]!.claim)).code).toBe('score_kept');
-    expect((await push(phoneA.ws, phoneA.messages, stepId(152), queued[1]!.event, queued[1]!.claim)).code).toBe('score_kept');
-    expect((await storedBoard(created.hostToken, 'd0c000031')).sets[0]).toEqual({ a: 5, b: 1 });
+    const added = await push(phoneA.ws, phoneA.messages, stepId(151), queued[0]!.event, queued[0]!.claim, 'seed-5');
+    expect(added.type).toBe('event');
+    expect(added.duplicate).toBe(false);
+    expect((await storedBoard(created.hostToken, 'd0c000031')).sets[0]).toEqual({ a: 5, b: 2 });
   });
 
   it('keeps the following game when the set was already closed on the server', async () => {
     const created = await createLive('d0c000041', ['a', 'a', 'a', 'a', 'a', 'b', 'b', 'b', 'b']);
     const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000042');
     const queued = offlineFrom(created.state, ['a', 'a']);
-    const closed = await push(phoneB.ws, phoneB.messages, stepId(160), queued[0]!.event, queued[0]!.claim);
+    const closed = await push(phoneB.ws, phoneB.messages, stepId(160), queued[0]!.event, queued[0]!.claim, 'seed-9');
     expect(closed.type).toBe('event');
     const phoneA = await connect(created.hostToken, 'd0c000041');
-    expect((await push(phoneA.ws, phoneA.messages, stepId(161), queued[0]!.event, queued[0]!.claim)).reconciled).toBe('already');
+    expect((await push(phoneA.ws, phoneA.messages, stepId(161), queued[0]!.event, queued[0]!.claim, 'seed-9')).reconciled).toBe('already');
     const next = await push(phoneA.ws, phoneA.messages, stepId(162), queued[1]!.event, queued[1]!.claim);
     expect(next).toMatchObject({ type: 'event', duplicate: false });
     const board = await storedBoard(created.hostToken, 'd0c000041');
@@ -890,6 +899,22 @@ describe('offline score reconcile in the durable object', () => {
     }
     const scored = await push(host.ws, host.messages, stepId(180), event, valid);
     expect(scored).toMatchObject({ type: 'event', duplicate: false });
+    const again = await connect(created.hostToken, 'd0c000051');
+    const snap = await again.messages.waitFor((message) => message.type === 'snapshot');
+    const stored = (snap.log as { events: { capturedAt?: number }[] }).events.at(-1);
+    expect(stored?.capturedAt).toBeGreaterThan(T0 + 10);
     expect((await storedBoard(created.hostToken, 'd0c000051')).sets[0]).toEqual({ a: 1, b: 0 });
+  });
+
+  it('closes a protocol 1 hello and asks for an update', async () => {
+    const created = await createLive('d0c000061');
+    const response = await call(`/ws/${await ticketFor(created.hostToken, 'd0c000061')}`, { headers: { upgrade: 'websocket' } });
+    const ws = response.webSocket;
+    if (!ws) throw new Error('socket');
+    ws.accept();
+    const messages = inbox(ws);
+    ws.send(JSON.stringify({ type: 'hello', protocol: 1, token: created.hostToken, device: 'd0c000061' }));
+    const error = await messages.waitFor((message) => message.type === 'error');
+    expect(error.code).toBe('upgrade_required');
   });
 });

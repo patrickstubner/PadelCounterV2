@@ -561,6 +561,35 @@ describe('live socket reconnect', () => {
     expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Mine');
   });
 
+  it('does not apply a duplicate event and does apply a new one', async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: TICKET }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    const socket = FakeSocket.sockets.at(-1);
+    const duplicate = {
+      type: 'event',
+      eventId: '00000000-0000-4000-8000-0000000000d1',
+      duplicate: true,
+      players: 2,
+      event: { type: 'game/increment', team: 'a', at: 1_700_000_000_100 },
+    };
+    await act(async () => {
+      socket?.onmessage?.({ data: JSON.stringify(duplicate) });
+    });
+    expect(document.querySelector('.sr-only')?.textContent).toContain('Team A 0');
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({ ...duplicate, eventId: '00000000-0000-4000-8000-0000000000d2', duplicate: false }),
+      });
+    });
+    expect(document.querySelector('.sr-only')?.textContent).toContain('Team A 1');
+  });
+
   function played(teams: readonly ('a' | 'b')[]) {
     const base = createMatch(1_700_000_000_000, MATCH);
     const events: MatchEvent[] = [];
@@ -657,12 +686,8 @@ describe('live socket reconnect', () => {
     await mountJoined();
     expect(scoreLine()).toContain('Team A 0, Team B 0');
     const fresh = await reconnectOffline(played(['b']), ['a']);
-    expect(scoreLine()).toContain('Team A 0, Team B 1');
-    expect(scoreLine()).not.toContain('Team A 1');
+    expect(scoreLine()).toContain('Team A 1, Team B 1');
     const resent = fresh.flatMap((socket) => socket.sent).filter((line) => line.includes('game/increment'));
-    expect(resent).toEqual([]);
-    expect(document.querySelector('[data-testid="live-error"]')?.textContent).toBe(
-      'The other phone already changed this match. This phone is using that score.',
-    );
+    expect(resent).toHaveLength(1);
   }, 8_000);
 });

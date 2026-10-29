@@ -13,7 +13,7 @@ import { Victory } from './components/Victory';
 import { listMatches } from './domain/archive';
 import { deviceId } from './domain/device';
 import { fanfareEnabled, playFanfare, setFanfareEnabled, shouldPlayFanfare } from './domain/fanfare';
-import { appendEvent, replay } from './domain/log';
+import { appendEvent, describeEvent, replay } from './domain/log';
 import { commitNewMatch, newMatchCopy } from './domain/newMatch';
 import {
   acknowledgeCelebrated,
@@ -446,6 +446,27 @@ export function App() {
           ) : null}
           {room.error ? (
             <p className="live-error" role="alert" data-testid="live-error">{room.error}</p>
+          ) : null}
+          {room.pendingRestore.length > 0 ? (
+            <div className="restore-points" data-testid="restore-points">
+              <p>These points were only on this phone. The match kept every other point.</p>
+              <ul>
+                {room.pendingRestore.map((item) => (
+                  <li key={item.id}>{describeEvent(item.event)}</li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                className="btn-solid"
+                data-testid="restore-points-add"
+                onClick={() => {
+                  for (const item of room.pendingRestore) match.reapply(item.event);
+                  room.clearRestore();
+                }}
+              >
+                Add them
+              </button>
+            </div>
           ) : null}
         </div>
         <TeamPanel

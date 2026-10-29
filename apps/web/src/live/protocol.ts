@@ -1,11 +1,11 @@
 import {
+  canonicalCausalId,
   canonicalEventId,
   connectionCloses,
   liveTeamSide,
   parseLiveTeamName,
   HOST_TOKEN_TTL_MS,
   isJoinToken,
-  isUuid,
   isRoomCode,
   JOIN_TOKEN_TTL_MS,
   parseMatchLog,
@@ -84,6 +84,7 @@ export interface PendingLiveEvent<T> {
   readonly token: string;
   readonly matchId: string;
   readonly claim?: ScoreClaim | null;
+  readonly parentId?: string | null;
 }
 
 /** Unacked points for this token and match that the snapshot did not already contain. */
@@ -401,7 +402,10 @@ export function interpretMessage(data: unknown): LiveNotice {
       return { kind: 'error', message: 'The live match did not accept that.', close: false, code: null, eventId: null };
     }
     const eventIds = Array.isArray(record.eventIds)
-      ? record.eventIds.filter((id): id is string => isUuid(id)).map((id) => id.toLowerCase())
+      ? record.eventIds.flatMap((id) => {
+          const causal = canonicalCausalId(id);
+          return causal ? [causal] : [];
+        })
       : [];
     const nameSeq = typeof record.nameSeq === 'number' && Number.isInteger(record.nameSeq) && record.nameSeq > 0
       ? record.nameSeq

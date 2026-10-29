@@ -49,7 +49,13 @@ export interface MatchState {
   readonly ended: boolean;
 }
 
-type Actor = { readonly by?: string };
+type Actor = {
+  readonly by?: string;
+  /** Server event this one was scored on. Null is the start of the match. */
+  readonly parentId?: string | null;
+  /** Absolute instant the phone captured the point, after the server checked the clock. History shows this. */
+  readonly capturedAt?: number;
+};
 
 export type MatchEvent = (
   | { readonly type: 'game/increment'; readonly team: TeamId; readonly at: number }

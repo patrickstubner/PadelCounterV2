@@ -15,6 +15,13 @@ describe('match history rows', () => {
     expect(rows[0]?.score[0]).toMatchObject({ a: 1, b: 1, aChanged: false, bChanged: true });
     expect(rows[1]?.score[0]).toMatchObject({ a: 1, b: 0, aChanged: true, bChanged: false });
     expect(rows.map((row) => row.label)).toEqual(['Team B won the game', 'Team A won the game']);
+    const captured = appendEvent(createLog(T0, ID), {
+      type: 'game/increment',
+      team: 'a',
+      at: T0 + 5_000,
+      capturedAt: T0 + 1_500,
+    });
+    expect(currentHistory(captured)[0]?.at).toBe(T0 + 1_500);
     expect(rows[0]?.who).toBeNull();
     log = appendEvent(log, { type: 'game/decrement', team: 'b', at: T0 + 3_000, by: 'host' });
     const corrected = currentHistory(log);

@@ -13,11 +13,18 @@ import {
   credentialAllowsEvent,
   decideJoin,
   lastChangeAt,
+  LIVE_PROTOCOL,
+  capturedInstant,
+  claimMatchesEvent,
   decideScore,
   isScoreEvent,
+  parseParentId,
+  parseScoreClaim,
+  planMerge,
   parseStoredEvent,
   replayScore,
   roomAcceptsScore,
+  type CausalEvent,
   type Credential,
   type MatchEvent,
   type MatchLog,
@@ -79,7 +86,10 @@ export function createRoom(log: MatchLog, hostHash: string, now: number): {
     record: {
       serverCreatedAt: now,
       base: stamped.base,
-      events: stamped.events.map((event, index) => ({ eventId: `seed-${index + 1}`, event })),
+      events: stamped.events.map((event, index) => ({
+        eventId: `seed-${index + 1}`,
+        event: { ...event, parentId: index === 0 ? null : `seed-${index}` },
+      })),
       invites: [
         { tokenHash: hostHash, role: 'player', host: true, expiresAt, revokedAt: null },
       ],
@@ -215,7 +225,7 @@ export function helloPayload(
     credential: admitted.credential,
     payload: {
       type: 'snapshot',
-      protocol: 1,
+      protocol: LIVE_PROTOCOL,
       role: admitted.credential.role,
       host: admitted.credential.host,
       players,
@@ -233,6 +243,8 @@ export function applyLiveEvent(
   rawEvent: unknown,
   now: number,
   claim?: unknown,
+  clientParent?: unknown,
+  clockOffset = 0,
 ):
   | {
       readonly ok: true;
@@ -259,7 +271,7 @@ export function applyLiveEvent(
     });
     if (!allowed) return fail('forbidden');
   }
-  return applyPlay(record, credentialFor(invite), eventId, rawEvent, now, actor, claim);
+  return applyPlay(record, credentialFor(invite), eventId, rawEvent, now, actor, claim, clientParent, clockOffset);
 }
 
 export function applyPlay(
@@ -270,6 +282,8 @@ export function applyPlay(
   now: number,
   actor?: string,
   claim?: unknown,
+  clientParent?: unknown,
+  clockOffset = 0,
 ):
   | {
       readonly ok: true;
@@ -290,20 +304,30 @@ export function applyPlay(
   if (!action || !canPerform(credential, action)) return fail('forbidden');
   if (parsed.type === 'match/new' || parsed.type === 'match/reset') return fail('not_applied');
 
-  const stamped: MatchEvent = actorId(actor) ? { ...parsed, at: now, by: actorId(actor) } : { ...parsed, at: now };
-  if (isScoreEvent(stamped.type)) {
+  const headId = record.events[record.events.length - 1]?.eventId ?? null;
+  const parent = clientParent === undefined ? headId : parseParentId(clientParent);
+  if (parent === undefined) return fail('not_applied');
+  const capturedAt = capturedInstant(parsed.at, clockOffset, now, record.serverCreatedAt);
+  if (capturedAt === null) return fail('not_applied');
+  const stamped: MatchEvent = actorId(actor)
+    ? { ...parsed, at: now, capturedAt, parentId: headId, by: actorId(actor) }
+    : { ...parsed, at: now, capturedAt, parentId: headId };
+
+  if (isScoreEvent(parsed.type) && parsed.type !== 'match/end') {
+    const parsedClaim = parseScoreClaim(claim);
+    if (!parsedClaim || !claimMatchesEvent(parsed, parsedClaim)) return fail('not_applied');
+    const incoming: CausalEvent = { id: canonical, parentId: parent, event: parsed, claim: parsedClaim };
+    const plan = planMerge(record.base, causalChain(record), [incoming]);
+    if (plan.reason === 'ambiguous') return fail('score_kept');
+    if (plan.send.length === 0) {
+      return { ok: true, record, duplicate: true, reconciled: 'already', event: { eventId: canonical, event: stamped } };
+    }
+  } else if (parsed.type === 'match/end') {
     const current = replayScore(record.base, record.events.map((item) => item.event));
-    const decision = decideScore(current, stamped, claim);
+    const decision = decideScore(current, parsed, claim);
     if (decision.kind === 'reject') return fail('not_applied');
-    if (decision.kind === 'conflict') return fail('score_kept');
     if (decision.kind === 'already') {
-      return {
-        ok: true,
-        record,
-        duplicate: true,
-        reconciled: 'already',
-        event: { eventId: canonical, event: stamped },
-      };
+      return { ok: true, record, duplicate: true, reconciled: 'already', event: { eventId: canonical, event: stamped } };
     }
   }
   if (record.events.length >= MAX_EVENTS) return fail('not_applied');
@@ -313,6 +337,15 @@ export function applyPlay(
   if (next === current) return fail('not_applied');
   const event: StoredEvent = { eventId: canonical, event: stamped };
   return { ok: true, duplicate: false, event, record: { ...record, events: [...record.events, event] } };
+}
+
+function causalChain(record: RoomRecord): CausalEvent[] {
+  return record.events.map((item, index) => ({
+    id: item.eventId,
+    parentId: item.event.parentId === undefined ? (index === 0 ? null : record.events[index - 1]?.eventId ?? null) : item.event.parentId,
+    event: item.event,
+    claim: null,
+  }));
 }
 
 /** One applied event. The full log stays on the snapshot that opened the socket. */

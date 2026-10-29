@@ -1,3 +1,6 @@
+/** Hello `protocol` the worker accepts. Older phones are told to update. */
+export const LIVE_PROTOCOL = 2;
+
 /** Fixed sentences shared by the server and the UI. The client renders these, not free text from the network. */
 export const ROOM_MESSAGES = {
   match_full: 'This match is full.',

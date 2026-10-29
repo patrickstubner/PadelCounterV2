@@ -52,6 +52,7 @@ export function useMatch() {
     archive: session.archive,
     events: log.events,
     saveFailed,
+    reapply: (event: MatchEvent) => publish({ ...event, at: at() }),
     increment: (team: TeamId) => publish({ type: 'game/increment', team, at: at() }),
     decrement: (team: TeamId) => publish({ type: 'game/decrement', team, at: at() }),
     rename: (team: TeamId, name: string) => publish({ type: 'team/rename', team, name, at: at() }),

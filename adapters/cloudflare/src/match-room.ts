@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { MAX_MINTED_TOKENS, ROOM_MESSAGES, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
+import { LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, clampClockOffset, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
@@ -29,6 +29,8 @@ interface AdmittedState {
   readonly actor: string;
   readonly tokenHash: string;
   readonly deviceId: string | null;
+  /** Server clock minus the phone clock at hello. Display only. */
+  readonly clockOffset: number;
 }
 
 type SocketState = PendingState | AdmittedState;
@@ -169,8 +171,8 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   }
 
   private async hello(ws: WebSocket, record: Record<string, unknown>, pending: SocketState | null): Promise<void> {
-    if (record.protocol !== 1 || !isJoinToken(record.token)) {
-      this.reject(ws, record.protocol === 1 ? 'bad_token' : 'upgrade_required');
+    if (record.protocol !== LIVE_PROTOCOL || !isJoinToken(record.token)) {
+      this.reject(ws, record.protocol === LIVE_PROTOCOL ? 'bad_token' : 'upgrade_required');
       return;
     }
     const room = readRoom(this.sql());
@@ -203,6 +205,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       this.reject(ws, 'unavailable');
       return;
     }
+    const clockOffset = clampClockOffset(record.clientNow, Date.now());
     const next: AdmittedState = {
       admitted: true,
       credential: result.credential,
@@ -211,11 +214,13 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       actor,
       tokenHash,
       deviceId,
+      clockOffset,
     };
     ws.serializeAttachment(next);
     const played = replayScore(room.base, room.events.map((item) => item.event));
     ws.send(JSON.stringify({
       ...result.payload,
+      clockOffset,
       names: { A: played.teams.a.name, B: played.teams.b.name },
       nameSeq: latestEventSeq(this.sql()),
     }));
@@ -321,7 +326,17 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       this.reject(ws, 'bad_token', record.eventId);
       return;
     }
-    const result = applyLiveEvent(room, invite, state.actor, record.eventId, record.event, Date.now(), record.claim);
+    const result = applyLiveEvent(
+      room,
+      invite,
+      state.actor,
+      record.eventId,
+      record.event,
+      Date.now(),
+      record.claim,
+      record.parentId,
+      state.clockOffset,
+    );
     if (!result.ok) {
       this.reject(ws, result.code, record.eventId);
       return;

@@ -21,6 +21,21 @@ export function canonicalEventId(value: unknown): string | null {
   return UUID_RE.test(id) ? id : null;
 }
 
+const SEED_ID = /^seed-[1-9]\d{0,3}$/;
+
+/**
+ * A parent id is a stored event id: a lowercase UUID, a seed id, or null for the start of the match.
+ * Anything else is rejected.
+ */
+export function canonicalCausalId(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const id = value.trim().toLowerCase();
+  if (UUID_RE.test(id)) return id;
+  if (SEED_ID.test(id)) return id;
+  return undefined;
+}
+
 export function createMatchId(): string {
   const source = randomSource();
   if (typeof source.randomUUID === 'function') {

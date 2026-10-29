@@ -1,6 +1,8 @@
+import { canonicalCausalId } from './id';
 import { MAX_REVISION } from './parse';
 import { matchReducer } from './reducer';
 import { isPlausibleSetScore } from './rules';
+import { isTimestamp } from './types';
 import {
   isSetIndex,
   type MatchEvent,
@@ -10,14 +12,18 @@ import {
 } from './types';
 
 /**
- * A score event names the board it started from and the board it produces.
- * On reconnect the phone compares that chain with the server board.
- * The same resulting board is not applied again. A board the server never
- * passed through is a conflict: the server board stays, and the phone drops
- * the stale events. The match history is the server log; a dropped event is
- * not inserted.
+ * A score event names the server event it was scored on (`parentId`) and the
+ * board it produces. Merging uses that chain only. The phone's clock is not a
+ * reason to drop or keep a point. It is stored, after a plausibility check, so
+ * History can show when the point was tapped.
  */
 export const MAX_PENDING_EVENTS = 64;
+
+/** A phone clock more than this far from the server is clamped. Twelve hours covers a wrong timezone without accepting a clock set to another year. */
+export const MAX_CLOCK_OFFSET_MS = 12 * 60 * 60 * 1000;
+
+/** An event time this far ahead of the server is clamped back to the server clock. */
+export const FUTURE_SLACK_MS = 5_000;
 
 const SCORE_TYPES: ReadonlySet<string> = new Set([
   'game/increment',
@@ -47,8 +53,30 @@ export interface ScoreClaim {
 
 export interface PendingScore {
   readonly id: string;
+  readonly parentId?: string | null;
   readonly event: MatchEvent;
   readonly claim: ScoreClaim | null;
+}
+
+/** One event in a causal chain. `parentId` null means the start of the match. */
+export interface CausalEvent {
+  readonly id: string;
+  readonly parentId: string | null;
+  readonly event: MatchEvent;
+  readonly claim: ScoreClaim | null;
+}
+
+export interface MergePlan {
+  /**
+   * `already`: nothing new to add.
+   * `fast-forward`: the phone's events continue the server head.
+   * `merged`: both sides added points; the phone's remaining points are kept.
+   * `ambiguous`: the parent is missing or the chain is broken. Nothing is applied until someone asks.
+   */
+  readonly reason: 'already' | 'fast-forward' | 'merged' | 'ambiguous';
+  readonly send: readonly CausalEvent[];
+  readonly droppedIds: readonly string[];
+  readonly ambiguous: readonly CausalEvent[];
 }
 
 export type ScoreDecision =
@@ -57,20 +85,6 @@ export type ScoreDecision =
   | { readonly kind: 'already' }
   | { readonly kind: 'apply' }
   | { readonly kind: 'conflict' };
-
-export interface ReconcilePlan {
-  /** Events that still need the server. Score events already on the server are omitted. */
-  readonly send: readonly PendingScore[];
-  /** Score events left out, plus every queued event when the server wins a conflict. */
-  readonly droppedIds: readonly string[];
-  /**
-   * `already`: the server board is the last queued score.
-   * `suffix`: the server board is in the middle of the queue; only the rest is sent.
-   * `current`: the server board is the start of the queue.
-   * `conflict`: the server board is not on this chain. Nothing is sent.
-   */
-  readonly reason: 'already' | 'suffix' | 'current' | 'conflict';
-}
 
 export function isScoreEvent(type: string): boolean {
   return SCORE_TYPES.has(type);
@@ -190,86 +204,237 @@ export function claimMatchesEvent(event: MatchEvent, claim: ScoreClaim): boolean
   return sameBoard(scoreBoard(next), claim.after);
 }
 
+/** Phone clock minus server clock, clamped. A missing or nonsense clock contributes no offset. */
+export function clampClockOffset(clientNow: unknown, serverNow: number): number {
+  if (!isTimestamp(clientNow) || !isTimestamp(serverNow)) return 0;
+  const offset = serverNow - clientNow;
+  if (!Number.isSafeInteger(offset)) return 0;
+  if (offset > MAX_CLOCK_OFFSET_MS) return MAX_CLOCK_OFFSET_MS;
+  if (offset < -MAX_CLOCK_OFFSET_MS) return -MAX_CLOCK_OFFSET_MS;
+  return offset;
+}
+
 /**
- * One stored board against one event.
- * `already` means the server is already at `after` (do not append).
- * `apply` means the server is still at `before`.
- * `conflict` means the server is on neither board.
+ * Absolute instant for History. The phone's capture time is shifted by the
+ * offset measured at hello, then clamped so a future or ancient clock cannot
+ * be stored. This value is never used to decide whether two points are the same.
+ */
+export function capturedInstant(clientAt: number, offset: number, serverNow: number, earliest: number): number | null {
+  if (!isTimestamp(clientAt) || !Number.isSafeInteger(offset) || !isTimestamp(serverNow)) return null;
+  let at = clientAt + offset;
+  if (!Number.isSafeInteger(at)) return null;
+  if (at > serverNow + FUTURE_SLACK_MS) at = serverNow;
+  if (isTimestamp(earliest) && at < earliest) at = earliest;
+  return isTimestamp(at) ? at : null;
+}
+
+export function parseParentId(value: unknown): string | null | undefined {
+  return canonicalCausalId(value);
+}
+
+/**
+ * One stored board against one event, used when the event already sits on the server head.
+ * Ending a match does not depend on the scoreboard matching.
  */
 export function decideScore(server: MatchState, event: MatchEvent, claim: unknown): ScoreDecision {
   if (!isScoreEvent(event.type)) return { kind: 'not_score' };
   const parsed = parseScoreClaim(claim);
   if (!parsed || !claimMatchesEvent(event, parsed)) return { kind: 'reject' };
+  if (event.type === 'match/end') return server.ended ? { kind: 'already' } : { kind: 'apply' };
   const board = scoreBoard(server);
   if (sameBoard(board, parsed.after)) return { kind: 'already' };
   if (sameBoard(board, parsed.before)) return { kind: 'apply' };
   return { kind: 'conflict' };
 }
 
-function conflict(pending: readonly PendingScore[]): ReconcilePlan {
-  return { send: [], droppedIds: pending.map((item) => item.id), reason: 'conflict' };
+function blankFrom(board: ScoreBoard, revision: number): MatchState {
+  return {
+    schemaVersion: 2,
+    matchId: '00000000-0000-4000-8000-000000000001',
+    revision,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    teams: { a: { name: 'Team A' }, b: { name: 'Team B' } },
+    sets: board.sets,
+    activeSet: board.activeSet,
+    serve: null,
+    serveAsk: null,
+    servePrompt: false,
+    ended: board.ended,
+  };
+}
+
+function gameDelta(claim: ScoreClaim): { set: 0 | 1 | 2; team: 'a' | 'b'; delta: 1 | -1 } | null {
+  if (claim.before.ended !== claim.after.ended) return null;
+  let found: { set: 0 | 1 | 2; team: 'a' | 'b'; delta: 1 | -1 } | null = null;
+  for (let index = 0; index < 3; index += 1) {
+    const before = claim.before.sets[index];
+    const after = claim.after.sets[index];
+    if (!before || !after) return null;
+    const da = after.a - before.a;
+    const db = after.b - before.b;
+    if (da === 0 && db === 0) continue;
+    if (found || (da !== 0 && db !== 0)) return null;
+    const delta = da !== 0 ? da : db;
+    if (delta !== 1 && delta !== -1) return null;
+    const set = index === 0 || index === 1 || index === 2 ? index : null;
+    if (set === null) return null;
+    found = { set, team: da !== 0 ? 'a' : 'b', delta };
+  }
+  return found;
+}
+
+function sameEffect(left: MatchEvent, right: MatchEvent): boolean {
+  if (left.type !== right.type) return false;
+  if (left.type === 'game/increment' || left.type === 'game/decrement') {
+    return right.type === left.type && left.team === right.team;
+  }
+  if (left.type === 'set/select') return right.type === 'set/select' && left.index === right.index;
+  if (left.type === 'team/rename') return right.type === 'team/rename' && left.team === right.team && left.name === right.name;
+  if (left.type === 'serve/set') {
+    return right.type === 'serve/set' && left.team === right.team && left.player === right.player;
+  }
+  return left.type === 'match/end' || left.type === 'match/resume';
+}
+
+/** A plus and a later minus of the same team and set cancel. The minus was undoing this phone's own point. */
+function normalizeScoreChain(events: readonly CausalEvent[]): CausalEvent[] {
+  const drop = new Set<number>();
+  const stack: number[] = [];
+  events.forEach((item, index) => {
+    if (!item.claim) return;
+    if (item.event.type !== 'game/increment' && item.event.type !== 'game/decrement') return;
+    const delta = gameDelta(item.claim);
+    if (!delta) return;
+    if (item.event.type === 'game/increment' && delta.delta === 1) {
+      stack.push(index);
+      return;
+    }
+    if (item.event.type !== 'game/decrement' || delta.delta !== -1) return;
+    for (let cursor = stack.length - 1; cursor >= 0; cursor -= 1) {
+      const plusAt = stack[cursor];
+      if (plusAt === undefined) continue;
+      const plus = events[plusAt];
+      const plusDelta = plus?.claim ? gameDelta(plus.claim) : null;
+      if (!plus || plusDelta?.set !== delta.set || plusDelta.team !== delta.team) continue;
+      drop.add(plusAt);
+      drop.add(index);
+      stack.splice(cursor, 1);
+      return;
+    }
+  });
+  if (drop.size === 0) return [...events];
+  const origin = events[0];
+  if (!origin?.claim) return events.filter((_, index) => !drop.has(index));
+  let state = blankFrom(origin.claim.before, origin.claim.baseRevision);
+  let parent = origin.parentId;
+  const kept: CausalEvent[] = [];
+  events.forEach((item, index) => {
+    if (drop.has(index)) return;
+    const claim = isScoreEvent(item.event.type) ? scoreClaimFor(state, item.event) : item.claim;
+    const next = matchReducer(state, item.event);
+    if (next === state) return;
+    kept.push({ ...item, parentId: parent, claim });
+    parent = item.id;
+    state = next;
+  });
+  return kept;
+}
+
+function ambiguous(events: readonly CausalEvent[], droppedIds: readonly string[]): MergePlan {
+  return { reason: 'ambiguous', send: [], droppedIds: [...droppedIds], ambiguous: events };
 }
 
 /**
- * Compare a phone's queued events with the server board before they are sent again.
- * The score events must form one chain. Non-score events (a rename, a serve) stay
- * in the list unless the score chain conflicts, in which case the whole queue is dropped.
+ * Merge a phone's chain onto the server log.
+ * The same parent and the same resulting board are one point.
+ * A point that exists only on the phone is added, including a minus.
+ * The phone's clock is not read.
  */
-export function reconcilePending(server: MatchState, pending: readonly PendingScore[]): ReconcilePlan {
-  if (pending.length > MAX_PENDING_EVENTS) return conflict(pending);
-  const scoreAt: number[] = [];
-  for (let index = 0; index < pending.length; index += 1) {
-    const item = pending[index];
-    if (!item || !isScoreEvent(item.event.type)) continue;
-    if (!item.claim || !claimMatchesEvent(item.event, item.claim)) return conflict(pending);
-    scoreAt.push(index);
+export function planMerge(base: MatchState, server: readonly CausalEvent[], pending: readonly CausalEvent[]): MergePlan {
+  if (pending.length > MAX_PENDING_EVENTS) return ambiguous(pending, pending.map((item) => item.id));
+  const dropped: string[] = [];
+  const known = new Set(server.map((item) => item.id));
+  const fresh = pending.filter((item) => {
+    if (known.has(item.id)) {
+      dropped.push(item.id);
+      return false;
+    }
+    return true;
+  });
+  if (fresh.length === 0) return { reason: 'already', send: [], droppedIds: dropped, ambiguous: [] };
+  for (let index = 1; index < fresh.length; index += 1) {
+    if (fresh[index]?.parentId !== fresh[index - 1]?.id) return ambiguous(fresh, dropped);
   }
-  if (scoreAt.length === 0) return { send: pending, droppedIds: [], reason: 'current' };
-
-  for (let index = 1; index < scoreAt.length; index += 1) {
-    const previousAt = scoreAt[index - 1];
-    const currentAt = scoreAt[index];
-    if (previousAt === undefined || currentAt === undefined) return conflict(pending);
-    const previous = pending[previousAt];
-    const current = pending[currentAt];
-    if (!previous?.claim || !current?.claim) return conflict(pending);
-    if (!sameBoard(previous.claim.after, current.claim.before)) return conflict(pending);
-  }
-
-  const serverBoard = scoreBoard(server);
-  const lastAt = scoreAt[scoreAt.length - 1];
-  const last = lastAt === undefined ? undefined : pending[lastAt];
-  if (last?.claim && sameBoard(serverBoard, last.claim.after)) {
-    const dropped = new Set(scoreAt);
-    return {
-      send: pending.filter((_, index) => !dropped.has(index)),
-      droppedIds: scoreAt.map((index) => pending[index]?.id ?? ''),
-      reason: 'already',
-    };
+  for (const item of fresh) {
+    if (!isScoreEvent(item.event.type)) continue;
+    if (!item.claim || !claimMatchesEvent(item.event, item.claim)) return ambiguous(fresh, dropped);
   }
 
-  let matched = -1;
-  for (let index = 0; index < scoreAt.length; index += 1) {
-    const at = scoreAt[index];
-    const item = at === undefined ? undefined : pending[at];
-    if (item?.claim && sameBoard(serverBoard, item.claim.after)) matched = index;
+  const normalized = normalizeScoreChain(fresh);
+  const keptIds = new Set(normalized.map((item) => item.id));
+  for (const item of fresh) {
+    if (!keptIds.has(item.id)) dropped.push(item.id);
   }
-  if (matched >= 0) {
-    const start = scoreAt[matched + 1];
-    const next = start === undefined ? undefined : pending[start];
-    if (start === undefined || !next?.claim || !sameBoard(serverBoard, next.claim.before)) return conflict(pending);
-    const dropped = new Set(scoreAt.filter((index) => index < start));
-    return {
-      send: pending.filter((_, index) => !dropped.has(index)),
-      droppedIds: [...dropped].map((index) => pending[index]?.id ?? ''),
-      reason: 'suffix',
-    };
+  if (normalized.length === 0) return { reason: 'already', send: [], droppedIds: dropped, ambiguous: [] };
+
+  const fork = normalized[0]?.parentId ?? null;
+  if (fork !== null && !known.has(fork)) return ambiguous(normalized, dropped);
+
+  let forkState = base;
+  if (fork !== null) {
+    let found = false;
+    for (const item of server) {
+      forkState = matchReducer(forkState, item.event);
+      if (item.id === fork) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) return ambiguous(normalized, dropped);
+  }
+  const forkIndex = fork === null ? -1 : server.findIndex((item) => item.id === fork);
+  const serverSuffix = server.slice(forkIndex + 1);
+  const first = normalized[0];
+  if (first?.claim && isScoreEvent(first.event.type) && !sameBoard(scoreBoard(forkState), first.claim.before)) {
+    return ambiguous(normalized, dropped);
   }
 
-  const firstAt = scoreAt[0];
-  const first = firstAt === undefined ? undefined : pending[firstAt];
-  if (first?.claim && sameBoard(serverBoard, first.claim.before)) {
-    return { send: pending, droppedIds: [], reason: 'current' };
+  let matched = 0;
+  let cursor = forkState;
+  while (matched < normalized.length && matched < serverSuffix.length) {
+    const clientEvent = normalized[matched];
+    const serverEvent = serverSuffix[matched];
+    if (!clientEvent || !serverEvent) break;
+    const clientNext = matchReducer(cursor, clientEvent.event);
+    const serverNext = matchReducer(cursor, serverEvent.event);
+    if (clientNext === cursor || serverNext === cursor) break;
+    if (!sameEffect(clientEvent.event, serverEvent.event)) break;
+    if (!sameBoard(scoreBoard(clientNext), scoreBoard(serverNext))) break;
+    cursor = serverNext;
+    matched += 1;
   }
-  return conflict(pending);
+
+  const remainder = normalized.slice(matched);
+  for (const item of normalized.slice(0, matched)) dropped.push(item.id);
+  if (remainder.length === 0) return { reason: 'already', send: [], droppedIds: dropped, ambiguous: [] };
+
+  let head = base;
+  for (const item of server) head = matchReducer(head, item.event);
+  let parent: string | null = server.length > 0 ? server[server.length - 1]?.id ?? null : null;
+  const send: CausalEvent[] = [];
+  for (const item of remainder) {
+    const claim = isScoreEvent(item.event.type) ? scoreClaimFor(head, item.event) : null;
+    const next = matchReducer(head, item.event);
+    if (next === head || (isScoreEvent(item.event.type) && !claim)) {
+      dropped.push(item.id);
+      continue;
+    }
+    send.push({ id: item.id, parentId: parent, event: item.event, claim });
+    parent = item.id;
+    head = next;
+  }
+  if (send.length === 0) return { reason: 'already', send: [], droppedIds: dropped, ambiguous: [] };
+  const fast = matched === serverSuffix.length;
+  return { reason: fast ? 'fast-forward' : 'merged', send, droppedIds: dropped, ambiguous: [] };
 }

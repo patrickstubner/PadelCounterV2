@@ -72,7 +72,7 @@ const workboxPlugin: RsbuildPlugin = {
       const commit = process.env.GITHUB_SHA ?? 'dev';
       writeFileSync(
         join(dist, 'version.json'),
-        `${JSON.stringify({ version: appVersion, commit, protocol: 1 })}\n`,
+        `${JSON.stringify({ version: appVersion, commit, protocol: 2 })}\n`,
       );
     });
   },
