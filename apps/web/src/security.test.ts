@@ -169,7 +169,14 @@ describe('shipped source stays local and text-only', () => {
     expect(hook).not.toContain('blob:');
     expect(hook).not.toContain('data:');
     const build = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');
-    expect(build).toContain('mp4');
+    const cache = readFileSync(join(repoRoot, 'src/stayAwakeCache.ts'), 'utf8');
+    expect(build).toContain('stayAwakeRuntimeCaching');
+    expect(build).toContain("'**/stay-awake.mp4'");
+    expect(build).not.toContain('txt,mp4');
+    expect(cache).toContain('rangeRequests: true');
+    expect(cache).toContain('stay-awake\\.mp4');
+    expect(hook).toContain("'pointerup'");
+    expect(hook).toContain("'click'");
   });
 
   it('pins the light lottie player and keeps the trophy license with the file', () => {

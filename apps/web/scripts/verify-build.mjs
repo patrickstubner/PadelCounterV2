@@ -91,13 +91,19 @@ const precached = [
   'favicon-32.png',
   'manifest.webmanifest',
   'NOTICE.txt',
-  'stay-awake.mp4',
 ];
 const sw = readFileSync(join(dist, 'sw.js'), 'utf8');
 for (const file of precached) {
   if (!sw.includes(`${pageBase}${file}`)) fail(`precache missing ${file}`);
 }
 if (sw.includes('icon-1024.png')) fail('icon-1024.png must not be precached');
+if (sw.includes(`${pageBase}stay-awake.mp4`) || sw.includes('stay-awake.mp4')) {
+  fail('stay-awake.mp4 must not be precached');
+}
+if (!sw.includes('Content-Range') || !sw.includes('padel-stay-awake')) {
+  fail('stay-awake.mp4 range requests are not served as partial content');
+}
+if (!statSync(join(dist, 'stay-awake.mp4')).isFile()) fail('stay-awake.mp4 missing from dist');
 if (!statSync(join(dist, 'icons/icon-1024.png')).isFile()) fail('icon-1024.png missing from dist');
 if (sw.includes('importScripts(')) fail('service worker loads an external script');
 const notice = readFileSync(join(dist, 'NOTICE.txt'), 'utf8');

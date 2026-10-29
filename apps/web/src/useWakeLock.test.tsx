@@ -222,6 +222,29 @@ describe('useWakeLock', () => {
       HTMLMediaElement.prototype.play = play;
     }
   });
+
+  it.each(['pointerup', 'click'] as const)('starts the fallback from %s when wake lock is missing', async (type) => {
+    installWakeLock(undefined);
+    let plays = 0;
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = () => {
+      plays += 1;
+      return Promise.resolve();
+    };
+    try {
+      await mount(true);
+      await flush();
+      expect(plays).toBe(0);
+      await act(async () => {
+        const event = type === 'click' ? new MouseEvent(type, { bubbles: true }) : new PointerEvent(type, { bubbles: true });
+        document.dispatchEvent(event);
+      });
+      await flush();
+      expect(plays).toBe(1);
+    } finally {
+      HTMLMediaElement.prototype.play = play;
+    }
+  });
 });
 
 describe('court screen lock', () => {

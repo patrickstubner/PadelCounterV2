@@ -3,7 +3,7 @@
 ## 2.2.3
 
 - While a match is running, the screen stays on. Ending the match, or leaving the app, lets the phone sleep again. Coming back asks for the screen lock again, and so does the next tap on the court if the lock was dropped.
-- iPhone Safari, including the home-screen app on older iOS, plays a tiny silent video from this app when the screen lock is missing or refused. The video starts on a tap and stops when the match ends or the app is in the background.
+- iPhone Safari, including the home-screen app on older iOS, plays a tiny silent video from this app when the screen lock is missing or refused. A press, a release, or a click starts it. The home-screen app receives that clip as a byte range (206). The clip stops when the match ends or the app is in the background.
 
 ## 2.2.2
 

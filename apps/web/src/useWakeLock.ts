@@ -20,10 +20,15 @@ export function useWakeLock(running: boolean): void {
       stay.onGesture();
     };
     document.addEventListener('visibilitychange', onVisibility);
-    document.addEventListener('pointerdown', onGesture, true);
+    // iOS may not treat pointerdown as activation for video.play(). pointerup and click do.
+    for (const type of ['pointerdown', 'pointerup', 'click'] as const) {
+      document.addEventListener(type, onGesture, true);
+    }
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
-      document.removeEventListener('pointerdown', onGesture, true);
+      for (const type of ['pointerdown', 'pointerup', 'click'] as const) {
+        document.removeEventListener(type, onGesture, true);
+      }
       stay.dispose();
       video.destroy();
     };

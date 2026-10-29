@@ -5,6 +5,7 @@ import { pluginReact } from '@rsbuild/plugin-react';
 import { generateSW } from 'workbox-build';
 import { PAGE_BASE } from './src/base';
 import { connectSrcExtra } from './src/csp';
+import { stayAwakeRuntimeCaching } from './src/stayAwakeCache';
 
 const appVersion = (JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }).version;
 const apiUrl = process.env.PUBLIC_API_URL ?? '';
@@ -47,8 +48,9 @@ const workboxPlugin: RsbuildPlugin = {
       await generateSW({
         swDest,
         globDirectory: dist,
-        globPatterns: ['**/*.{html,js,css,webmanifest,png,svg,ico,txt,mp4}'],
-        globIgnores: ['**/sw.js', '**/*.map', '**/icon-1024.png'],
+        globPatterns: ['**/*.{html,js,css,webmanifest,png,svg,ico,txt}'],
+        globIgnores: ['**/sw.js', '**/*.map', '**/icon-1024.png', '**/stay-awake.mp4'],
+        runtimeCaching: stayAwakeRuntimeCaching,
         modifyURLPrefix: { '': prefix },
         inlineWorkboxRuntime: true,
         mode: 'production',
