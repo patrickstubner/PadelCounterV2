@@ -25,6 +25,41 @@ function stopStream(stream: MediaStream | null): void {
   });
 }
 
+/** iOS only plays a camera preview that is inline, muted, and explicitly started. */
+function prepareVideo(video: HTMLVideoElement): void {
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
+  video.autoplay = true;
+  video.setAttribute('muted', '');
+  video.setAttribute('playsinline', '');
+  video.setAttribute('webkit-playsinline', '');
+  video.setAttribute('autoplay', '');
+}
+
+function releaseVideo(video: HTMLVideoElement | null): void {
+  if (!video) return;
+  const source = video.srcObject;
+  try {
+    video.pause();
+  } catch {
+    // The element can already be detached.
+  }
+  video.srcObject = null;
+  if (source instanceof MediaStream) stopStream(source);
+  try {
+    video.load();
+  } catch {
+    // Older WebKit builds throw if the element has no window.
+  }
+}
+
+async function playCamera(video: HTMLVideoElement): Promise<void> {
+  prepareVideo(video);
+  const started = video.play();
+  if (started) await started;
+}
+
 export function JoinMatchPage({
   configured,
   error,
@@ -83,13 +118,15 @@ export function JoinMatchPage({
     const video = videoRef.current;
     let stream: MediaStream | null = null;
     let stopped = false;
+    let scanning = false;
     let timer = 0;
     const stop = () => {
       stopped = true;
       window.clearTimeout(timer);
-      stopStream(stream);
+      const current = stream;
       stream = null;
-      if (video) video.srcObject = null;
+      releaseVideo(video);
+      stopStream(current);
     };
     const onHide = () => {
       if (document.visibilityState === 'hidden') {
@@ -105,25 +142,30 @@ export function JoinMatchPage({
           video: { facingMode: { ideal: 'environment' } },
         });
       } catch {
+        if (stopped) return;
         setLocalError('The camera did not start.');
         setCamera(false);
         return;
       }
       if (stopped || !video) {
         stopStream(stream);
+        stream = null;
         return;
       }
+      prepareVideo(video);
       video.srcObject = stream;
       try {
-        await video.play();
+        await playCamera(video);
       } catch {
+        if (stopped) return;
         stop();
         setLocalError('The camera did not start.');
         setCamera(false);
         return;
       }
       const look = async () => {
-        if (stopped) return;
+        if (stopped || scanning) return;
+        scanning = true;
         try {
           const text = await (scanFrame ?? readQrVideo)(video);
           if (stopped) return;
@@ -137,7 +179,10 @@ export function JoinMatchPage({
           }
         } catch {
           if (stopped) return;
+        } finally {
+          scanning = false;
         }
+        if (stopped) return;
         timer = window.setTimeout(() => {
           void look();
         }, 200);

@@ -297,6 +297,11 @@ Production deploy aborted with `production environment needs a required reviewer
 - A code token that finds the court already full, and whose device has no admitted socket, is revoked, so the slot can be used again. The phone is told “This match is full.” A phone that already has a seat can reconnect while the court is full. Its previous socket is closed, and the token stays.
 - A failed D1 claim does not drop the device token it was replacing. The previous room invite is restored.
 
+## Review 19, 2026-10-29
+
+- iPhone Safari does not provide a working `BarcodeDetector` (WebKit bug 281848, still failing with the Shape Detection flag on). The scanner reads a centred square at 640, 480, and 720 pixels through `qr` 0.7.2 and does not start a second decode while one is running. `media-src` stays `none`.
+- A scanned string is kept only when it is an `http` or `https` URL for this page’s origin and the app base path `/PadelCounterV2`, with the token only in the fragment. `index.html`, extra slashes, and the page’s own query are not compared. A query that contains the token, or a URL with a username or password, is rejected. The scanned text is not opened, not written into the page, and not sent to the static host.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.
