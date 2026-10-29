@@ -1,9 +1,10 @@
 /** @vitest-environment happy-dom */
 import { ROOM_MESSAGES } from '@padel/core';
-import { act, type ReactNode } from 'react';
+import { act, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { JoinMatchPage } from './JoinMatchPage';
+import { DECODE_WAIT_MS } from '../live/readQr';
+import { CAMERA_LIMIT_MS, JoinMatchPage } from './JoinMatchPage';
 
 const PAGE = 'https://patrickstubner.github.io/PadelCounterV2/';
 const TOKEN = 'abcdefghijklmnopqrstuv';
@@ -11,6 +12,7 @@ const TOKEN = 'abcdefghijklmnopqrstuv';
 let root: Root | null = null;
 
 afterEach(() => {
+  vi.useRealTimers();
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
   act(() => {
     root?.unmount();
@@ -69,6 +71,12 @@ describe('join match in the app', () => {
     });
     expect(media.getUserMedia).toHaveBeenCalledTimes(1);
     expect(scanned).toBeGreaterThan(0);
+    const video = document.querySelector('video');
+    expect(video?.muted).toBe(true);
+    expect(video?.playsInline).toBe(true);
+    expect(video?.autoplay).toBe(true);
+    expect(video?.getAttribute('playsinline')).not.toBeNull();
+    expect(video?.getAttribute('webkit-playsinline')).not.toBeNull();
     await act(async () => {
       Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
       document.dispatchEvent(new Event('visibilitychange'));
@@ -103,6 +111,8 @@ describe('join match in the app', () => {
       }
     });
     expect(document.querySelector('[data-testid="join-match-error"]')?.textContent).toBe(ROOM_MESSAGES.join_code);
+    expect(document.body.textContent ?? '').not.toContain('evil.example');
+    expect(document.body.textContent ?? '').not.toContain(TOKEN);
     expect(tokens).toEqual([]);
     expect(media.stop).toHaveBeenCalled();
 
@@ -113,6 +123,126 @@ describe('join match in the app', () => {
       }
     });
     expect(tokens).toEqual([TOKEN]);
+  });
+
+  it('joins from a scanned frame and closes the dialog', async () => {
+    const media = camera();
+    const tokens: string[] = [];
+    const page = 'https://patrickstubner.github.io/PadelCounterV2/index.html?source=pwa';
+    const link = `${PAGE}#/join?t=${TOKEN}`;
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      if (!open) return null;
+      return (
+        <JoinMatchPage
+          configured
+          error={null}
+          pageHref={page}
+          onCode={() => undefined}
+          onToken={(token) => {
+            tokens.push(token);
+            setOpen(false);
+          }}
+          onClose={() => setOpen(false)}
+          scanFrame={async () => link}
+        />
+      );
+    }
+    render(<Harness />);
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]')?.click();
+      for (let attempt = 0; attempt < 30 && tokens.length === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    });
+    expect(tokens).toEqual([TOKEN]);
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
+    expect(document.body.textContent ?? '').not.toContain(TOKEN);
+    expect(document.body.textContent ?? '').not.toContain('evil.example');
+    expect(media.stop).toHaveBeenCalled();
+  });
+
+  it('shows a message when the camera cannot play', async () => {
+    const media = camera();
+    HTMLVideoElement.prototype.play = () => Promise.reject(new DOMException('not allowed', 'NotAllowedError'));
+    render(
+      <JoinMatchPage
+        configured
+        error={null}
+        pageHref={PAGE}
+        onCode={() => undefined}
+        onToken={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]')?.click();
+      for (let attempt = 0; attempt < 20 && !document.querySelector('[data-testid="join-match-error"]'); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    });
+    expect(document.querySelector('[data-testid="join-match-error"]')?.textContent).toBe('The camera did not start.');
+    expect(document.querySelector('[data-testid="join-camera"]')).toBeNull();
+    expect(media.stop).toHaveBeenCalled();
+  });
+
+  it('stops the camera after 90 seconds and shows how to start again', async () => {
+    vi.useFakeTimers();
+    const media = camera();
+    render(
+      <JoinMatchPage
+        configured
+        error={null}
+        pageHref={PAGE}
+        onCode={() => undefined}
+        onToken={() => undefined}
+        onClose={() => undefined}
+        scanFrame={async () => null}
+      />,
+    );
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]')?.click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(document.querySelector('[data-testid="join-camera"]')).not.toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAMERA_LIMIT_MS);
+    });
+    expect(document.querySelector('[data-testid="join-camera"]')).toBeNull();
+    expect(document.querySelector('[data-testid="join-camera-hint"]')?.textContent).toBe(
+      'Camera stopped. Tap Use camera to try again.',
+    );
+    expect(media.stop).toHaveBeenCalled();
+  });
+
+  it('looks again when a scan does not return', async () => {
+    vi.useFakeTimers();
+    camera();
+    let calls = 0;
+    render(
+      <JoinMatchPage
+        configured
+        error={null}
+        pageHref={PAGE}
+        onCode={() => undefined}
+        onToken={() => undefined}
+        onClose={() => undefined}
+        scanFrame={() => {
+          calls += 1;
+          return new Promise(() => undefined);
+        }}
+      />,
+    );
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]')?.click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(calls).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DECODE_WAIT_MS + 200);
+    });
+    expect(calls).toBeGreaterThan(1);
+    expect(document.querySelector('[data-testid="join-camera"]')).not.toBeNull();
   });
 
   it('submits a short code without caring about case or a hyphen', () => {

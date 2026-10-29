@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ROOM_MESSAGES, normalizeJoinCode } from '@padel/core';
 import { tokenFromJoinQr } from '../live/protocol';
-import { readQrVideo } from '../live/readQr';
+import { DECODE_WAIT_MS, readQrVideo } from '../live/readQr';
 
 interface JoinMatchPageProps {
   readonly configured: boolean;
@@ -25,6 +25,66 @@ function stopStream(stream: MediaStream | null): void {
   });
 }
 
+/** The camera preview stops on its own so an old phone is not left capturing. */
+export const CAMERA_LIMIT_MS = 90_000;
+
+const CAMERA_STOPPED = 'Camera stopped. Tap Use camera to try again.';
+
+/** Safari will not show the camera unless the video is inline, muted, and play() is awaited. */
+function prepareVideo(video: HTMLVideoElement): void {
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
+  video.autoplay = true;
+  video.setAttribute('muted', '');
+  video.setAttribute('playsinline', '');
+  video.setAttribute('webkit-playsinline', '');
+  video.setAttribute('autoplay', '');
+}
+
+function releaseVideo(video: HTMLVideoElement | null): void {
+  if (!video) return;
+  const source = video.srcObject;
+  try {
+    video.pause();
+  } catch {
+    // The element can already be detached.
+  }
+  video.srcObject = null;
+  if (source instanceof MediaStream) stopStream(source);
+  try {
+    video.load();
+  } catch {
+    // Older WebKit builds throw if the element has no window.
+  }
+}
+
+async function playCamera(video: HTMLVideoElement): Promise<void> {
+  prepareVideo(video);
+  const started = video.play();
+  if (started) await started;
+}
+
+/** A scan that never settles must not leave the look loop stuck. */
+function scanWithin(
+  read: (video: HTMLVideoElement) => Promise<string | null>,
+  video: HTMLVideoElement,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(null), DECODE_WAIT_MS);
+    read(video).then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        window.clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
 export function JoinMatchPage({
   configured,
   error,
@@ -41,6 +101,7 @@ export function JoinMatchPage({
   const [camera, setCamera] = useState(false);
   const [draft, setDraft] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
+  const [cameraHint, setCameraHint] = useState<string | null>(null);
   const onTokenRef = useRef(onToken);
   const onCloseRef = useRef(onClose);
   onTokenRef.current = onToken;
@@ -83,14 +144,25 @@ export function JoinMatchPage({
     const video = videoRef.current;
     let stream: MediaStream | null = null;
     let stopped = false;
+    let scanning = false;
     let timer = 0;
+    let limit = 0;
     const stop = () => {
       stopped = true;
       window.clearTimeout(timer);
-      stopStream(stream);
+      window.clearTimeout(limit);
+      const current = stream;
       stream = null;
-      if (video) video.srcObject = null;
+      releaseVideo(video);
+      stopStream(current);
     };
+    limit = window.setTimeout(() => {
+      if (stopped) return;
+      stop();
+      setLocalError(null);
+      setCameraHint(CAMERA_STOPPED);
+      setCamera(false);
+    }, CAMERA_LIMIT_MS);
     const onHide = () => {
       if (document.visibilityState === 'hidden') {
         stop();
@@ -105,27 +177,32 @@ export function JoinMatchPage({
           video: { facingMode: { ideal: 'environment' } },
         });
       } catch {
+        if (stopped) return;
         setLocalError('The camera did not start.');
         setCamera(false);
         return;
       }
       if (stopped || !video) {
         stopStream(stream);
+        stream = null;
         return;
       }
+      prepareVideo(video);
       video.srcObject = stream;
       try {
-        await video.play();
+        await playCamera(video);
       } catch {
+        if (stopped) return;
         stop();
         setLocalError('The camera did not start.');
         setCamera(false);
         return;
       }
       const look = async () => {
-        if (stopped) return;
+        if (stopped || scanning) return;
+        scanning = true;
         try {
-          const text = await (scanFrame ?? readQrVideo)(video);
+          const text = await scanWithin(scanFrame ?? readQrVideo, video);
           if (stopped) return;
           if (text) {
             const token = tokenFromJoinQr(text, pageHref);
@@ -137,7 +214,10 @@ export function JoinMatchPage({
           }
         } catch {
           if (stopped) return;
+        } finally {
+          scanning = false;
         }
+        if (stopped) return;
         timer = window.setTimeout(() => {
           void look();
         }, 200);
@@ -176,11 +256,13 @@ export function JoinMatchPage({
           <p data-testid="join-unconfigured">Live sharing is not configured in this build.</p>
         )}
         {shown ? <p data-testid="join-match-error">{shown}</p> : null}
+        {cameraHint ? <p data-testid="join-camera-hint">{cameraHint}</p> : null}
         {camera ? (
           <video ref={videoRef} className="join-camera" data-testid="join-camera" muted playsInline autoPlay />
         ) : (
           <button type="button" className="text-btn" data-testid="use-camera" onClick={() => {
             setLocalError(null);
+            setCameraHint(null);
             setCamera(true);
           }}>
             Use camera

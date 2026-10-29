@@ -15,6 +15,7 @@ import {
   type MatchLog,
   type RoomCode,
 } from '@padel/core';
+import { PAGE_BASE } from '../base';
 
 export { canonicalEventId, HOST_TOKEN_TTL_MS, JOIN_TOKEN_TTL_MS };
 
@@ -114,19 +115,40 @@ export function socketUrl(apiBase: string, ticket: string): string {
   return url.toString();
 }
 
+/** App path used in join links. `index.html` and extra slashes are not part of it. */
+function canonicalAppPath(pathname: string): string {
+  let path = pathname;
+  while (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+  if (path.toLowerCase().endsWith('/index.html')) path = path.slice(0, -'/index.html'.length);
+  while (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+  return path === '' ? '/' : path;
+}
+
+/** A query that already carries the invite must not be treated as a join link. */
+function queryCarriesToken(url: URL): boolean {
+  if (url.searchParams.has('t')) return true;
+  for (const value of url.searchParams.values()) {
+    if (isJoinToken(value)) return true;
+  }
+  return false;
+}
+
 /** Token stays in the fragment so it is not sent to the static host. The match id is not in the link. */
 export function joinLink(pageHref: string, token: string): string {
   const url = new URL(pageHref, 'http://localhost');
-  const path = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
-  return `${url.origin}${path}#/join?t=${encodeURIComponent(token)}`;
+  const path = canonicalAppPath(PAGE_BASE);
+  const directory = path === '/' ? '/' : `${path}/`;
+  return `${url.origin}${directory}#/join?t=${encodeURIComponent(token)}`;
 }
 
 /**
- * A scanned QR is a join link only when it is this app: same origin, same path, token in the fragment.
- * Anything else is ignored.
+ * A scanned QR is a join link only when it points at this app.
+ * The origin must be this page. The path must be the app base path.
+ * `index.html`, extra slashes, and this page's own query are ignored.
+ * The token is read only from the fragment. The scanned URL is never opened.
  */
 export function tokenFromJoinQr(text: string, pageHref: string): string | null {
-  if (text.length > 2048) return null;
+  if (typeof text !== 'string' || text.length === 0 || text.length > 2048) return null;
   let scanned: URL;
   let page: URL;
   try {
@@ -136,10 +158,11 @@ export function tokenFromJoinQr(text: string, pageHref: string): string | null {
     return null;
   }
   if (scanned.username || scanned.password) return null;
+  if (scanned.protocol !== 'https:' && scanned.protocol !== 'http:') return null;
+  if (page.protocol !== 'https:' && page.protocol !== 'http:') return null;
   if (scanned.origin !== page.origin) return null;
-  const scannedPath = scanned.pathname.endsWith('/') ? scanned.pathname : `${scanned.pathname}/`;
-  const pagePath = page.pathname.endsWith('/') ? page.pathname : `${page.pathname}/`;
-  if (scannedPath !== pagePath || scanned.search !== '') return null;
+  if (queryCarriesToken(scanned)) return null;
+  if (canonicalAppPath(scanned.pathname) !== canonicalAppPath(PAGE_BASE)) return null;
   return parseJoinHash(scanned.hash)?.token ?? null;
 }
 

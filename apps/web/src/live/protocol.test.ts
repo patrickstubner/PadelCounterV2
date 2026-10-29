@@ -44,10 +44,36 @@ describe('join links', () => {
     expect(tokenFromJoinQr(`https://user:secret@patrickstubner.github.io/PadelCounterV2/#/join?t=${TOKEN}`, page)).toBeNull();
     expect(tokenFromJoinQr('K7M-42Q', page)).toBeNull();
     expect(tokenFromJoinQr(`http://patrickstubner.github.io/PadelCounterV2/#/join?t=${TOKEN}`, page)).toBeNull();
+    expect(joinLink('https://patrickstubner.github.io/PadelCounterV2/index.html?source=pwa', TOKEN)).toBe(link);
+    expect(joinLink('https://patrickstubner.github.io/PadelCounterV2/index.html?source=pwa', TOKEN).split('#')[0]).not.toContain(TOKEN);
     expect(socketUrl('http://localhost:8787', TOKEN)).toBe(`ws://localhost:8787/ws/${TOKEN}`);
     expect(socketUrl('https://padel-counter.example.workers.dev/', TOKEN)).toBe(
       `wss://padel-counter.example.workers.dev/ws/${TOKEN}`,
     );
+  });
+
+  it('accepts a join link when the page query, index.html, or trailing slash differs', () => {
+    const origin = 'https://patrickstubner.github.io';
+    const base = `${origin}/PadelCounterV2/`;
+    const link = `${base}#/join?t=${TOKEN}`;
+    const pwa = `${base}?source=pwa`;
+    const indexPage = `${origin}/PadelCounterV2/index.html?source=pwa`;
+    expect(tokenFromJoinQr(link, pwa)).toBe(TOKEN);
+    expect(tokenFromJoinQr(link, indexPage)).toBe(TOKEN);
+    expect(tokenFromJoinQr(`${origin}/PadelCounterV2/index.html#/join?t=${TOKEN}`, pwa)).toBe(TOKEN);
+    expect(tokenFromJoinQr(`${origin}/PadelCounterV2#/join?t=${TOKEN}`, base)).toBe(TOKEN);
+    expect(tokenFromJoinQr(link, `${origin}/PadelCounterV2`)).toBe(TOKEN);
+    expect(tokenFromJoinQr(`${base}?source=pwa#/join?t=${TOKEN}`, base)).toBe(TOKEN);
+    expect(tokenFromJoinQr(`https://evil.example/PadelCounterV2/#/join?t=${TOKEN}`, pwa)).toBeNull();
+    expect(tokenFromJoinQr(`https://patrickstubner.github.io.evil.example/PadelCounterV2/#/join?t=${TOKEN}`, pwa)).toBeNull();
+    expect(tokenFromJoinQr(`${origin}/PadelCounter/#/join?t=${TOKEN}`, indexPage)).toBeNull();
+    expect(tokenFromJoinQr(`${origin}/PadelCounterV2/other/#/join?t=${TOKEN}`, pwa)).toBeNull();
+    expect(tokenFromJoinQr(`${base}?t=${TOKEN}#/join?t=${TOKEN}`, pwa)).toBeNull();
+    expect(tokenFromJoinQr(`${base}?next=https://evil.example#/join?t=${TOKEN}`, pwa)).toBe(TOKEN);
+    expect(tokenFromJoinQr(`${'java' + 'script:'}alert(1)`, pwa)).toBeNull();
+    expect(tokenFromJoinQr('data:text/html,hello', pwa)).toBeNull();
+    expect(tokenFromJoinQr(`${link}${'x'.repeat(2048)}`, pwa)).toBeNull();
+    expect(tokenFromJoinQr(`https://user:secret@patrickstubner.github.io/PadelCounterV2/#/join?t=${TOKEN}`, pwa)).toBeNull();
   });
 
   it('accepts a one-tap reconnect offer and ignores a forged token', () => {
