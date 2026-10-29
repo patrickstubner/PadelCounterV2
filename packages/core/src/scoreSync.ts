@@ -289,19 +289,6 @@ function isSideEvent(event: MatchEvent): boolean {
   return event.type === 'team/rename' || event.type === 'serve/set';
 }
 
-function sameEffect(left: MatchEvent, right: MatchEvent): boolean {
-  if (left.type !== right.type) return false;
-  if (left.type === 'game/increment' || left.type === 'game/decrement') {
-    return right.type === left.type && left.team === right.team;
-  }
-  if (left.type === 'set/select') return right.type === 'set/select' && left.index === right.index;
-  if (left.type === 'team/rename') return right.type === 'team/rename' && left.team === right.team && left.name === right.name;
-  if (left.type === 'serve/set') {
-    return right.type === 'serve/set' && left.team === right.team && left.player === right.player;
-  }
-  return left.type === 'match/end' || left.type === 'match/resume';
-}
-
 /** A plus and a later minus of the same team and set cancel. The minus was undoing this phone's own point. */
 function normalizeScoreChain(events: readonly CausalEvent[]): CausalEvent[] {
   const drop = new Set<number>();
@@ -350,9 +337,59 @@ function ambiguous(events: readonly CausalEvent[], droppedIds: readonly string[]
   return { reason: 'ambiguous', send: [], droppedIds: [...droppedIds], ambiguous: events };
 }
 
+type PointEffect =
+  | { readonly kind: 'point'; readonly team: 'a' | 'b'; readonly sign: 1 | -1; readonly set: 0 | 1 | 2 }
+  | { readonly kind: 'select'; readonly index: 0 | 1 | 2 }
+  | { readonly kind: 'end' }
+  | { readonly kind: 'resume' };
+
+/** The set a game point changed, plus the team and the direction. */
+function pointEffect(before: MatchState, event: MatchEvent): PointEffect | 'side' | null {
+  if (isSideEvent(event)) return 'side';
+  if (event.type === 'set/select') return { kind: 'select', index: event.index };
+  if (event.type === 'match/end') return { kind: 'end' };
+  if (event.type === 'match/resume') return { kind: 'resume' };
+  if (event.type !== 'game/increment' && event.type !== 'game/decrement') return null;
+  const after = matchReducer(before, event);
+  if (after === before) return null;
+  let set: 0 | 1 | 2 = before.activeSet;
+  for (let index = 0; index < 3; index += 1) {
+    const left = before.sets[index];
+    const right = after.sets[index];
+    if (!left || !right || (left.a === right.a && left.b === right.b)) continue;
+    set = index === 1 ? 1 : index === 2 ? 2 : 0;
+    break;
+  }
+  return { kind: 'point', team: event.team, sign: event.type === 'game/increment' ? 1 : -1, set };
+}
+
+/**
+ * Same team and same plus or minus. The set is remembered, and the same set is
+ * preferred, but a set win on one phone does not turn the other phone's point
+ * into a second point.
+ */
+function samePoint(left: PointEffect, right: PointEffect): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'point' && right.kind === 'point') return left.team === right.team && left.sign === right.sign;
+  if (left.kind === 'select' && right.kind === 'select') return left.index === right.index;
+  return true;
+}
+
+function takeEffect(effect: PointEffect, effects: readonly PointEffect[], used: Set<number>): number {
+  let loose = -1;
+  for (let index = 0; index < effects.length; index += 1) {
+    if (used.has(index)) continue;
+    const serverEffect = effects[index];
+    if (!serverEffect || !samePoint(effect, serverEffect)) continue;
+    if (effect.kind === 'point' && serverEffect.kind === 'point' && effect.set === serverEffect.set) return index;
+    if (loose < 0) loose = index;
+  }
+  return loose;
+}
+
 /**
  * Merge a phone's chain onto the server log.
- * The same parent and the same resulting board are one point.
+ * Points since the fork match as a set of team, set, and direction, in any order.
  * A point that exists only on the phone is added, including a minus.
  * The phone's clock is not read.
  */
@@ -405,38 +442,51 @@ export function planMerge(base: MatchState, server: readonly CausalEvent[], pend
     return ambiguous(normalized, dropped);
   }
 
-  let clientIndex = 0;
-  let serverIndex = 0;
-  let cursor = forkState;
-  while (clientIndex < normalized.length && serverIndex < serverSuffix.length) {
-    const clientEvent = normalized[clientIndex];
-    const serverEvent = serverSuffix[serverIndex];
-    if (!clientEvent || !serverEvent) break;
-    if (isSideEvent(serverEvent.event) && !sameEffect(clientEvent.event, serverEvent.event)) {
-      cursor = matchReducer(cursor, serverEvent.event);
-      serverIndex += 1;
-      continue;
-    }
-    const clientNext = matchReducer(cursor, clientEvent.event);
-    const serverNext = matchReducer(cursor, serverEvent.event);
-    if (clientNext === cursor || serverNext === cursor) break;
-    if (!sameEffect(clientEvent.event, serverEvent.event)) break;
-    if (!sameBoard(scoreBoard(clientNext), scoreBoard(serverNext))) break;
-    cursor = serverNext;
-    clientIndex += 1;
-    serverIndex += 1;
+  let serverCursor = forkState;
+  const serverEffects: PointEffect[] = [];
+  for (const item of serverSuffix) {
+    const effect = pointEffect(serverCursor, item.event);
+    const next = matchReducer(serverCursor, item.event);
+    if (effect && effect !== 'side') serverEffects.push(effect);
+    if (next !== serverCursor) serverCursor = next;
   }
 
-  const matched = clientIndex;
-  const remainder = normalized.slice(matched);
-  for (const item of normalized.slice(0, matched)) dropped.push(item.id);
+  let clientCursor = forkState;
+  const used = new Set<number>();
+  const remainder: CausalEvent[] = [];
+  for (const item of normalized) {
+    const effect = pointEffect(clientCursor, item.event);
+    const next = matchReducer(clientCursor, item.event);
+    if (next !== clientCursor) clientCursor = next;
+    if (!effect || effect === 'side') {
+      if (effect === 'side') remainder.push(item);
+      else dropped.push(item.id);
+      continue;
+    }
+    const found = takeEffect(effect, serverEffects, used);
+    if (found >= 0) {
+      used.add(found);
+      dropped.push(item.id);
+      continue;
+    }
+    remainder.push(item);
+  }
   if (remainder.length === 0) return { reason: 'already', send: [], droppedIds: dropped, ambiguous: [] };
 
   let head = base;
   for (const item of server) head = matchReducer(head, item.event);
+  let pendingSend = remainder;
+  if (head.ended) {
+    const resumable = remainder.filter((item) => item.event.type === 'match/resume');
+    for (const item of remainder) {
+      if (item.event.type !== 'match/resume') dropped.push(item.id);
+    }
+    if (resumable.length === 0) return { reason: 'already', send: [], droppedIds: dropped, ambiguous: [] };
+    pendingSend = resumable;
+  }
   let parent: string | null = server.length > 0 ? server[server.length - 1]?.id ?? null : null;
   const send: CausalEvent[] = [];
-  for (const item of remainder) {
+  for (const item of pendingSend) {
     const claim = isScoreEvent(item.event.type) ? scoreClaimFor(head, item.event) : null;
     const next = matchReducer(head, item.event);
     if (next === head || (isScoreEvent(item.event.type) && !claim)) {
@@ -448,6 +498,6 @@ export function planMerge(base: MatchState, server: readonly CausalEvent[], pend
     head = next;
   }
   if (send.length === 0) return { reason: 'already', send: [], droppedIds: dropped, ambiguous: [] };
-  const fast = serverIndex === serverSuffix.length;
+  const fast = used.size === serverEffects.length;
   return { reason: fast ? 'fast-forward' : 'merged', send, droppedIds: dropped, ambiguous: [] };
 }

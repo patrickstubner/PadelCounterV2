@@ -3,7 +3,7 @@ import { LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, clampClockOffset, conn
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
-import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange } from './room';
+import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange, toLog, type RoomRecord } from './room';
 import { ensureActivityColumn, grantMintedInvite, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, type RoomSql } from './store';
 import { quotaMac, quotaSecret, safeEqualHex, sha256Hex } from './tokens';
 
@@ -348,8 +348,17 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         ensureActivityColumn(sql);
         if (result.event.event.type === 'match/end') {
           const endedAt = Date.now();
-          revokePlayerInvites(sql, endedAt);
-          await d1MatchIndex(this.env.DB).revokeSharedAccess(room.base.matchId, endedAt);
+          const keep = readJoined(sql).map((row) => row.tokenHash);
+          const kept = new Set(keep);
+          const open = readRoom(sql);
+          if (open) {
+            for (const invite of open.invites) {
+              if (!invite.host && invite.revokedAt === null && !kept.has(invite.tokenHash)) {
+                revokeInviteHash(sql, invite.tokenHash, endedAt);
+              }
+            }
+          }
+          await d1MatchIndex(this.env.DB).revokeSharedAccess(room.base.matchId, endedAt, keep);
         }
       } catch {
         this.reject(ws, 'unavailable', record.eventId);
@@ -366,7 +375,17 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       }),
     );
     // An already-counted point is not a new score. Other phones must not apply it.
-    if (result.reconciled !== 'already') this.broadcast(payload, ws);
+    // The sender reloads the server log, so two taps of the same team stay one point.
+    if (result.reconciled === 'already') {
+      try {
+        ws.send(payload);
+        ws.send(this.courtSnapshot(state, result.record));
+      } catch {
+        // The sender already showed the point. The next snapshot replaces it.
+      }
+      return;
+    }
+    this.broadcast(payload, ws);
     try {
       ws.send(payload);
     } catch {
@@ -385,6 +404,23 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         }
       }
     }
+  }
+
+  /** The log this socket should show. Sent after hello and after an already-counted point. */
+  private courtSnapshot(state: AdmittedState, record: RoomRecord): string {
+    const played = replayScore(record.base, record.events.map((item) => item.event));
+    return JSON.stringify({
+      type: 'snapshot',
+      protocol: LIVE_PROTOCOL,
+      role: state.credential.role,
+      host: state.credential.host,
+      players: this.admittedCount(),
+      log: toLog(record),
+      eventIds: record.events.map((item) => item.eventId),
+      clockOffset: state.clockOffset,
+      names: { A: played.teams.a.name, B: played.teams.b.name },
+      nameSeq: latestEventSeq(this.sql()),
+    });
   }
 
   /** Deliver to admitted court sockets. One closed peer must not stop the rest. */
@@ -443,7 +479,20 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       revokePlayerInvites(sql, now);
       insertInvite(sql, created);
     });
+    this.closeRevokedPlayers();
     return json(201, { role: 'player' satisfies Role, expiresAt: issued.expiresAt });
+  }
+
+  /** A new code revokes the old one. Phones that joined with it leave the live match now. */
+  private closeRevokedPlayers(): void {
+    const room = readRoom(this.sql());
+    if (!room) return;
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      const state = this.readState(socket);
+      if (!state?.admitted || state.credential.host) continue;
+      const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, state.tokenHash));
+      if (!invite || invite.revokedAt !== null) this.reject(socket, 'revoked');
+    }
   }
 
   private assignActor(host: boolean, tokenHash: string, deviceId: string | null): string | null {

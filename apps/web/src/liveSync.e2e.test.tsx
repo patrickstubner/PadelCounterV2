@@ -18,8 +18,11 @@ class FakeSocket {
   static readonly CLOSED = 3;
   static sockets: FakeSocket[] = [];
   static hellos = 0;
-  /** echo, drop the first event, refuse it, or close the match. */
-  static eventMode: 'echo' | 'drop-once' | 'reject' | 'close' = 'echo';
+  /** echo, drop the first event, refuse it, close the match, or answer already / score_kept. */
+  static eventMode: 'echo' | 'drop-once' | 'reject' | 'close' | 'already' | 'keep' = 'echo';
+  /** Snapshot returned with an already acknowledgement. */
+  static alreadyLog: { schemaVersion: 2; base: MatchState; events: MatchEvent[] } | null = null;
+  static alreadyIds: string[] = [];
   static dropped = false;
   /** Later hellos stay quiet unless a test needs the court to become live again. */
   static snapshotMode: 'first' | 'every' = 'first';
@@ -101,6 +104,41 @@ class FakeSocket {
       });
       return;
     }
+    if (FakeSocket.eventMode === 'keep') {
+      queueMicrotask(() => {
+        this.onmessage?.({
+          data: JSON.stringify({ type: 'error', code: 'score_kept', eventId: parsed.eventId }),
+        });
+      });
+      return;
+    }
+    if (FakeSocket.eventMode === 'already') {
+      const scripted = FakeSocket.alreadyLog;
+      queueMicrotask(() => {
+        this.onmessage?.({
+          data: JSON.stringify({
+            type: 'event',
+            eventId: parsed.eventId,
+            duplicate: true,
+            reconciled: 'already',
+            players: 2,
+            event: { ...parsed.event, at: 1_700_000_000_100, by: 'p2' },
+          }),
+        });
+        this.onmessage?.({
+          data: JSON.stringify({
+            type: 'snapshot',
+            protocol: 2,
+            host: false,
+            players: 2,
+            eventIds: FakeSocket.alreadyIds,
+            nameSeq: 1,
+            log: scripted ?? { schemaVersion: 2, base: createMatch(1_700_000_000_000, MATCH), events: [] },
+          }),
+        });
+      });
+      return;
+    }
     const delivered = JSON.stringify({
       type: 'event',
       eventId: parsed.eventId,
@@ -144,6 +182,8 @@ describe('live socket reconnect', () => {
     FakeSocket.sockets.splice(0);
     FakeSocket.hellos = 0;
     FakeSocket.eventMode = 'echo';
+    FakeSocket.alreadyLog = null;
+    FakeSocket.alreadyIds = [];
     FakeSocket.dropped = false;
     FakeSocket.snapshotMode = 'first';
     FakeSocket.echoRename = true;
@@ -841,5 +881,137 @@ describe('live socket reconnect', () => {
     expect(document.querySelector('[data-testid="active-set"]')?.textContent).toBe('Set 1');
     expect(document.querySelector('[data-testid="live-error"]')?.textContent).toContain('Too many changes');
     blockJoin = false;
+  }, 8_000);
+
+  it('reloads the server score when the same tap was already stored', async () => {
+    FakeSocket.eventMode = 'drop-once';
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: TICKET }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="increment-a"]')?.click();
+    });
+    expect(scoreLine()).toContain('Team A 1, Team B 0');
+    const foreign = '00000000-0000-4000-8000-0000000000f1';
+    const socket = FakeSocket.sockets.at(-1);
+    const mine = (socket?.sent ?? []).flatMap((line) => {
+      const parsed = JSON.parse(line) as { type?: string; eventId?: string };
+      return parsed.type === 'event' ? [parsed] : [];
+    }).at(-1);
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          type: 'event',
+          eventId: foreign,
+          duplicate: false,
+          players: 2,
+          event: { type: 'game/increment', team: 'a', at: 1_700_000_000_100 },
+        }),
+      });
+    });
+    expect(scoreLine()).toContain('Team A 2, Team B 0');
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          type: 'event',
+          eventId: mine?.eventId,
+          duplicate: true,
+          reconciled: 'already',
+          players: 2,
+          event: { type: 'game/increment', team: 'a', at: 1_700_000_000_100 },
+        }),
+      });
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          type: 'snapshot',
+          protocol: 2,
+          host: false,
+          players: 2,
+          eventIds: [foreign],
+          nameSeq: 1,
+          log: {
+            schemaVersion: 2,
+            base: createMatch(1_700_000_000_000, MATCH),
+            events: [{ type: 'game/increment', team: 'a', at: 1_700_000_000_100 }],
+          },
+        }),
+      });
+    });
+    expect(scoreLine()).toContain('Team A 1, Team B 0');
+    expect(scoreLine()).not.toContain('Team A 2');
+  });
+
+  it('parents the next tap on a rename from the other phone', async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: TICKET }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    const renameId = '00000000-0000-4000-8000-0000000000aa';
+    const socket = FakeSocket.sockets.at(-1);
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({ type: 'team_renamed', eventId: renameId, team: 'A', name: 'Home', seq: 1 }),
+      });
+    });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="increment-a"]')?.click();
+    });
+    const sent = (socket?.sent ?? []).flatMap((line) => {
+      const parsed = JSON.parse(line) as { type?: string; parentId?: string | null };
+      return parsed.type === 'event' ? [parsed] : [];
+    });
+    expect(sent.at(-1)?.parentId).toBe(renameId);
+  });
+
+  it('reloads once after score_kept and does not reconnect again for that point', async () => {
+    FakeSocket.eventMode = 'keep';
+    FakeSocket.snapshotMode = 'every';
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    const mark = FakeSocket.sockets.length;
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="increment-a"]')?.click();
+    });
+    for (let attempt = 0; attempt < 40 && FakeSocket.sockets.length === mark; attempt += 1) await wait(50);
+    await wait(500);
+    expect(FakeSocket.sockets.length).toBe(mark + 1);
+    expect(document.querySelector('[data-testid="restore-points"]')).not.toBeNull();
+  }, 8_000);
+
+  it('shows the ended server score after an offline point', async () => {
+    const fourOne = played(['a', 'a', 'a', 'a', 'b']);
+    const ended = {
+      ...fourOne,
+      events: [...fourOne.events, { type: 'match/end' as const, at: fourOne.base.createdAt + 20 }],
+    };
+    FakeSocket.scriptedLogs = [played([])];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    await reconnectOffline(ended, ['a']);
+    for (let attempt = 0; attempt < 40 && !scoreLine().includes('Match ended'); attempt += 1) await wait(50);
+    expect(scoreLine()).toContain('Match ended');
+    expect(scoreLine()).toContain('4–1');
+    expect(scoreLine()).not.toContain('5–1');
   }, 8_000);
 });

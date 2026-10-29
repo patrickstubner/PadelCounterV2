@@ -116,7 +116,7 @@ export interface MatchIndex {
   countMinted(matchId: string, now: number): Promise<number>;
   findMinted(matchId: string, deviceId: string, now: number): Promise<{ tokenHash: string } | null>;
   revokeCredential(tokenHash: string, now: number): Promise<void>;
-  revokeSharedAccess(matchId: string, now: number): Promise<void>;
+  revokeSharedAccess(matchId: string, now: number, keepHashes?: readonly string[]): Promise<void>;
   putJoinCode(matchId: string, now: number, row: JoinCodeRow): Promise<void>;
   insertCredential(row: CredentialRow): Promise<void>;
   findCredential(tokenHash: string): Promise<CredentialRow | null>;
@@ -285,11 +285,18 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
     async revokeCredential(tokenHash, now) {
       await db.prepare(REVOKE_CREDENTIAL).bind(now, tokenHash).run();
     },
-    async revokeSharedAccess(matchId, now) {
-      await db.batch([
+    async revokeSharedAccess(matchId, now, keepHashes = []) {
+      const statements = [
         db.prepare(REVOKE_SHARED_CREDS).bind(now, matchId),
         db.prepare(REVOKE_CODES).bind(now, matchId),
-      ]);
+      ];
+      for (const hash of keepHashes) {
+        if (!/^[0-9a-f]{64}$/.test(hash)) continue;
+        statements.push(db.prepare(
+          'UPDATE credentials SET revoked_at = NULL WHERE token_hash = ? AND match_id = ? AND revoked_at = ?',
+        ).bind(hash, matchId, now));
+      }
+      await db.batch(statements);
     },
     async putJoinCode(matchId, now, row) {
       await db.batch([

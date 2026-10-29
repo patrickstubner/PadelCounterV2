@@ -263,6 +263,15 @@ describe('parent-chain merge', () => {
     expect(plan.reason).toBe('already');
   });
 
+  it('counts one shared point when a foreign point stands in front of the chain', () => {
+    const start = reach(['a', 'a', 'b']);
+    const online = linked(start, ['a', 'b'], 'online', null);
+    const offline = linked(start, ['b'], 'offline', null);
+    const plan = planMerge(start, online.events, offline.events);
+    expect(plan.send).toEqual([]);
+    expect(scoreBoard(online.state).sets[0]).toEqual({ a: 3, b: 2 });
+  });
+
   it('clamps a phone clock and does not let it decide a merge', () => {
     const serverNow = T0 + 60_000;
     expect(clampClockOffset(serverNow - 13 * 60 * 60 * 1000, serverNow)).toBe(12 * 60 * 60 * 1000);
@@ -272,5 +281,135 @@ describe('parent-chain merge', () => {
     const ancient = capturedInstant(T0 - 60_000, 0, serverNow, T0);
     expect(ancient).toBe(T0);
     expect(capturedInstant(Number.NaN, 0, serverNow, T0)).toBeNull();
+  });
+});
+
+function settle(base: MatchState, phones: readonly CausalEvent[][], order: readonly number[]): MatchState {
+  let server: CausalEvent[] = [];
+  let state = base;
+  for (const index of order) {
+    const plan = planMerge(base, server, phones[index] ?? []);
+    if (plan.reason === 'ambiguous') return state;
+    for (const item of plan.send) {
+      state = matchReducer(state, item.event);
+      server = [...server, item];
+    }
+  }
+  return state;
+}
+
+describe('three and four phones', () => {
+  const start = () => reach(['a', 'a', 'b']);
+
+  function phones(base: MatchState, chains: readonly (readonly TeamId[])[]): CausalEvent[][] {
+    return chains.map((teams, index) => linked(base, teams, `p${index}`, null).events);
+  }
+
+  function expectBoard(base: MatchState, chains: readonly (readonly TeamId[])[], order: readonly number[], sets: { a: number; b: number }, setIndex = 0) {
+    const board = scoreBoard(settle(base, phones(base, chains), order));
+    expect(board.sets[setIndex]).toEqual(sets);
+    return board;
+  }
+
+  it('follows A3-1 through A3-8 for three phones, in either return order', () => {
+    const base = start();
+    expectBoard(base, [['b', 'b'], ['b', 'b'], ['b', 'b']], [0, 1, 2], { a: 2, b: 3 });
+    expectBoard(base, [['b'], ['a'], ['b']], [0, 1, 2], { a: 3, b: 2 });
+    const cancelled = phones(base, [['b'], ['b']]);
+    const plus = play(base, 'b');
+    const minus = play(plus.state, 'b', 'game/decrement');
+    cancelled.splice(0, 0, [
+      { id: 'plus', parentId: null, event: plus.event, claim: plus.claim },
+      { id: 'minus', parentId: 'plus', event: minus.event, claim: minus.claim },
+    ]);
+    expect(scoreBoard(settle(base, cancelled, [0, 1, 2])).sets[0]).toEqual({ a: 2, b: 2 });
+    expectBoard(base, [['b', 'b'], ['b'], ['b', 'b', 'b']], [2, 0, 1], { a: 2, b: 4 });
+    expectBoard(base, [['b'], ['b', 'a'], ['a']], [2, 0, 1], { a: 3, b: 2 });
+    expectBoard(base, [['b'], ['b', 'a'], ['a']], [1, 0, 2], { a: 3, b: 2 });
+    expectBoard(base, [['b'], ['b'], ['b']], [0, 1, 2], { a: 2, b: 2 });
+    const returned = settle(base, phones(base, [['a'], ['b'], ['b']]), [0, 1, 2]);
+    expect(scoreBoard(returned).sets[0]).toEqual({ a: 3, b: 2 });
+    const later = linked(returned, ['a'], 'later', null);
+    let state = returned;
+    for (const item of planMerge(returned, [], later.events).send) state = matchReducer(state, item.event);
+    expect(scoreBoard(state).sets[0]).toEqual({ a: 4, b: 2 });
+  });
+
+  it('follows A4-1 through A4-5 for four phones', () => {
+    const base = start();
+    expectBoard(base, [[], ['b'], ['b'], ['b']], [3, 2, 1, 0], { a: 2, b: 2 });
+    const host = linked(base, ['a'], 'host', null);
+    const joined = linked(base, ['b'], 'joined', null);
+    const other = linked(base, ['a'], 'other', null);
+    const cancelled = play(base, 'b');
+    const undone = play(cancelled.state, 'b', 'game/decrement');
+    const net: CausalEvent[] = [
+      { id: 'net-plus', parentId: null, event: cancelled.event, claim: cancelled.claim },
+      { id: 'net-minus', parentId: 'net-plus', event: undone.event, claim: undone.claim },
+    ];
+    let state = host.state;
+    const server = [...host.events];
+    for (const chain of [joined.events, net, other.events]) {
+      const plan = planMerge(base, server, chain);
+      expect(plan.reason).not.toBe('ambiguous');
+      for (const item of plan.send) {
+        state = matchReducer(state, item.event);
+        server.push(item);
+      }
+    }
+    expect(scoreBoard(state).sets[0]).toEqual({ a: 3, b: 2 });
+
+    const fourTwo = reach(['a', 'a', 'a', 'a', 'b', 'b']);
+    const minusA = linked(fourTwo, ['a'], 'ma', null, 'game/decrement').events;
+    const minusB = linked(fourTwo, ['b'], 'mb', null, 'game/decrement').events;
+    expect(scoreBoard(settle(fourTwo, [minusA, minusA, minusA, minusB], [0, 1, 2, 3])).sets[0]).toEqual({ a: 3, b: 1 });
+
+    const fiveThree = reach(['a', 'a', 'a', 'a', 'a', 'b', 'b', 'b']);
+    const atSet = settle(fiveThree, phones(fiveThree, [['a'], ['a', 'b'], ['a', 'b', 'b'], ['b']]), [0, 1, 2, 3]);
+    expect(scoreBoard(atSet).sets[0]).toEqual({ a: 6, b: 3 });
+    expect(scoreBoard(atSet).sets[1]).toEqual({ a: 0, b: 2 });
+
+    const fourOne = reach(['a', 'a', 'a', 'a', 'b']);
+    const end: MatchEvent = { type: 'match/end', at: T0 + 80 };
+    const ended: CausalEvent[] = [{ id: 'end', parentId: null, event: end, claim: scoreClaimFor(fourOne, end) }];
+    let final = fourOne;
+    for (const item of ended) final = matchReducer(final, item.event);
+    for (const chain of phones(fourOne, [['a'], ['a'], ['b']])) {
+      const plan = planMerge(fourOne, ended, chain);
+      expect(plan.send).toEqual([]);
+      expect(plan.ambiguous).toEqual([]);
+    }
+    expect(final.ended).toBe(true);
+    expect(scoreBoard(final).sets[0]).toEqual({ a: 4, b: 1 });
+  });
+
+  it('keeps one score when three or four phones return in a random order', () => {
+    let seed = 21;
+    const next = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 2 ** 32;
+    };
+    for (let run = 0; run < 8; run += 1) {
+      const count = run < 5 ? 4 : 3;
+      const base = start();
+      const chains = Array.from({ length: count }, (_, phone) => {
+        const steps = 1 + Math.floor(next() * 3);
+        const teams: TeamId[] = Array.from({ length: steps }, () => (next() < 0.5 ? 'a' : 'b'));
+        return linked(base, teams, `r${run}p${phone}`, null).events;
+      });
+      const forward = scoreBoard(settle(base, chains, chains.map((_, index) => index)));
+      const backward = scoreBoard(settle(base, chains, [...chains.keys()].reverse()));
+      expect(backward).toEqual(forward);
+      const tallest = { a: 2, b: 1 };
+      for (const chain of chains) {
+        let state = base;
+        for (const item of chain) state = matchReducer(state, item.event);
+        const board = scoreBoard(state).sets[0];
+        if (board && board.a > tallest.a) tallest.a = board.a;
+        if (board && board.b > tallest.b) tallest.b = board.b;
+      }
+      expect(forward.sets[0]?.a).toBeGreaterThanOrEqual(tallest.a);
+      expect(forward.sets[0]?.b).toBeGreaterThanOrEqual(tallest.b);
+    }
   });
 });

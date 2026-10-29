@@ -12,8 +12,7 @@ Two designs were compared.
 
 - The same event id is already stored.
 - The parent is the current head, and the board before the point is that head. The point is new. Append it.
-- The parent is an earlier event, and the phone's points repeat what the server already did from that parent. Those points are the same ones. Do not append them.
-- The parent is an earlier event, and the phone also has points the server does not. Append those points on top of the server's later points. A minus that only the offline phone made is one of those points.
+- The parent is an earlier event. Every point since that event is compared as a group, not only with the first one. A point is the same when it is the same team and the same plus or minus. The same set is preferred. A set win on one phone does not make the other phone's point a second point. Order does not matter. Points the server does not have are appended, including a minus.
 - A plus and a later minus of the same team in the same set, on the offline phone, cancel before this comparison. The minus was undoing that phone's own plus. If the plus was the same point the other phone already stored, the minus must not subtract it. So an offline +1/−1 against an online +1 stays at the online score (4:1 then one game is 4:2, not 4:1). An offline +2/−1 against an online +2 stays at 4:3.
 - A rename or a change of server between the fork and a point is not a point. Matching skips it, so the point after it is still the same point.
 - The parent id is missing from the server log, or the queued events do not form one chain. That is the only ambiguous case. Nothing is added until someone taps **Count them again**.
@@ -27,6 +26,12 @@ The score is 4:1. Phone A is offline and records two games for team B (4:2, then
 If A recorded three games and B recorded two, the first two match and the third is appended. The match becomes 4:4.
 
 If A recorded games for team B and B recorded a game for team A from the same parent, both are kept. Neither phone's points are dropped.
+
+Two phones that tap the same team on the same score, including at the same moment, record one point. The phone that already showed both reloads the server score when the server answers `already`. A phone that was offline for a moment and then taps the point the other phone already stored is the same case: the match stays at that score. Ten points split across a short offline gap can finish 5:4 rather than 5:5 when both phones tapped the same team from the same point in the chain. That is the other side of not counting one game twice.
+
+Ending the match keeps the server score. A phone that still had its own points shows the ended server score when it reconnects. Those points are not added after the end.
+
+A new code turns off the previous code. Phones that joined with it are disconnected and told the code is no longer valid. Showing the existing code does not create a new one.
 
 ## What a score event carries
 

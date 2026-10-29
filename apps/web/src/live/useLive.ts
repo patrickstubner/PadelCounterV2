@@ -877,6 +877,7 @@ export function useLive(
   useEffect(() => () => {
     generation.current += 1;
     opening.current = false;
+    clearWake();
     detachSocket(socketRef.current);
     if (offlineTimer.current !== null) {
       clearTimeout(offlineTimer.current);
