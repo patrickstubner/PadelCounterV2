@@ -301,6 +301,7 @@ Production deploy aborted with `production environment needs a required reviewer
 
 - iPhone Safari does not provide a working `BarcodeDetector` (WebKit bug 281848, still failing with the Shape Detection flag on). The scanner reads a centred square at 640, 480, and 720 pixels through `qr` 0.7.2 and does not start a second decode while one is running. `media-src` stays `none`.
 - A scanned string is kept only when it is an `http` or `https` URL for this page’s origin and the app base path `/PadelCounterV2`, with the token only in the fragment. `index.html`, extra slashes, and the page’s own query are not compared. A query that contains the token, or a URL with a username or password, is rejected. The scanned text is not opened, not written into the page, and not sent to the static host.
+- One frame shares about 80 ms across crops and efforts. A detect or decode that does not settle is abandoned, so the next frame can run. The camera stops on its own after 90 seconds, the stream is released, and the page says to tap Use camera again.
 
 ## Out of scope
 

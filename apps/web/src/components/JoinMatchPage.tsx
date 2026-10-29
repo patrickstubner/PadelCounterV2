@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ROOM_MESSAGES, normalizeJoinCode } from '@padel/core';
 import { tokenFromJoinQr } from '../live/protocol';
-import { readQrVideo } from '../live/readQr';
+import { DECODE_WAIT_MS, readQrVideo } from '../live/readQr';
 
 interface JoinMatchPageProps {
   readonly configured: boolean;
@@ -25,7 +25,12 @@ function stopStream(stream: MediaStream | null): void {
   });
 }
 
-/** iOS only plays a camera preview that is inline, muted, and explicitly started. */
+/** The camera preview stops on its own so an old phone is not left capturing. */
+export const CAMERA_LIMIT_MS = 90_000;
+
+const CAMERA_STOPPED = 'Camera stopped. Tap Use camera to try again.';
+
+/** Safari will not show the camera unless the video is inline, muted, and play() is awaited. */
 function prepareVideo(video: HTMLVideoElement): void {
   video.muted = true;
   video.defaultMuted = true;
@@ -60,6 +65,26 @@ async function playCamera(video: HTMLVideoElement): Promise<void> {
   if (started) await started;
 }
 
+/** A scan that never settles must not leave the look loop stuck. */
+function scanWithin(
+  read: (video: HTMLVideoElement) => Promise<string | null>,
+  video: HTMLVideoElement,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(null), DECODE_WAIT_MS);
+    read(video).then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        window.clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
 export function JoinMatchPage({
   configured,
   error,
@@ -76,6 +101,7 @@ export function JoinMatchPage({
   const [camera, setCamera] = useState(false);
   const [draft, setDraft] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
+  const [cameraHint, setCameraHint] = useState<string | null>(null);
   const onTokenRef = useRef(onToken);
   const onCloseRef = useRef(onClose);
   onTokenRef.current = onToken;
@@ -120,14 +146,23 @@ export function JoinMatchPage({
     let stopped = false;
     let scanning = false;
     let timer = 0;
+    let limit = 0;
     const stop = () => {
       stopped = true;
       window.clearTimeout(timer);
+      window.clearTimeout(limit);
       const current = stream;
       stream = null;
       releaseVideo(video);
       stopStream(current);
     };
+    limit = window.setTimeout(() => {
+      if (stopped) return;
+      stop();
+      setLocalError(null);
+      setCameraHint(CAMERA_STOPPED);
+      setCamera(false);
+    }, CAMERA_LIMIT_MS);
     const onHide = () => {
       if (document.visibilityState === 'hidden') {
         stop();
@@ -167,7 +202,7 @@ export function JoinMatchPage({
         if (stopped || scanning) return;
         scanning = true;
         try {
-          const text = await (scanFrame ?? readQrVideo)(video);
+          const text = await scanWithin(scanFrame ?? readQrVideo, video);
           if (stopped) return;
           if (text) {
             const token = tokenFromJoinQr(text, pageHref);
@@ -221,11 +256,13 @@ export function JoinMatchPage({
           <p data-testid="join-unconfigured">Live sharing is not configured in this build.</p>
         )}
         {shown ? <p data-testid="join-match-error">{shown}</p> : null}
+        {cameraHint ? <p data-testid="join-camera-hint">{cameraHint}</p> : null}
         {camera ? (
           <video ref={videoRef} className="join-camera" data-testid="join-camera" muted playsInline autoPlay />
         ) : (
           <button type="button" className="text-btn" data-testid="use-camera" onClick={() => {
             setLocalError(null);
+            setCameraHint(null);
             setCamera(true);
           }}>
             Use camera

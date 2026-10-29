@@ -3,7 +3,8 @@ import { ROOM_MESSAGES } from '@padel/core';
 import { act, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { JoinMatchPage } from './JoinMatchPage';
+import { DECODE_WAIT_MS } from '../live/readQr';
+import { CAMERA_LIMIT_MS, JoinMatchPage } from './JoinMatchPage';
 
 const PAGE = 'https://patrickstubner.github.io/PadelCounterV2/';
 const TOKEN = 'abcdefghijklmnopqrstuv';
@@ -11,6 +12,7 @@ const TOKEN = 'abcdefghijklmnopqrstuv';
 let root: Root | null = null;
 
 afterEach(() => {
+  vi.useRealTimers();
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
   act(() => {
     root?.unmount();
@@ -182,6 +184,65 @@ describe('join match in the app', () => {
     expect(document.querySelector('[data-testid="join-match-error"]')?.textContent).toBe('The camera did not start.');
     expect(document.querySelector('[data-testid="join-camera"]')).toBeNull();
     expect(media.stop).toHaveBeenCalled();
+  });
+
+  it('stops the camera after 90 seconds and shows how to start again', async () => {
+    vi.useFakeTimers();
+    const media = camera();
+    render(
+      <JoinMatchPage
+        configured
+        error={null}
+        pageHref={PAGE}
+        onCode={() => undefined}
+        onToken={() => undefined}
+        onClose={() => undefined}
+        scanFrame={async () => null}
+      />,
+    );
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]')?.click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(document.querySelector('[data-testid="join-camera"]')).not.toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAMERA_LIMIT_MS);
+    });
+    expect(document.querySelector('[data-testid="join-camera"]')).toBeNull();
+    expect(document.querySelector('[data-testid="join-camera-hint"]')?.textContent).toBe(
+      'Camera stopped. Tap Use camera to try again.',
+    );
+    expect(media.stop).toHaveBeenCalled();
+  });
+
+  it('looks again when a scan does not return', async () => {
+    vi.useFakeTimers();
+    camera();
+    let calls = 0;
+    render(
+      <JoinMatchPage
+        configured
+        error={null}
+        pageHref={PAGE}
+        onCode={() => undefined}
+        onToken={() => undefined}
+        onClose={() => undefined}
+        scanFrame={() => {
+          calls += 1;
+          return new Promise(() => undefined);
+        }}
+      />,
+    );
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]')?.click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(calls).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DECODE_WAIT_MS + 200);
+    });
+    expect(calls).toBeGreaterThan(1);
+    expect(document.querySelector('[data-testid="join-camera"]')).not.toBeNull();
   });
 
   it('submits a short code without caring about case or a hyphen', () => {

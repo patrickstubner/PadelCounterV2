@@ -17,29 +17,45 @@ interface QrDecode {
   ): string;
 }
 
+interface DecodeAttempt {
+  cancelled: boolean;
+}
+
 /** Centred square edges tried by the software decoder. Full HD frames are not decoded whole. */
 const SCAN_EDGES = [640, 480, 720] as const;
 
 const SCAN_EFFORTS = [1, 3] as const;
 
-let cachedDetector: QrDetector | null | undefined;
+/** One frame may spend about this long on crops and efforts. Later attempts are skipped. */
+export const FRAME_BUDGET_MS = 80;
 
-/** One software decode at a time. The `qr` scanner rejects overlapping work. */
+/**
+ * A detect or decode that never settles must not leave the scanner locked.
+ * This is longer than the frame budget so one sync decode can finish.
+ */
+export const DECODE_WAIT_MS = 1_000;
+
+let cachedDetector: QrDetector | null = null;
+
+/**
+ * True while a frame is being read.
+ * This is our lock. The sync `qr` decoder does not reject a second call.
+ * The wait below clears the lock if that frame never settles.
+ */
 let decodeBusy = false;
 
 function nativeDetector(): QrDetector | null {
-  if (cachedDetector !== undefined) return cachedDetector;
+  if (cachedDetector) return cachedDetector;
   const host = globalThis as BarcodeDetectorHost;
-  cachedDetector = typeof host.BarcodeDetector === 'function'
-    ? new host.BarcodeDetector({ formats: ['qr_code'] })
-    : null;
+  if (typeof host.BarcodeDetector !== 'function') return null;
+  cachedDetector = new host.BarcodeDetector({ formats: ['qr_code'] });
   return cachedDetector;
 }
 
 function scanEdges(width: number, height: number): number[] {
   const side = Math.min(width, height);
   if (side < 8) return [];
-  if (side <= SCAN_EDGES[2]) return [side];
+  if (side <= 720) return [side];
   return SCAN_EDGES.filter((edge) => edge < side);
 }
 
@@ -47,7 +63,7 @@ function asImage(data: Uint8ClampedArray, width: number, height: number): ImageD
   return { data, width, height, colorSpace: 'srgb' } as ImageData;
 }
 
-/** Nearest-neighbour sample of the centred square. Integer-ish scales keep QR modules intact. */
+/** Nearest-neighbour sample of the centred square, smaller than the camera frame. */
 function centerSquare(image: ImageData, edge: number): ImageData {
   const side = Math.min(image.width, image.height);
   const target = Math.min(edge, side);
@@ -70,11 +86,11 @@ function centerSquare(image: ImageData, edge: number): ImageData {
   return asImage(data, target, target);
 }
 
-function readDecoded(decodeQR: QrDecode, image: ImageData, effort: number): string | null {
+function readDecoded(decodeQR: QrDecode, image: ImageData, effort: number, timeLimit: number): string | null {
   try {
     const text = decodeQR(
       { data: image.data, width: image.width, height: image.height },
-      { effort, timeLimit: 80, nativeLimit: 720 },
+      { effort, timeLimit, nativeLimit: 720 },
     );
     return typeof text === 'string' && text.length > 0 ? text : null;
   } catch {
@@ -82,13 +98,42 @@ function readDecoded(decodeQR: QrDecode, image: ImageData, effort: number): stri
   }
 }
 
-async function decodeSquares(image: ImageData): Promise<string | null> {
+function budgetLeft(started: number): number {
+  return FRAME_BUDGET_MS - (Date.now() - started);
+}
+
+/** Resolves with null if `work` does not settle in time. `work` itself is left running. */
+function settleWithin<T>(work: Promise<T>, ms: number, onTimeout: () => void): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      onTimeout();
+      resolve(null);
+    }, ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
+async function decodeStill(image: ImageData, attempt: DecodeAttempt): Promise<string | null> {
   const edges = scanEdges(image.width, image.height);
-  if (edges.length === 0) return null;
-  const { default: decodeQR } = await import('qr/decode.js');
+  if (edges.length === 0 || attempt.cancelled) return null;
+  const imported = await import('qr/decode.js');
+  if (attempt.cancelled) return null;
+  const decodeQR = imported.default as QrDecode;
+  const started = Date.now();
   for (const effort of SCAN_EFFORTS) {
     for (const edge of edges) {
-      const text = readDecoded(decodeQR as QrDecode, centerSquare(image, edge), effort);
+      const remaining = budgetLeft(started);
+      if (attempt.cancelled || remaining <= 0) return null;
+      const text = readDecoded(decodeQR, centerSquare(image, edge), effort, remaining);
       if (text) return text;
     }
   }
@@ -103,8 +148,8 @@ function frameCanvas(): HTMLCanvasElement | null {
   return scratch;
 }
 
-async function decodeVideoSquares(video: HTMLVideoElement): Promise<string | null> {
-  if (video.videoWidth < 1 || video.videoHeight < 1) return null;
+async function decodeVideo(video: HTMLVideoElement, attempt: DecodeAttempt): Promise<string | null> {
+  if (attempt.cancelled || video.videoWidth < 1 || video.videoHeight < 1) return null;
   const edges = scanEdges(video.videoWidth, video.videoHeight);
   if (edges.length === 0) return null;
   const canvas = frameCanvas();
@@ -113,23 +158,30 @@ async function decodeVideoSquares(video: HTMLVideoElement): Promise<string | nul
   const side = Math.min(video.videoWidth, video.videoHeight);
   const sx = (video.videoWidth - side) / 2;
   const sy = (video.videoHeight - side) / 2;
-  const { default: decodeQR } = await import('qr/decode.js');
+  const imported = await import('qr/decode.js');
+  if (attempt.cancelled) return null;
+  const decodeQR = imported.default as QrDecode;
+  const started = Date.now();
   for (const effort of SCAN_EFFORTS) {
     for (const edge of edges) {
+      const remaining = budgetLeft(started);
+      if (attempt.cancelled || remaining <= 0) return null;
       canvas.width = edge;
       canvas.height = edge;
       context.imageSmoothingEnabled = false;
       context.drawImage(video, sx, sy, side, side, 0, 0, edge, edge);
-      const text = readDecoded(decodeQR as QrDecode, context.getImageData(0, 0, edge, edge), effort);
+      const text = readDecoded(decodeQR, context.getImageData(0, 0, edge, edge), effort, remaining);
       if (text) return text;
     }
   }
   return null;
 }
 
-async function nativeText(detect: () => Promise<readonly QrHit[]>): Promise<string | null> {
+async function nativeValue(detect: () => Promise<readonly QrHit[]>, attempt: DecodeAttempt): Promise<string | null> {
+  if (attempt.cancelled) return null;
   try {
     const codes = await detect();
+    if (attempt.cancelled) return null;
     const value = codes[0]?.rawValue;
     return typeof value === 'string' && value.length > 0 ? value : null;
   } catch {
@@ -137,39 +189,53 @@ async function nativeText(detect: () => Promise<readonly QrHit[]>): Promise<stri
   }
 }
 
-/** Native BarcodeDetector when the browser has it. Otherwise the pinned `qr` decoder. */
-export async function readQrImage(image: ImageData): Promise<string | null> {
-  if (decodeBusy) return null;
-  if (image.width < 1 || image.height < 1) return null;
-  decodeBusy = true;
-  try {
-    const native = nativeDetector();
-    if (native) {
+async function readImage(image: ImageData, attempt: DecodeAttempt): Promise<string | null> {
+  const native = nativeDetector();
+  if (native && !attempt.cancelled) {
+    try {
       const bitmap = await createImageBitmap(image);
       try {
-        const text = await nativeText(() => native.detect(bitmap));
+        const text = await nativeValue(() => native.detect(bitmap), attempt);
         if (text) return text;
       } finally {
         if (typeof bitmap.close === 'function') bitmap.close();
       }
+    } catch {
+      // Native detection failed. The software decoder follows.
     }
-    return await decodeSquares(image);
-  } finally {
-    decodeBusy = false;
   }
+  if (attempt.cancelled) return null;
+  return decodeStill(image, attempt);
+}
+
+async function readVideo(video: HTMLVideoElement, attempt: DecodeAttempt): Promise<string | null> {
+  const native = nativeDetector();
+  if (native && video.readyState >= 2 && !attempt.cancelled) {
+    const text = await nativeValue(() => native.detect(video), attempt);
+    if (text) return text;
+  }
+  if (attempt.cancelled) return null;
+  return decodeVideo(video, attempt);
+}
+
+function readLocked(work: (attempt: DecodeAttempt) => Promise<string | null>): Promise<string | null> {
+  if (decodeBusy) return Promise.resolve(null);
+  const attempt: DecodeAttempt = { cancelled: false };
+  decodeBusy = true;
+  return settleWithin(work(attempt), DECODE_WAIT_MS, () => {
+    attempt.cancelled = true;
+    decodeBusy = false;
+  }).finally(() => {
+    if (!attempt.cancelled) decodeBusy = false;
+  });
+}
+
+/** Native BarcodeDetector when it returns a code. Otherwise the pinned `qr` decoder. */
+export async function readQrImage(image: ImageData): Promise<string | null> {
+  if (image.width < 1 || image.height < 1) return null;
+  return readLocked((attempt) => readImage(image, attempt));
 }
 
 export async function readQrVideo(video: HTMLVideoElement): Promise<string | null> {
-  if (decodeBusy) return null;
-  decodeBusy = true;
-  try {
-    const native = nativeDetector();
-    if (native && video.readyState >= 2) {
-      const text = await nativeText(() => native.detect(video));
-      if (text) return text;
-    }
-    return await decodeVideoSquares(video);
-  } finally {
-    decodeBusy = false;
-  }
+  return readLocked((attempt) => readVideo(video, attempt));
 }
