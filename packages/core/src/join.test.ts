@@ -26,7 +26,7 @@ describe('join admission', () => {
     expect(decision.ok).toBe(false);
     expect(decision.code).toBe('match_full');
     expect(decision.message).toBe(ROOM_MESSAGES.match_full);
-    expect(decision.message).toBe('This match already has 4 players.');
+    expect(decision.message).toBe('This match is full.');
     expect(join({ connectedPlayers: MAX_PLAYERS + 3 }).ok).toBe(false);
   });
 

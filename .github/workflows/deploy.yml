@@ -57,6 +57,7 @@ jobs:
           ACCOUNT_FROM_VARS: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          QUOTA_HMAC_KEY: ${{ secrets.QUOTA_HMAC_KEY }}
         run: |
           account="${CLOUDFLARE_ACCOUNT_ID:-$ACCOUNT_FROM_VARS}"
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$account" ]; then
@@ -66,6 +67,7 @@ jobs:
           export ENV_NAME=staging
           node "$GITHUB_WORKSPACE/adapters/cloudflare/scripts/check-deploy-env.mjs"
           export CLOUDFLARE_ACCOUNT_ID="$account"
+          printf '%s' "$QUOTA_HMAC_KEY" | pnpm exec wrangler secret put QUOTA_HMAC_KEY --env staging
           pnpm exec wrangler d1 migrations apply DB --env staging --remote
           pnpm exec wrangler deploy --env staging
 
@@ -113,6 +115,7 @@ jobs:
           ACCOUNT_FROM_VARS: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          QUOTA_HMAC_KEY: ${{ secrets.QUOTA_HMAC_KEY }}
         run: |
           account="${CLOUDFLARE_ACCOUNT_ID:-$ACCOUNT_FROM_VARS}"
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$account" ]; then
@@ -123,6 +126,7 @@ jobs:
           export ENV_NAME=production
           node "$GITHUB_WORKSPACE/adapters/cloudflare/scripts/check-deploy-env.mjs"
           export CLOUDFLARE_ACCOUNT_ID="$account"
+          printf '%s' "$QUOTA_HMAC_KEY" | pnpm exec wrangler secret put QUOTA_HMAC_KEY --env production
           pnpm exec wrangler d1 migrations apply DB --env production --remote
           pnpm exec wrangler deploy --env production
           echo "ship=true" >> "$GITHUB_OUTPUT"

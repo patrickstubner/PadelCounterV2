@@ -1,7 +1,7 @@
-import { HISTORY_RETAIN_MS, JOINS_PER_DEVICE, JOINS_PER_NETWORK, JOIN_WINDOW_MS, joinWindow, quotaDay } from '@padel/core';
+import { CODE_ALARM_GLOBAL, HISTORY_RETAIN_MS, JOINS_PER_DEVICE, JOINS_PER_NETWORK, JOIN_WINDOW_MS, joinWindow, quotaDay } from '@padel/core';
 import { describe, expect, it } from 'vitest';
 import { d1MatchIndex, shouldTouchActivity, type CredentialRow, type D1Like, type D1Statement } from './match-index';
-import { quotaMac, sha256Hex } from './tokens';
+import { TEST_QUOTA_HMAC_KEY, quotaMac, sha256Hex } from './tokens';
 
 const NOW = Date.UTC(2026, 9, 27, 12, 0, 0);
 
@@ -124,6 +124,8 @@ function memory(): { db: D1Like; queries: string[] } {
       } else {
         throw new Error('CHECK constraint failed');
       }
+      const n = joins.get(key)?.n ?? 0;
+      if (sql.includes('RETURNING')) return { results: [{ n }], meta: { changes: 1 } };
       return { meta: { changes: 1 } };
     }
     if (sql.includes('FROM join_quota WHERE subject_hash')) {
@@ -282,14 +284,14 @@ describe('create quota', () => {
 
   it('rotates the HMAC each UTC day and does not store a plain address hash', async () => {
     const address = '203.0.113.10';
-    const today = await quotaMac('test-quota-hmac-key', 'ip', address, '2026-10-27');
-    const tomorrow = await quotaMac('test-quota-hmac-key', 'ip', address, '2026-10-28');
+    const today = await quotaMac(TEST_QUOTA_HMAC_KEY, 'ip', address, '2026-10-27');
+    const tomorrow = await quotaMac(TEST_QUOTA_HMAC_KEY, 'ip', address, '2026-10-28');
     expect(today).not.toBe(tomorrow);
     expect(today).not.toBe(await sha256Hex(address));
-    expect(today).not.toBe(await quotaMac('test-quota-hmac-key', 'device', address, '2026-10-27'));
-    const socket = await quotaMac('test-quota-hmac-key', 'socket-ip', address, 'socket');
-    expect(socket).toBe(await quotaMac('test-quota-hmac-key', 'socket-ip', address, 'socket'));
-    expect(socket).not.toBe(await quotaMac('test-quota-hmac-key', 'socket-ip', '203.0.113.11', 'socket'));
+    expect(today).not.toBe(await quotaMac(TEST_QUOTA_HMAC_KEY, 'device', address, '2026-10-27'));
+    const socket = await quotaMac(TEST_QUOTA_HMAC_KEY, 'socket-ip', address, 'socket');
+    expect(socket).toBe(await quotaMac(TEST_QUOTA_HMAC_KEY, 'socket-ip', address, 'socket'));
+    expect(socket).not.toBe(await quotaMac(TEST_QUOTA_HMAC_KEY, 'socket-ip', '203.0.113.11', 'socket'));
     expect(socket).not.toBe(await sha256Hex(address));
     expect(socket).not.toContain(address);
   });
@@ -346,8 +348,8 @@ describe('create quota', () => {
     const { db } = memory();
     const index = d1MatchIndex(db);
     const window = joinWindow(NOW);
-    const device = await quotaMac('test-quota-hmac-key', 'join-device', 'd00000001', String(window));
-    const network = await quotaMac('test-quota-hmac-key', 'join-ip', '192.0.2.1', String(window));
+    const device = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd00000001', String(window));
+    const network = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '192.0.2.1', String(window));
     expect(device).not.toBe(await sha256Hex('d00000001'));
     expect(network).not.toBe(await sha256Hex('192.0.2.1'));
     for (let i = 0; i < JOINS_PER_DEVICE; i += 1) {
@@ -358,19 +360,32 @@ describe('create quota', () => {
     expect(await again.takeJoinDevice(device, NOW)).toEqual({ ok: false, reason: 'device' });
     expect((await again.takeJoinDevice(device, NOW + JOIN_WINDOW_MS)).ok).toBe(true);
 
-    const shared = await quotaMac('test-quota-hmac-key', 'join-ip', '192.0.2.9', String(window));
+    const shared = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '192.0.2.9', String(window));
     for (let i = 0; i < JOINS_PER_NETWORK; i += 1) {
       expect((await index.noteJoinFailure(shared, NOW)).ok).toBe(true);
     }
     expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toEqual({ n: JOINS_PER_NETWORK });
     expect(await index.noteJoinFailure(shared, NOW)).toEqual({ ok: false, reason: 'network' });
     expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toEqual({ n: JOINS_PER_NETWORK });
-    const overflowPhone = await quotaMac('test-quota-hmac-key', 'join-device', 'd000000ff', String(window));
+    const overflowPhone = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd000000ff', String(window));
     expect((await index.takeJoinDevice(overflowPhone, NOW)).ok).toBe(true);
 
     await index.purgeEphemeral(NOW + 3 * 24 * 60 * 60 * 1000);
     expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(device, window).first()).toBeNull();
     expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toBeNull();
+  });
+
+  it('alarms only when the upsert lands on exactly 10000', async () => {
+    const { db, queries } = memory();
+    const index = d1MatchIndex(db);
+    let alarms = 0;
+    for (let i = 0; i < CODE_ALARM_GLOBAL + 2; i += 1) {
+      if (await index.noteCodeAlarm('global', NOW)) alarms += 1;
+    }
+    expect(alarms).toBe(1);
+    expect(queries.some((sql) => sql.includes('RETURNING n'))).toBe(true);
+    expect(queries.some((sql) => sql.startsWith('SELECT n FROM join_quota'))).toBe(false);
+    expect(TEST_QUOTA_HMAC_KEY.length).toBeGreaterThanOrEqual(32);
   });
 
   it('rolls back a player-credential revoke when the insert fails', async () => {

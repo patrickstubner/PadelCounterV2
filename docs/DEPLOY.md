@@ -74,14 +74,13 @@ A D1 database id is an identifier, not a credential. Leave the `env.dev` id as t
 
 **can be scripted with wrangler/gh once a token exists.**
 
-Generate one long random string and store it outside the repo. Do not commit it. Do not put it in a GitHub secret. From `adapters/cloudflare`:
+The GitHub environment secret `QUOTA_HMAC_KEY` on `staging` and on `production` is the single source. Each value must be at least 32 characters. Generate it outside the repo and do not commit it. The deploy check reads only the length. It exits if the value is missing or shorter than 32 characters, and it does not print the value.
 
-```sh
-pnpm exec wrangler secret put QUOTA_HMAC_KEY --env staging
-pnpm exec wrangler secret put QUOTA_HMAC_KEY --env production
-```
+The deploy workflow then writes that same value onto the worker with `wrangler secret put QUOTA_HMAC_KEY`. The value is passed on stdin and is not a command argument. The step does not use `set -x` and does not echo the value. Staging and production each use the secret from their own GitHub environment, so the two workers do not have to share counters.
 
-Use the same value on both workers if both should accept the same phones, or two values if the environments must not share counters. The worker refuses a create and a join with `503 not_configured` until the secret exists. `.dev.vars.example` names the key and has no value. Local `wrangler dev` reads `.dev.vars`, which is gitignored.
+The worker itself returns `503` and `not_configured` when the secret is missing or shorter than 32 characters. The body is the usual message and does not include the secret. `.dev.vars.example` names the key and has no value. Local `wrangler dev` reads `.dev.vars`, which is gitignored. A local value also needs at least 32 characters.
+
+Replacing `QUOTA_HMAC_KEY` makes every open short code expire, and every quota counter stop matching, because those rows are an HMAC of this secret. That expiry is accepted. Phones need a new QR code or a new short code. Set the new value as the GitHub environment secret. The next deploy copies it onto the worker. Do not write the old value or the new value into a log, a workflow output, or this file.
 
 ## 7. GitHub environment secrets
 

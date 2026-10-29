@@ -9,7 +9,7 @@ Padel Counter V2 keeps the score of a padel match on your phone. You can play al
 ## What the app does
 
 - **Scoring.** A set is won with 6 games and a lead of 2, or 7–5. At 6–6 the next game is the tiebreak and counts as one game, so the set can finish 7–6. A match is best of 3 sets. You can always open an extra set. Tap **+** to give a team a game. Tap **−** to take a game back.
-- **QR join, up to 4 players.** The phone that starts the live match shows a QR code and a short code such as K7M4-2QAB. Other phones can scan the QR in the app, type the short code, or open the link. At most 4 phones can be in the match. The next phone is told: “This match already has 4 players.”
+- **QR join, up to 4 players.** The phone that starts the live match shows a QR code and a short code such as K7M4-2QAB. Other phones can scan the QR in the app, type the short code, or open the link. At most 4 phones can be in the match. The next phone is told: “This match is full.”
 - **End match and reopen.** End match finishes the match at any score and locks the court. The phone that started the match can reopen it. If another phone ended it, that phone can reopen it too, unless the starting phone was the one that ended it. The starting phone can always reopen it.
 - **Corrections.** **+** and **−** still work after a set has finished. A set that shows 6:0 can be corrected to 5:1. History keeps every change, with the time and which phone made it. Nothing is overwritten.
 - **New match and reconnect.** If a match is still open, New match asks “Finish current match and start a new one?”. Cancel leaves the current match. Finish & new ends it, saves it in History, and starts a fresh one. If the last change was within the last hour, the same question can offer “Reconnect players from last match”. Only phones that were already connected are invited. Each of them sees “Join new match?” and joins with one tap, without scanning. A phone that does not confirm stays out. If the last change was more than an hour ago, share a new QR code. A phone that did not start the match can start its own match. That leaves the shared match on that phone only. The starter’s match stays open.
@@ -60,7 +60,7 @@ pnpm build
 pnpm dev
 ```
 
-`pnpm dev` starts the court. `pnpm dev:worker` starts `wrangler dev --env dev` from `adapters/cloudflare`. Copy `adapters/cloudflare/.dev.vars.example` to `.dev.vars` and set `QUOTA_HMAC_KEY` to a long random string. There are no OAuth secrets to fill in.
+`pnpm dev` starts the court. `pnpm dev:worker` starts `wrangler dev --env dev` from `adapters/cloudflare`. Copy `adapters/cloudflare/.dev.vars.example` to `.dev.vars` and set `QUOTA_HMAC_KEY` to a random string of at least 32 characters. There are no OAuth secrets to fill in.
 
 To point a local court at a local worker, start the worker and run the court with `PUBLIC_API_URL=http://127.0.0.1:8787`. The dev worker allows that origin. Production and staging do not.
 

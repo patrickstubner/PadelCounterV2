@@ -7,13 +7,18 @@ const script = fileURLToPath(new URL('../scripts/check-deploy-env.mjs', import.m
 
 const TOKEN_SENTINEL = 'ghp_test_secret_should_not_print';
 
-function runCheck(envName: string, fixture: unknown): { status: number | null; stderr: string; stdout: string } {
+function runCheck(
+  envName: string,
+  fixture: unknown,
+  quotaKey = 'k'.repeat(32),
+): { status: number | null; stderr: string; stdout: string } {
   const result = spawnSync(process.execPath, [script], {
     env: {
       ...process.env,
       ENV_NAME: envName,
       DEPLOY_ENV_FIXTURE: JSON.stringify(fixture),
       GITHUB_TOKEN: TOKEN_SENTINEL,
+      QUOTA_HMAC_KEY: quotaKey,
     },
     encoding: 'utf8',
   });
@@ -43,6 +48,11 @@ describe('production deploy gate', () => {
     expect(yaml).toContain('github.sha');
     expect(yaml).toContain('git rev-parse HEAD');
     expect(yaml).toContain('wrangler deploy --env production');
+    expect(yaml).toContain("printf '%s' \"$QUOTA_HMAC_KEY\" | pnpm exec wrangler secret put QUOTA_HMAC_KEY --env staging");
+    expect(yaml).toContain("printf '%s' \"$QUOTA_HMAC_KEY\" | pnpm exec wrangler secret put QUOTA_HMAC_KEY --env production");
+    expect(yaml).not.toContain('set -x');
+    expect(yaml).not.toContain('echo "$QUOTA_HMAC_KEY"');
+    expect(yaml).not.toContain('echo $QUOTA_HMAC_KEY');
     expect(yaml).toContain('actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e');
     expect(yaml).toContain('needs: production');
     expect(yaml).toContain('check-deploy-env.mjs');
@@ -113,5 +123,21 @@ describe('production deploy gate', () => {
     expect(runCheck('staging', { protection_rules: [] }).status).toBe(0);
     expect(runCheck('production', { status: 404 }).status).not.toBe(0);
     expect(runCheck('staging', { status: 404 }).status).not.toBe(0);
+  });
+
+  it('rejects a short QUOTA_HMAC_KEY and does not print the value', () => {
+    const short = 'short-hmac-value-not-for-logs';
+    const rejected = runCheck('staging', { protection_rules: [] }, short);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('QUOTA_HMAC_KEY is missing or shorter than 32 characters');
+    expect(rejected.stdout).not.toContain(short);
+    expect(rejected.stderr).not.toContain(short);
+    const missing = runCheck('production', mainOnlyPolicy(), '');
+    expect(missing.status).not.toBe(0);
+    expect(missing.stdout).not.toContain('k'.repeat(32));
+    expect(missing.stderr).not.toContain('k'.repeat(32));
+    const source = readFileSync(new URL('./server.ts', import.meta.url), 'utf8');
+    expect(source).toContain("const CODE_ALARM_LOG = 'short code attempts recorded'");
+    expect(source).toContain('console.log(CODE_ALARM_LOG)');
   });
 });

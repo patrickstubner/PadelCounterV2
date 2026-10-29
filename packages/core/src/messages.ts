@@ -1,6 +1,6 @@
 /** Fixed sentences shared by the server and the UI. The client renders these, not free text from the network. */
 export const ROOM_MESSAGES = {
-  match_full: 'This match already has 4 players.',
+  match_full: 'This match is full.',
   expired: 'This code has expired. Ask for a new one.',
   bad_token: 'This code is not valid.',
   join_code: 'That code did not work.',
@@ -9,6 +9,7 @@ export const ROOM_MESSAGES = {
   forbidden: 'You cannot change the score from this connection.',
   not_applied: 'That change was not applied.',
   slow_down: 'Too many changes. Wait a moment.',
+  code_limited: 'Too many tries from this network. Use the QR link instead.',
   upgrade_required: 'Update the app to keep scoring.',
   unavailable: 'This match is not available.',
   not_configured: 'Live sharing is not configured in this build.',

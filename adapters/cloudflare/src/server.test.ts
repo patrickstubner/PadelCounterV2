@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
-import { createMatch, joinWindow, quotaDay } from '@padel/core';
+import { ROOM_MESSAGES, createMatch, joinWindow, quotaDay } from '@padel/core';
 import { describe, expect, it } from 'vitest';
 import { CLIENT_IP_HEADER, clientIpHeaders } from './match-index';
 import { handleFetch, type RoomNamespace, type ServerEnv } from './server';
-import { quotaMac, sha256Hex } from './tokens';
+import { TEST_QUOTA_HMAC_KEY, quotaMac, sha256Hex } from './tokens';
 
 const CLIENT = '00000000-0000-4000-8000-0000000000aa';
 const PAGES = 'https://patrickstubner.github.io';
@@ -36,6 +36,7 @@ function harness(options?: {
   conflictOnce?: boolean;
   roomInfo?: RoomInfo;
   omitQuotaKey?: boolean;
+  quotaKey?: string;
   failPlayerInsert?: boolean;
   omitLimiter?: boolean;
   /** After this many binding checks, `limit()` returns `{ success: false }`. */
@@ -242,7 +243,7 @@ function harness(options?: {
         }
       },
     },
-    ...(options?.omitQuotaKey ? {} : { QUOTA_HMAC_KEY: 'test-quota-hmac-key' }),
+    ...(options?.omitQuotaKey ? {} : { QUOTA_HMAC_KEY: options?.quotaKey ?? TEST_QUOTA_HMAC_KEY }),
     ...(options?.omitLimiter
       ? {}
       : {
@@ -443,8 +444,8 @@ describe('match index gate', () => {
     expect(created.status).toBe(201);
     const body = (await created.json()) as { hostToken: string };
     const window = joinWindow(Date.now());
-    const device = await quotaMac('test-quota-hmac-key', 'join-device', 'd00000060', String(window));
-    const network = await quotaMac('test-quota-hmac-key', 'join-ip', '192.0.2.61', String(window));
+    const device = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd00000060', String(window));
+    const network = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '192.0.2.61', String(window));
     const ok = await handleFetch(joinRequest('192.0.2.61', body.hostToken, 'd00000060'), env);
     expect(ok.status).toBe(201);
     expect(joins.get(`${device}|${window}`)).toBe(1);
@@ -464,7 +465,7 @@ describe('match index gate', () => {
     });
     expect(joins.size).toBe(2);
 
-    const full = await quotaMac('test-quota-hmac-key', 'join-ip', '192.0.2.71', String(window));
+    const full = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '192.0.2.71', String(window));
     joins.set(`${full}|${window}`, 60);
     const still = await handleFetch(joinRequest('192.0.2.71', body.hostToken, 'd00000070'), env);
     expect(still.status).toBe(201);
@@ -484,8 +485,8 @@ describe('match index gate', () => {
     expect(created.status).toBe(201);
     const body = (await created.json()) as { hostToken: string };
     const window = joinWindow(Date.now());
-    const network = await quotaMac('test-quota-hmac-key', 'join-ip', '198.51.100.61', String(window));
-    const device = await quotaMac('test-quota-hmac-key', 'join-device', 'd00000061', String(window));
+    const network = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '198.51.100.61', String(window));
+    const device = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd00000061', String(window));
     const writes = (from: number) => queries.slice(from).filter((sql) => /^(INSERT|UPDATE|DELETE)\b/.test(sql));
 
     for (let i = 0; i < 5; i += 1) {
@@ -568,7 +569,7 @@ describe('match index gate', () => {
     const keyed = harness();
     await handleFetch(postMatch('192.0.2.80'), keyed.env);
     await handleFetch(postMatch('192.0.2.80', undefined, 'd00000080'), keyed.env);
-    const expected = await quotaMac('test-quota-hmac-key', 'rate-ip', '192.0.2.80', 'binding');
+    const expected = await quotaMac(TEST_QUOTA_HMAC_KEY, 'rate-ip', '192.0.2.80', 'binding');
     expect(keyed.edge.keys).toEqual([expected, expected]);
     expect(expected).not.toContain('192.0.2.80');
     expect(expected).not.toBe(await sha256Hex('192.0.2.80'));
@@ -643,7 +644,7 @@ describe('match index gate', () => {
   it('blocks a network that has already started 100 matches', async () => {
     const { env, quota, ops } = harness();
     const day = quotaDay(Date.now());
-    const ipHash = await quotaMac('test-quota-hmac-key', 'ip', '198.51.100.51', day);
+    const ipHash = await quotaMac(TEST_QUOTA_HMAC_KEY, 'ip', '198.51.100.51', day);
     quota.set(`${ipHash}|${day}`, 100);
     const response = await handleFetch(postMatch('198.51.100.51', undefined, 'd00000051'), env);
     expect(response.status).toBe(429);
@@ -814,6 +815,25 @@ describe('match index gate', () => {
       }),
     );
     expect(headers.get(CLIENT_IP_HEADER)).toBe('198.51.100.8');
+  });
+
+  it('refuses a short quota key without echoing it', async () => {
+    const short = 'abc';
+    const { env, ops } = harness({ quotaKey: short });
+    const response = await handleFetch(postMatch('203.0.113.77'), env);
+    expect(response.status).toBe(503);
+    const text = await response.text();
+    expect(text).not.toContain(short);
+    expect(JSON.parse(text)).toEqual({
+      error: 'not_configured',
+      message: ROOM_MESSAGES.not_configured,
+    });
+    expect(ops).not.toContain('do-create');
+    const borderline = 'k'.repeat(31);
+    const stillShort = harness({ quotaKey: borderline });
+    const blocked = await handleFetch(postMatch('203.0.113.78'), stillShort.env);
+    expect(blocked.status).toBe(503);
+    expect(await blocked.text()).not.toContain(borderline);
   });
 
   it('refuses a create when the quota secret or the device id is missing', async () => {

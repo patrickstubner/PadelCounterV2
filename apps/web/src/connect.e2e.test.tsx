@@ -209,6 +209,7 @@ describe('connect overlay and scanned join', () => {
     expect(joins).toHaveLength(1);
     expect(String(joins[0]?.init?.body)).toContain('K7M4-2QAB');
     expect(sockets[0]?.url).toContain(`/ws/${TICKET}`);
+    expect((window.history.state as { padelArchive?: string } | null)?.padelArchive).not.toBe('join');
   });
 
   it('opens the QR over the court and closes from X, Close, backdrop, and Esc', async () => {

@@ -193,6 +193,47 @@ export function markActivityTouch(sql: RoomSql, now: number): void {
   sql.exec('UPDATE meta SET activity_touch = ? WHERE id = 1', now);
 }
 
+export interface MintGrant {
+  readonly status: 'granted';
+  readonly replaced: readonly string[];
+  readonly revokedAt: number;
+}
+
+/** One grant for a device token. The count and the insert stay in the caller's transaction. */
+export function grantMintedInvite(
+  sql: RoomSql,
+  invite: InviteRow,
+  now: number,
+  max: number,
+): MintGrant | { readonly status: 'full' } {
+  const rows = sql.exec(
+    'SELECT token_hash, device_id FROM invites WHERE host = 0 AND revoked_at IS NULL AND device_id IS NOT NULL AND expires_at > ?',
+    now,
+  ).toArray();
+  const deviceId = invite.deviceId ?? '';
+  const mine = rows.filter((row) => row.device_id === deviceId && typeof row.token_hash === 'string');
+  const others = rows.length - mine.length;
+  if (mine.length === 0 && others >= max) return { status: 'full' };
+  const replaced: string[] = [];
+  for (const row of mine) {
+    const hash = row.token_hash;
+    if (typeof hash !== 'string') continue;
+    sql.exec('UPDATE invites SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL', now, hash);
+    replaced.push(hash);
+  }
+  insertInvite(sql, invite);
+  return { status: 'granted', replaced, revokedAt: now };
+}
+
+/** Undo a grant that D1 did not keep. Only the revocation from that grant is cleared. */
+export function restoreInviteHashes(sql: RoomSql, hashes: readonly string[], revokedAt: number): void {
+  if (!Number.isInteger(revokedAt) || revokedAt <= 0) return;
+  for (const hash of hashes) {
+    if (!/^[0-9a-f]{64}$/.test(hash)) continue;
+    sql.exec('UPDATE invites SET revoked_at = NULL WHERE token_hash = ? AND revoked_at = ?', hash, revokedAt);
+  }
+}
+
 export function revokeInviteHash(sql: RoomSql, tokenHash: string, now: number): void {
   sql.exec('UPDATE invites SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL', now, tokenHash);
 }

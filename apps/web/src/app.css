@@ -6,6 +6,13 @@
   --b: #ffb020;
   --a-bg: #071006;
   --b-bg: #120e06;
+  --court: #000000;
+  --court-online: #163056;
+  --court-offline: #3a1016;
+  /* Header and footer share --bar. Solo is black, live is #0a1a3f, offline is #3a1016. */
+  --bar: #000000;
+  --bar-online: #0a1a3f;
+  --bar-offline: #3a1016;
   --line: #2a2a2a;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
@@ -49,7 +56,7 @@ button:disabled { cursor: not-allowed; }
   height: 100dvh;
   display: flex;
   flex-direction: column;
-  background: #000000;
+  background: var(--court);
   transition: background-color 0.45s ease;
   user-select: none;
   -webkit-user-select: none;
@@ -67,7 +74,7 @@ button:disabled { cursor: not-allowed; }
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.35rem 0.7rem;
-  background: #000000;
+  background: var(--bar);
   transition: background-color 0.45s ease;
 }
 
@@ -507,7 +514,7 @@ button:disabled { cursor: not-allowed; }
   align-items: center;
   justify-content: center;
   gap: 0.12rem;
-  background: #000000;
+  background: var(--court);
   transition: background-color 0.45s ease;
   min-height: 0;
   z-index: 1;
@@ -518,20 +525,16 @@ button:disabled { cursor: not-allowed; }
   padding: 0;
 }
 
-/* Local stays #000000. Online #163056 and offline #3a1016 are separate dark hues.
-   White and #a3a3a3 on both are at least 5.2:1. Disabled glyphs use #d0d0d0 (11.9:1 on #141414). */
-.app.is-online,
-.app.is-online .top,
-.app.is-online .foot,
-.app.is-online .mid {
-  background: #163056;
+/* The shell and the middle follow the connection. The halves stay #071006 and #120e06.
+   Header and footer both read --bar, which changes with the same connection. */
+.app.is-online {
+  --court: var(--court-online);
+  --bar: var(--bar-online);
 }
 
-.app.is-offline,
-.app.is-offline .top,
-.app.is-offline .foot,
-.app.is-offline .mid {
-  background: #3a1016;
+.app.is-offline {
+  --court: var(--court-offline);
+  --bar: var(--bar-offline);
 }
 
 .app.is-online .step:disabled,
