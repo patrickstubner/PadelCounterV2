@@ -675,7 +675,7 @@ describe('live socket reconnect', () => {
     expect(body.claim?.after?.sets?.[0]?.b).toBe(4);
   }, 8_000);
 
-  it('drops a diverged offline point and keeps the server score', async () => {
+  it('adds the offline point on top of the other phone’s point', async () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/join')) {
         joins += 1;
@@ -686,6 +686,9 @@ describe('live socket reconnect', () => {
     await mountJoined();
     expect(scoreLine()).toContain('Team A 0, Team B 0');
     const fresh = await reconnectOffline(played(['b']), ['a']);
+    for (let attempt = 0; attempt < 40 && !scoreLine().includes('Team A 1, Team B 1'); attempt += 1) {
+      await wait(50);
+    }
     expect(scoreLine()).toContain('Team A 1, Team B 1');
     const resent = fresh.flatMap((socket) => socket.sent).filter((line) => line.includes('game/increment'));
     expect(resent).toHaveLength(1);
