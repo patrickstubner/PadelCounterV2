@@ -10,8 +10,11 @@ import { LOCAL_COURT, OFFLINE_COURT, ONLINE_COURT } from './live/protocol';
  * #d0d0d0 on #163056 = 8.56, on #3a1016 = 10.76, on #141414 = 11.94
  * #a3a3a3 on #000000 = 8.33, on #163056 = 5.23, on #3a1016 = 6.58
  * #e4ff47 on #071006 = 17.22, #ffb020 on #120e06 = 10.52
- * #ffffff on #071006 = 19.34, on #120e06 = 19.25, on #0a1a3f = 17.04
- * #a3a3a3 on #0a1a3f = 6.75, #f4f4f4 on #0a1a3f = 15.49
+ * #ffffff on #071006 = 19.34, on #120e06 = 19.25
+ * Bar text, lowest first: #a3a3a3 on #000000 = 8.33, on #0a1a3f = 6.75, on #3a1016 = 6.58
+ * #ffffff on #000000 = 21.00, on #0a1a3f = 17.04, on #3a1016 = 16.59
+ * #f4f4f4 on #000000 = 19.09, on #0a1a3f = 15.49, on #3a1016 = 15.09
+ * #d0d0d0 on #000000 = 13.62, on #0a1a3f = 11.05, on #3a1016 = 10.76
  * #d5d5d5 on #071006 = 13.18, on #120e06 = 13.00
  * #6b6b6b on #163056 = 2.48 and on #3a1016 = 3.11, so those courts do not use it.
  */
@@ -48,8 +51,8 @@ describe('court background contrast', () => {
     expect(css).toContain(`--court: ${LOCAL_COURT}`);
     expect(css).toContain(`--court-online: ${ONLINE_COURT}`);
     expect(css).toContain(`--court-offline: ${OFFLINE_COURT}`);
-    expect(css).toContain('.app.is-online { --court: var(--court-online); }');
-    expect(css).toContain('.app.is-offline { --court: var(--court-offline); }');
+    expect(css).toMatch(/\.app\.is-online\s*\{[^}]*--court:\s*var\(--court-online\)/);
+    expect(css).toMatch(/\.app\.is-offline\s*\{[^}]*--court:\s*var\(--court-offline\)/);
     expect(css).toContain('transition: background-color 0.45s ease');
     expect(css).toContain('.offline-label');
     expect(css).toContain('--a-bg: #071006');
@@ -65,17 +68,35 @@ describe('court background contrast', () => {
     expect(halves).not.toContain('var(--bar)');
   });
 
-  it('paints the header and the footer with the darker blue in every state', () => {
-    const blues = ['#163056', '#0a1a3f'] as const;
-    const darker = blues.reduce((chosen, hex) => (luminance(hex) < luminance(chosen) ? hex : chosen));
-    expect(darker).toBe('#0a1a3f');
-    expect(luminance('#0a1a3f')).toBeLessThan(luminance('#163056'));
-    expect(css).toContain(`--bar: ${darker}`);
+  it('paints the header and the footer with one bar colour per state', () => {
+    expect(css).toContain('--bar: #000000');
+    expect(css).toContain('--bar-online: #0a1a3f');
+    expect(css).toContain('--bar-offline: #3a1016');
     expect(css).toMatch(/\.top,\s*\.foot\s*\{[^}]*background:\s*var\(--bar\)/);
-    const stateRules = css.slice(css.indexOf('.app.is-online {'), css.indexOf('.app.is-online .step:disabled'));
-    expect(stateRules).not.toContain('.top');
-    expect(stateRules).not.toContain('.foot');
-    expect(stateRules).not.toContain('--bar');
+    expect(css).not.toMatch(/\.top[^{]*\{[^}]*background:\s*#/);
+    expect(css).not.toMatch(/\.foot[^{]*\{[^}]*background:\s*#/);
+    const online = css.slice(css.indexOf('.app.is-online {'), css.indexOf('.app.is-offline {'));
+    const offline = css.slice(css.indexOf('.app.is-offline {'), css.indexOf('.app.is-online .step:disabled'));
+    expect(online).toContain('--bar: var(--bar-online)');
+    expect(offline).toContain('--bar: var(--bar-offline)');
+    expect(online).not.toContain('.top');
+    expect(online).not.toContain('.foot');
+    expect(offline).not.toContain('.top');
+    expect(offline).not.toContain('.foot');
+  });
+
+  it('keeps bar text at WCAG AA in solo, live, and offline', () => {
+    const bars = [
+      ['solo', '#000000'],
+      ['live', '#0a1a3f'],
+      ['offline', '#3a1016'],
+    ] as const;
+    const text = ['#ffffff', '#f4f4f4', '#a3a3a3', '#d0d0d0'] as const;
+    for (const [state, background] of bars) {
+      for (const foreground of text) {
+        expect(contrast(foreground, background), `${foreground} on ${state} ${background}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
   });
 
   it('keeps court text, scores, and buttons at WCAG AA', () => {
@@ -98,9 +119,6 @@ describe('court background contrast', () => {
       ['#ffb020', '#120e06'],
       ['#d5d5d5', '#071006'],
       ['#d5d5d5', '#120e06'],
-      ['#ffffff', '#0a1a3f'],
-      ['#f4f4f4', '#0a1a3f'],
-      ['#a3a3a3', '#0a1a3f'],
       ['#d0d0d0', '#141414'],
     ] as const;
     for (const [foreground, background] of pairs) {
