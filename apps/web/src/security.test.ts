@@ -39,7 +39,11 @@ describe('shipped source stays local and text-only', () => {
 
   it('does not reference HTML injection or external hosts', () => {
     const paths = [...filesUnder(join(repoRoot, 'src')), ...filesUnder(join(repoRoot, 'public'))].filter(
-      (file) => !file.endsWith('.test.ts') && !file.endsWith('.png') && !file.endsWith('.ico'),
+      (file) =>
+        !file.endsWith('.test.ts') &&
+        !file.endsWith('.png') &&
+        !file.endsWith('.ico') &&
+        !file.endsWith('.mp4'),
     );
     for (const file of paths) {
       const text = readFileSync(file, 'utf8');
@@ -58,7 +62,10 @@ describe('shipped source stays local and text-only', () => {
     expect(html).not.toContain(`${PAGE_BASE}/`);
     expect(html).toContain('<html lang="en">');
     expect(html).toContain('Content-Security-Policy');
-    expect(html).toContain("media-src 'none'");
+    expect(mediaSrcDirective(html)).toBe("'self'");
+    expect(html).not.toContain("media-src 'none'");
+    expect(html).not.toContain('media-src blob:');
+    expect(html).not.toContain('media-src data:');
     expect(html).toContain("worker-src 'self'");
     const notice = readFileSync(join(repoRoot, 'public/NOTICE.txt'), 'utf8');
     expect(notice).toContain('qr 0.7.2');
@@ -126,13 +133,50 @@ describe('shipped source stays local and text-only', () => {
     expect(html).toContain('apple-mobile-web-app-capable');
     expect(html).toContain('apple-mobile-web-app-status-bar-style" content="black-translucent"');
     expect(html).toContain('apple-mobile-web-app-title" content="Padel Counter V2"');
-    expect(html).toContain("media-src 'none'");
+    expect(mediaSrcDirective(html)).toBe("'self'");
+    expect(html).not.toContain('blob:');
+    expect(html).not.toContain('data:');
     const fanfare = readFileSync(join(repoRoot, 'src/domain/fanfare.ts'), 'utf8');
     expect(fanfare).toContain('AudioContext');
     expect(fanfare).not.toMatch(/\.mp3|\.wav|\.ogg/);
     const buildConfig = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');
     expect(buildConfig).toContain("'**/icon-1024.png'");
     expect(html).toContain('content="#0a1a3f"');
+  });
+
+  it('allows only the same-origin stay-awake clip as media', () => {
+    const html = readFileSync(join(repoRoot, 'src/index.html'), 'utf8');
+    expect(mediaSrcDirective(html)).toBe("'self'");
+    const file = join(repoRoot, 'public/stay-awake.mp4');
+    const bytes = readFileSync(file);
+    expect(bytes.subarray(4, 8).toString('ascii')).toBe('ftyp');
+    expect(bytes.length).toBeGreaterThan(32);
+    expect(bytes.length).toBeLessThan(8_192);
+    const latin = bytes.toString('latin1');
+    expect(latin).not.toContain('http');
+    expect(latin).not.toContain('https');
+    const video = readFileSync(join(repoRoot, 'src/stayAwakeVideo.ts'), 'utf8');
+    const hook = readFileSync(join(repoRoot, 'src/useWakeLock.ts'), 'utf8');
+    expect(video).toContain("setAttribute('playsinline', '')");
+    expect(video).toContain('stay-awake.mp4');
+    expect(video).not.toContain('http://');
+    expect(video).not.toContain('https://');
+    expect(video).not.toContain('blob:');
+    expect(hook).toContain('STAY_AWAKE_FILE');
+    expect(hook).toContain('withBase(');
+    expect(hook).not.toContain('http://');
+    expect(hook).not.toContain('https://');
+    expect(hook).not.toContain('blob:');
+    expect(hook).not.toContain('data:');
+    const build = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');
+    const cache = readFileSync(join(repoRoot, 'src/stayAwakeCache.ts'), 'utf8');
+    expect(build).toContain('stayAwakeRuntimeCaching');
+    expect(build).toContain("'**/stay-awake.mp4'");
+    expect(build).not.toContain('txt,mp4');
+    expect(cache).toContain('rangeRequests: true');
+    expect(cache).toContain('stay-awake\\.mp4');
+    expect(hook).toContain("'pointerup'");
+    expect(hook).toContain("'click'");
   });
 
   it('pins the light lottie player and keeps the trophy license with the file', () => {
@@ -161,6 +205,11 @@ describe('shipped source stays local and text-only', () => {
     expect(victory).toContain('license: DISTRIBUTION_NOTICE');
   });
 });
+
+function mediaSrcDirective(html: string): string {
+  const policy = html.match(/content="([^"]*media-src[^"]*)"/)?.[1] ?? '';
+  return policy.match(/media-src\s+([^;]+)/)?.[1]?.trim() ?? '';
+}
 
 function pngInfo(file: string): { width: number; height: number; colorType: number } {
   const bytes = readFileSync(file);

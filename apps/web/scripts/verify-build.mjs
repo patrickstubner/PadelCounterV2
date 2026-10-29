@@ -40,6 +40,8 @@ const html = readFileSync(htmlPath, 'utf8');
 if (!html.includes('Content-Security-Policy')) fail('CSP meta tag missing');
 if (!html.includes("default-src 'self'")) fail('CSP is not restricted to self');
 if (html.includes('unsafe-inline') || html.includes('unsafe-eval')) fail('CSP allows inline or eval');
+const mediaSrc = html.match(/media-src ([^;"]+)/)?.[1] ?? '';
+if (mediaSrc !== "'self'") fail(`CSP media-src must be 'self', got ${mediaSrc}`);
 const apiUrl = process.env.PUBLIC_API_URL ?? '';
 let htmlUrls = html;
 if (apiUrl) {
@@ -95,6 +97,13 @@ for (const file of precached) {
   if (!sw.includes(`${pageBase}${file}`)) fail(`precache missing ${file}`);
 }
 if (sw.includes('icon-1024.png')) fail('icon-1024.png must not be precached');
+if (sw.includes(`${pageBase}stay-awake.mp4`) || sw.includes('stay-awake.mp4')) {
+  fail('stay-awake.mp4 must not be precached');
+}
+if (!sw.includes('Content-Range') || !sw.includes('padel-stay-awake')) {
+  fail('stay-awake.mp4 range requests are not served as partial content');
+}
+if (!statSync(join(dist, 'stay-awake.mp4')).isFile()) fail('stay-awake.mp4 missing from dist');
 if (!statSync(join(dist, 'icons/icon-1024.png')).isFile()) fail('icon-1024.png missing from dist');
 if (sw.includes('importScripts(')) fail('service worker loads an external script');
 const notice = readFileSync(join(dist, 'NOTICE.txt'), 'utf8');
@@ -102,7 +111,7 @@ if (!notice.includes('qr 0.7.2') || !notice.includes('Paul Miller')) fail('NOTIC
 if (!notice.includes('qrcode 1.5.4') || !notice.includes('Ryan Day')) fail('NOTICE missing the qrcode drawer');
 
 for (const file of walk(dist)) {
-  if (file.endsWith('.png') || file.endsWith('.ico')) continue;
+  if (file.endsWith('.png') || file.endsWith('.ico') || file.endsWith('.mp4')) continue;
   const text = readFileSync(file, 'utf8');
   if (text.includes('__PADEL_TEST_API__')) fail(`test API hook shipped in ${file}`);
   for (const host of banned) {
