@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMatch, matchReducer } from './reducer';
-import { MAX_PENDING_EVENTS, capturedInstant, clampClockOffset, parseScoreClaim, planMerge, scoreBoard, scoreClaimFor, type CausalEvent } from './scoreSync';
+import { MAX_PENDING_EVENTS, capturedInstant, clampClockOffset, decideScore, parseScoreClaim, planMerge, scoreBoard, scoreClaimFor, type CausalEvent } from './scoreSync';
 import type { MatchEvent, MatchState, TeamId } from './types';
 
 const T0 = 1_700_000_000_000;
@@ -202,6 +202,53 @@ describe('parent-chain merge', () => {
     const sixtyFive = [...sixtyFour, { ...sixtyFour[0]!, id: 'sel-65', parentId: 'sel-64' }];
     expect(planMerge(start, [], sixtyFive).reason).toBe('ambiguous');
     expect(planMerge(start, [], sixtyFive).send).toEqual([]);
+  });
+
+  it('matches a point after a rename or a serve change and rebases a further point', () => {
+    const before = reach(['a', 'a', 'a', 'a']);
+    const fork = play(before, 'b');
+    const forkId = 'fork';
+    const forkEvent: CausalEvent = { id: forkId, parentId: null, event: fork.event, claim: fork.claim };
+    const renamed: MatchEvent = { type: 'team/rename', team: 'a', name: 'Home', at: T0 + 40 };
+    const afterRename = matchReducer(fork.state, renamed);
+    const scored = play(afterRename, 'b');
+    const server: CausalEvent[] = [
+      forkEvent,
+      { id: 'rename', parentId: forkId, event: renamed, claim: null },
+      { id: 'online', parentId: 'rename', event: scored.event, claim: scored.claim },
+    ];
+    const offline = play(fork.state, 'b');
+    const same = planMerge(before, server, [{ id: 'offline', parentId: forkId, event: offline.event, claim: offline.claim }]);
+    expect(same.reason).toBe('already');
+    expect(same.send).toEqual([]);
+    const extraStep = play(offline.state, 'b');
+    const extra = planMerge(before, server, [
+      { id: 'offline', parentId: forkId, event: offline.event, claim: offline.claim },
+      { id: 'extra', parentId: 'offline', event: extraStep.event, claim: extraStep.claim },
+    ]);
+    expect(extra.reason).toBe('fast-forward');
+    expect(extra.send).toHaveLength(1);
+    expect(extra.send[0]?.parentId).toBe('online');
+    expect(extra.send[0]?.claim?.before.sets[0]).toEqual({ a: 4, b: 2 });
+    expect(extra.send[0]?.claim?.after.sets[0]).toEqual({ a: 4, b: 3 });
+    const serve: MatchEvent = { type: 'serve/set', team: 'a', player: 1, at: T0 + 41 };
+    const servedPoint = play(matchReducer(fork.state, serve), 'b');
+    const served: CausalEvent[] = [
+      forkEvent,
+      { id: 'serve', parentId: forkId, event: serve, claim: null },
+      { id: 'online-serve', parentId: 'serve', event: servedPoint.event, claim: servedPoint.claim },
+    ];
+    const hidden = planMerge(before, served, [{ id: 'offline-serve', parentId: forkId, event: offline.event, claim: offline.claim }]);
+    expect(hidden.reason).toBe('already');
+    expect(hidden.send).toEqual([]);
+  });
+
+  it('applies match/end when the scoreboard differs and the match is still open', () => {
+    const server = reach(['a']);
+    const end: MatchEvent = { type: 'match/end', at: T0 + 10 };
+    const claim = scoreClaimFor(createMatch(T0), end);
+    expect(decideScore(server, end, claim).kind).toBe('apply');
+    expect(decideScore(matchReducer(server, end), end, claim).kind).toBe('already');
   });
 
   it('does not use the phone clock to tell two points apart', () => {

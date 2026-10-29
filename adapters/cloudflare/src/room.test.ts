@@ -275,7 +275,7 @@ describe('server clock', () => {
         {
           schemaVersion: 2,
           base: createMatch(at, '00000000-0000-4000-8000-0000000000aa'),
-          events: [{ type: 'game/increment', team: 'a', at, by: 'p4' }],
+          events: [{ type: 'game/increment', team: 'a', at, capturedAt: at, by: 'p4' }],
         },
         HOST,
         NOW,
@@ -284,6 +284,7 @@ describe('server clock', () => {
       expect(created.record.base.createdAt).toBe(NOW);
       expect(created.record.base.updatedAt).toBe(NOW);
       expect(created.record.events[0]?.event.at).toBe(NOW);
+      expect(created.record.events[0]?.event.capturedAt).toBe(NOW);
       expect(created.record.events[0]?.event.by).toBe('host');
       expect(serverLastChange(created.record)).toBe(NOW);
       const issued = issueInvite(created.record, HOST, 'player', INVITE, NOW);

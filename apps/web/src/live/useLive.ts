@@ -139,6 +139,7 @@ export function useLive(
   const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seenRef = useRef(new Set<string>());
   const conflictNote = useRef(false);
+  const keptRetry = useRef(new Set<string>());
   const headRef = useRef<string | null>(null);
   const unackedRef = useRef<PendingPoint[]>([]);
   const queueRef = useRef<PendingPoint[]>([]);
@@ -167,6 +168,7 @@ export function useLive(
   const clearPending = () => {
     queueRef.current = [];
     unackedRef.current = [];
+    keptRetry.current = new Set();
   };
 
   const clearSlowTimer = () => {
@@ -402,7 +404,7 @@ export function useLive(
     queueRef.current = rest;
   };
 
-  const resendOutstanding = (ws: WebSocket, matchId: string, log: MatchLog, eventIds: readonly string[]) => {
+  const resendOutstanding = (ws: WebSocket, matchId: string, log: MatchLog, eventIds: readonly string[]): 'already' | 'fast-forward' | 'merged' | 'ambiguous' => {
     const token = tokenRef.current?.token ?? '';
     const outstanding = unackedAfterSnapshot(
       [...unackedRef.current, ...queueRef.current],
@@ -429,18 +431,25 @@ export function useLive(
     const sendById = new Map(plan.send.map((item) => [item.id, item]));
     const sending = outstanding.flatMap((item) => {
       const planned = sendById.get(item.id);
-      return planned ? [{ ...item, parentId: planned.parentId }] : [];
+      return planned ? [{ ...item, parentId: planned.parentId, claim: planned.claim }] : [];
     });
     queueRef.current = [];
     unackedRef.current = sending;
+    const known = new Set(eventIds);
     if (plan.reason === 'ambiguous') {
-      setPendingRestore(plan.ambiguous.map((item) => ({ id: item.id, event: item.event })));
-      return;
+      const incoming = plan.ambiguous.map((item) => ({ id: item.id, event: item.event }));
+      const incomingIds = new Set(incoming.map((item) => item.id));
+      setPendingRestore((current) => {
+        const kept = current.filter((item) => !known.has(item.id) && !incomingIds.has(item.id));
+        return [...kept, ...incoming].slice(0, MAX_PENDING_EVENTS);
+      });
+      return plan.reason;
     }
-    setPendingRestore([]);
+    setPendingRestore((current) => current.filter((item) => !known.has(item.id) && !sendById.has(item.id)));
     for (const item of sending) {
       if (!sendPoint(ws, item)) queueRef.current.push(item);
     }
+    return plan.reason;
   };
 
   const rememberOffer = (token: string | null) => {
@@ -582,14 +591,28 @@ export function useLive(
         if (notice.kind === 'pong') return;
         if (notice.kind === 'error') {
           if (notice.code === 'score_kept') {
-            const queued = new Set(queueRef.current.map((item) => item.id));
-            const rejected = unackedRef.current.find((item) => item.id === notice.eventId);
-            unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId && queued.has(item.id));
+            const rejectedId = notice.eventId ?? '';
+            const rejected = unackedRef.current.find((item) => item.id === rejectedId);
+            unackedRef.current = unackedRef.current.filter((item) => item.id !== rejectedId);
+            queueRef.current = queueRef.current.filter((item) => item.id !== rejectedId);
+            if (keptRetry.current.has(rejectedId)) {
+              if (rejected) {
+                seenRef.current.delete(rejected.id);
+                setPendingRestore((current) => {
+                  if (current.some((item) => item.id === rejected.id)) return current;
+                  return [...current, { id: rejected.id, event: rejected.event }].slice(0, MAX_PENDING_EVENTS);
+                });
+              }
+              noteError(ROOM_MESSAGES.score_kept);
+              return;
+            }
+            keptRetry.current.add(rejectedId);
             if (rejected) {
               seenRef.current.delete(rejected.id);
-              setPendingRestore((current) => [...current, { id: rejected.id, event: rejected.event }].slice(0, MAX_PENDING_EVENTS));
+              queueRef.current.push({ ...rejected, sentAt: 0, resent: false });
             }
-            noteError(ROOM_MESSAGES.score_kept);
+            conflictNote.current = true;
+            reconnectNowRef.current();
             return;
           }
           if (notice.code === 'slow_down') slowDown.current = true;
@@ -631,9 +654,13 @@ export function useLive(
           return;
         }
         if (notice.kind === 'delta') {
+          const foreign = !notice.duplicate && !seenRef.current.has(notice.eventId);
           unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
           queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
-          if (!notice.duplicate && !seenRef.current.has(notice.eventId)) applyRef.current(notice.event);
+          if (foreign) {
+            applyRef.current(notice.event);
+            headRef.current = notice.eventId;
+          }
           seenRef.current.add(notice.eventId);
           setPlayers(notice.players);
           clearSlowBanner();
@@ -645,6 +672,7 @@ export function useLive(
           queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
           if (notice.seq <= nameSeq.current) return;
           nameSeq.current = notice.seq;
+          if (!seenRef.current.has(notice.eventId)) headRef.current = notice.eventId;
           seenRef.current.add(notice.eventId);
           applyRef.current({ type: 'team/rename', team: notice.team, name: notice.name, at: Date.now() });
           return;
@@ -686,10 +714,10 @@ export function useLive(
           opening.current = false;
           clearWake();
           armSender();
-          resendOutstanding(ws, matchId, notice.log, notice.eventIds);
+          const merged = resendOutstanding(ws, matchId, notice.log, notice.eventIds);
           if (conflictNote.current) {
             conflictNote.current = false;
-            noteError(ROOM_MESSAGES.score_kept);
+            if (merged === 'ambiguous') noteError(ROOM_MESSAGES.score_kept);
           }
         }
       };

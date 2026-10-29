@@ -449,7 +449,7 @@ export function App() {
           ) : null}
           {room.pendingRestore.length > 0 ? (
             <div className="restore-points" data-testid="restore-points">
-              <p>These points were only on this phone. The match kept every other point.</p>
+              <p>These points could not be matched. Adding them counts them again on top of the current score. They might already be in the match.</p>
               <ul>
                 {room.pendingRestore.map((item) => (
                   <li key={item.id}>{describeEvent(item.event)}</li>
@@ -464,7 +464,7 @@ export function App() {
                   room.clearRestore();
                 }}
               >
-                Add them
+                Count them again
               </button>
             </div>
           ) : null}

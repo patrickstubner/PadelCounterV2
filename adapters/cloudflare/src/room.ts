@@ -66,12 +66,16 @@ function fail(code: RoomCode): RoomFailure {
   return { ok: false, code, message: ROOM_MESSAGES[code] };
 }
 
-/** Seed rows take the server clock and the host as the actor. Phone times are not kept. */
+/** Seed rows take the server clock and the host as the actor. A phone time on the seed cannot be a future or ancient History row. */
 export function stampSeed(log: MatchLog, now: number): MatchLog {
   return {
     schemaVersion: log.schemaVersion,
     base: { ...log.base, createdAt: now, updatedAt: now },
-    events: log.events.map((event) => ({ ...event, at: now, by: HOST_ACTOR })),
+    events: log.events.map((event) => {
+      const raw = typeof event.capturedAt === 'number' ? event.capturedAt : event.at;
+      const capturedAt = capturedInstant(Math.min(raw, now), 0, now, now) ?? now;
+      return { ...event, at: now, capturedAt, by: HOST_ACTOR };
+    }),
   };
 }
 

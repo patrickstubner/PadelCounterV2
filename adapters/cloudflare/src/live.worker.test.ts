@@ -906,6 +906,72 @@ describe('offline score reconcile in the durable object', () => {
     expect((await storedBoard(created.hostToken, 'd0c000051')).sets[0]).toEqual({ a: 1, b: 0 });
   });
 
+  it('stays 2:2 when two phones alternate points', async () => {
+    const created = await createLive('d0c000071');
+    const host = await connect(created.hostToken, 'd0c000071');
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000072');
+    await phoneB.messages.waitFor((message) => message.type === 'snapshot');
+    let parent: string | null = null;
+    let state = created.state;
+    const phones = [host, phoneB, host, phoneB];
+    for (let index = 0; index < phones.length; index += 1) {
+      const phone = phones[index];
+      if (!phone) continue;
+      const event: MatchEvent = { type: 'game/increment', team: index % 2 === 0 ? 'a' : 'b', at: T0 + 100 + index };
+      const claim = scoreClaimFor(state, event);
+      if (!claim) throw new Error('claim');
+      const id = stepId(200 + index);
+      const ack = await push(phone.ws, phone.messages, id, event, claim, parent);
+      expect(ack).toMatchObject({ type: 'event', duplicate: false });
+      parent = id;
+      state = matchReducer(state, event);
+    }
+    expect((await storedBoard(created.hostToken, 'd0c000073')).sets[0]).toEqual({ a: 2, b: 2 });
+  });
+
+  it('refuses a stale claim on the new head and keeps the point when the claim is recomputed', async () => {
+    const created = await createLive('d0c000081', ['a', 'a', 'a', 'a', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000082');
+    const online = offlineFrom(created.state, ['a'])[0];
+    if (!online) throw new Error('point');
+    const head = stepId(210);
+    await push(phoneB.ws, phoneB.messages, head, online.event, online.claim, 'seed-5');
+    const phoneA = await connect(created.hostToken, 'd0c000081');
+    const stale = offlineFrom(created.state, ['b'])[0];
+    if (!stale) throw new Error('stale');
+    const refused = await push(phoneA.ws, phoneA.messages, stepId(211), stale.event, stale.claim, head);
+    expect(refused).toMatchObject({ type: 'error', code: 'score_kept' });
+    const fresh = offlineFrom(matchReducer(created.state, online.event), ['b'])[0];
+    if (!fresh) throw new Error('fresh');
+    const added = await push(phoneA.ws, phoneA.messages, stepId(212), fresh.event, fresh.claim, head);
+    expect(added).toMatchObject({ type: 'event', duplicate: false });
+    expect((await storedBoard(created.hostToken, 'd0c000083')).sets[0]).toEqual({ a: 5, b: 2 });
+  });
+
+  it('does not count a point again when a rename sits between the fork and that point', async () => {
+    const created = await createLive('d0c000091', ['a', 'a', 'a', 'a', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000092');
+    phoneB.ws.send(JSON.stringify({ type: 'team_renamed', eventId: stepId(220), team: 'A', name: 'Home' }));
+    expect(await phoneB.messages.waitFor((message) => message.eventId === stepId(220))).toMatchObject({ type: 'team_renamed' });
+    const point = offlineFrom(created.state, ['b'])[0];
+    if (!point) throw new Error('point');
+    await push(phoneB.ws, phoneB.messages, stepId(221), point.event, point.claim, stepId(220));
+    const phoneA = await connect(created.hostToken, 'd0c000091');
+    const again = await push(phoneA.ws, phoneA.messages, stepId(222), point.event, point.claim, 'seed-5');
+    expect(again.reconciled).toBe('already');
+    expect((await storedBoard(created.hostToken, 'd0c000093')).sets[0]).toEqual({ a: 4, b: 2 });
+  });
+
+  it('ends the match when the claim board is not the server board', async () => {
+    const created = await createLive('d0c0000a1', ['a']);
+    const host = await connect(created.hostToken, 'd0c0000a1');
+    const endEvent: MatchEvent = { type: 'match/end', at: T0 + 50 };
+    const claim = scoreClaimFor(createMatch(T0), endEvent);
+    const ack = await push(host.ws, host.messages, stepId(230), endEvent, claim, 'seed-1');
+    expect(ack).toMatchObject({ type: 'event', duplicate: false });
+    expect((await storedBoard(created.hostToken, 'd0c0000a2')).ended).toBe(true);
+  });
+
   it('closes a protocol 1 hello and asks for an update', async () => {
     const created = await createLive('d0c000061');
     const response = await call(`/ws/${await ticketFor(created.hostToken, 'd0c000061')}`, { headers: { upgrade: 'websocket' } });

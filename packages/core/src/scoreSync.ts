@@ -284,6 +284,11 @@ function gameDelta(claim: ScoreClaim): { set: 0 | 1 | 2; team: 'a' | 'b'; delta:
   return found;
 }
 
+/** A rename or a serve change does not score a point, so it must not hide the point after it. */
+function isSideEvent(event: MatchEvent): boolean {
+  return event.type === 'team/rename' || event.type === 'serve/set';
+}
+
 function sameEffect(left: MatchEvent, right: MatchEvent): boolean {
   if (left.type !== right.type) return false;
   if (left.type === 'game/increment' || left.type === 'game/decrement') {
@@ -400,21 +405,29 @@ export function planMerge(base: MatchState, server: readonly CausalEvent[], pend
     return ambiguous(normalized, dropped);
   }
 
-  let matched = 0;
+  let clientIndex = 0;
+  let serverIndex = 0;
   let cursor = forkState;
-  while (matched < normalized.length && matched < serverSuffix.length) {
-    const clientEvent = normalized[matched];
-    const serverEvent = serverSuffix[matched];
+  while (clientIndex < normalized.length && serverIndex < serverSuffix.length) {
+    const clientEvent = normalized[clientIndex];
+    const serverEvent = serverSuffix[serverIndex];
     if (!clientEvent || !serverEvent) break;
+    if (isSideEvent(serverEvent.event) && !sameEffect(clientEvent.event, serverEvent.event)) {
+      cursor = matchReducer(cursor, serverEvent.event);
+      serverIndex += 1;
+      continue;
+    }
     const clientNext = matchReducer(cursor, clientEvent.event);
     const serverNext = matchReducer(cursor, serverEvent.event);
     if (clientNext === cursor || serverNext === cursor) break;
     if (!sameEffect(clientEvent.event, serverEvent.event)) break;
     if (!sameBoard(scoreBoard(clientNext), scoreBoard(serverNext))) break;
     cursor = serverNext;
-    matched += 1;
+    clientIndex += 1;
+    serverIndex += 1;
   }
 
+  const matched = clientIndex;
   const remainder = normalized.slice(matched);
   for (const item of normalized.slice(0, matched)) dropped.push(item.id);
   if (remainder.length === 0) return { reason: 'already', send: [], droppedIds: dropped, ambiguous: [] };
@@ -435,6 +448,6 @@ export function planMerge(base: MatchState, server: readonly CausalEvent[], pend
     head = next;
   }
   if (send.length === 0) return { reason: 'already', send: [], droppedIds: dropped, ambiguous: [] };
-  const fast = matched === serverSuffix.length;
+  const fast = serverIndex === serverSuffix.length;
   return { reason: fast ? 'fast-forward' : 'merged', send, droppedIds: dropped, ambiguous: [] };
 }

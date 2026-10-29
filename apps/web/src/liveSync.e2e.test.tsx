@@ -26,6 +26,8 @@ class FakeSocket {
   static echoRename = true;
   /** When set, each hello consumes one log. The default hello stays an empty match. */
   static scriptedLogs: { schemaVersion: 2; base: MatchState; events: MatchEvent[] }[] | null = null;
+  /** Deliver each event to every other open socket, as the other phone would see it. */
+  static relay = false;
   url: string;
   readyState = 0;
   onopen: ((event: Event) => void) | null = null;
@@ -99,16 +101,19 @@ class FakeSocket {
       });
       return;
     }
+    const delivered = JSON.stringify({
+      type: 'event',
+      eventId: parsed.eventId,
+      duplicate: false,
+      players: 2,
+      event: { ...parsed.event, at: 1_700_000_000_100, by: 'p2' },
+    });
     queueMicrotask(() => {
-      this.onmessage?.({
-        data: JSON.stringify({
-          type: 'event',
-          eventId: parsed.eventId,
-          duplicate: false,
-          players: 2,
-          event: { ...parsed.event, at: 1_700_000_000_100, by: 'p2' },
-        }),
-      });
+      this.onmessage?.({ data: delivered });
+      if (!FakeSocket.relay) return;
+      for (const other of FakeSocket.sockets) {
+        if (other !== this && other.readyState === FakeSocket.OPEN) other.onmessage?.({ data: delivered });
+      }
     });
   }
 
@@ -143,6 +148,7 @@ describe('live socket reconnect', () => {
     FakeSocket.snapshotMode = 'first';
     FakeSocket.echoRename = true;
     FakeSocket.scriptedLogs = null;
+    FakeSocket.relay = false;
     joins = 0;
     visible = 'visible';
     localStorage.clear();
@@ -692,5 +698,148 @@ describe('live socket reconnect', () => {
     expect(scoreLine()).toContain('Team A 1, Team B 1');
     const resent = fresh.flatMap((socket) => socket.sent).filter((line) => line.includes('game/increment'));
     expect(resent).toHaveLength(1);
+    const body = JSON.parse(resent[0] ?? '{}') as {
+      parentId?: string;
+      claim?: { before?: { sets?: { a?: number; b?: number }[] }; after?: { sets?: { a?: number; b?: number }[] } };
+    };
+    expect(body.parentId).toBe('00000000-0000-4000-8000-000000000001');
+    expect(body.claim?.before?.sets?.[0]).toEqual({ a: 0, b: 1 });
+    expect(body.claim?.after?.sets?.[0]).toEqual({ a: 1, b: 1 });
+  }, 8_000);
+
+  it('parents each alternating tap on the other phone’s latest point', async () => {
+    FakeSocket.relay = true;
+    FakeSocket.snapshotMode = 'every';
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    const first = mounted[0]?.container;
+    if (!first) throw new Error('first phone');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounted.push({ root, container });
+    await act(async () => {
+      root.render(<App />);
+    });
+    for (let attempt = 0; attempt < 80 && !container.querySelector('[data-testid="leave-live-menu"]'); attempt += 1) {
+      await wait(20);
+    }
+    expect(container.querySelector('[data-testid="leave-live-menu"]')).not.toBeNull();
+    const click = async (scope: ParentNode, team: 'a' | 'b') => {
+      await act(async () => {
+        scope.querySelector<HTMLButtonElement>(`[data-testid="increment-${team}"]`)?.click();
+      });
+      await wait(30);
+    };
+    await click(first, 'a');
+    await click(container, 'b');
+    await click(first, 'a');
+    await click(container, 'b');
+    const eventsOf = (socket: FakeSocket | undefined) =>
+      (socket?.sent ?? []).flatMap((line) => {
+        const parsed = JSON.parse(line) as { type?: string; eventId?: string; parentId?: string | null };
+        return parsed.type === 'event' ? [parsed] : [];
+      });
+    const phoneA = eventsOf(FakeSocket.sockets[0]);
+    const phoneB = eventsOf(FakeSocket.sockets[1]);
+    expect(phoneB[0]?.parentId).toBe(phoneA[0]?.eventId);
+    expect(phoneA[1]?.parentId).toBe(phoneB[0]?.eventId);
+    expect(phoneB[1]?.parentId).toBe(phoneA[1]?.eventId);
+    expect(first.querySelector('.sr-only')?.textContent).toContain('Team A 2, Team B 2');
+    expect(container.querySelector('.sr-only')?.textContent).toContain('Team A 2, Team B 2');
+  }, 8_000);
+
+  it('keeps an unmatched point on the list after a later reconnect', async () => {
+    const one = played(['a']);
+    FakeSocket.scriptedLogs = [one];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    const empty = played([]);
+    await reconnectOffline(empty, ['b']);
+    for (let attempt = 0; attempt < 40 && !document.querySelector('[data-testid="restore-points"]'); attempt += 1) {
+      await wait(50);
+    }
+    expect(document.querySelector('[data-testid="restore-points"]')?.textContent).toContain('could not be matched');
+    expect(document.querySelector('[data-testid="restore-points-add"]')?.textContent).toContain('Count them again');
+    const mark = FakeSocket.sockets.length;
+    FakeSocket.scriptedLogs = [empty, empty];
+    await act(async () => {
+      FakeSocket.sockets.at(-1)?.close();
+      window.dispatchEvent(new Event('online'));
+    });
+    for (let attempt = 0; attempt < 40 && FakeSocket.sockets.length === mark; attempt += 1) await wait(50);
+    await wait(80);
+    expect(document.querySelector('[data-testid="restore-points"]')).not.toBeNull();
+  }, 8_000);
+
+  it('reloads after score_kept and sends the point again', async () => {
+    FakeSocket.eventMode = 'drop-once';
+    FakeSocket.snapshotMode = 'every';
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    const before = FakeSocket.hellos;
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="increment-a"]')?.click();
+    });
+    const socket = FakeSocket.sockets.at(-1);
+    const sent = socket?.sent.map((line) => JSON.parse(line) as { type?: string; eventId?: string }).find((item) => item.type === 'event');
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({ type: 'error', code: 'score_kept', eventId: sent?.eventId }),
+      });
+    });
+    for (let attempt = 0; attempt < 40 && FakeSocket.hellos === before; attempt += 1) await wait(50);
+    expect(FakeSocket.hellos).toBeGreaterThan(before);
+    const resent = FakeSocket.sockets.slice(1).flatMap((item) => item.sent).flatMap((line) => {
+      const parsed = JSON.parse(line) as { type?: string; claim?: { after?: { sets?: { a?: number; b?: number }[] } } };
+      return parsed.type === 'event' ? [parsed] : [];
+    });
+    expect(resent[0]?.claim?.after?.sets?.[0]).toEqual({ a: 1, b: 0 });
+  }, 8_000);
+
+  it('stops applying taps after 64 unsent events', async () => {
+    let blockJoin = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        if (blockJoin) return Response.json({ error: 'offline' }, { status: 503 });
+        joins += 1;
+        return Response.json({ ticket: `${TICKET.slice(0, 21)}${joins}` }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    blockJoin = true;
+    await act(async () => {
+      FakeSocket.sockets.at(-1)?.close();
+    });
+    const setButton = (n: 1 | 2) => document.querySelector<HTMLButtonElement>(`[data-testid="set-a-${n}"]`);
+    await act(async () => {
+      for (let index = 0; index < 64; index += 1) setButton(index % 2 === 0 ? 2 : 1)?.click();
+    });
+    expect(document.querySelector('[data-testid="active-set"]')?.textContent).toBe('Set 1');
+    await act(async () => {
+      setButton(2)?.click();
+    });
+    expect(document.querySelector('[data-testid="active-set"]')?.textContent).toBe('Set 1');
+    expect(document.querySelector('[data-testid="live-error"]')?.textContent).toContain('Too many changes');
+    blockJoin = false;
   }, 8_000);
 });

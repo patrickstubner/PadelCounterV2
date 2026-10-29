@@ -15,7 +15,8 @@ Two designs were compared.
 - The parent is an earlier event, and the phone's points repeat what the server already did from that parent. Those points are the same ones. Do not append them.
 - The parent is an earlier event, and the phone also has points the server does not. Append those points on top of the server's later points. A minus that only the offline phone made is one of those points.
 - A plus and a later minus of the same team in the same set, on the offline phone, cancel before this comparison. The minus was undoing that phone's own plus. If the plus was the same point the other phone already stored, the minus must not subtract it. So an offline +1/−1 against an online +1 stays at the online score (4:1 then one game is 4:2, not 4:1). An offline +2/−1 against an online +2 stays at 4:3.
-- The parent id is missing from the server log, or the queued events do not form one chain. That is the only ambiguous case. Nothing is added until someone taps **Add them**.
+- A rename or a change of server between the fork and a point is not a point. Matching skips it, so the point after it is still the same point.
+- The parent id is missing from the server log, or the queued events do not form one chain. That is the only ambiguous case. Nothing is added until someone taps **Count them again**.
 
 The phone's clock and the offset are not read by this decision. Server timestamps order the log. They do not decide that two branches are the same point.
 
@@ -58,11 +59,13 @@ Each event's `at` on the wire is the phone's capture time. The server stores two
 - `at` is the server clock when the event was accepted. The one-day close and the log order use this.
 - `capturedAt` is the capture time plus the offset, clamped so it is not more than five seconds in the future and not before the match was created.
 
-History shows `capturedAt` when it is present, otherwise `at`, in the timezone of the phone that is reading it. An offline point keeps the time it was tapped, not the time it was uploaded. The offset is not used to merge.
+History shows `capturedAt` when it is present, otherwise `at`, in the timezone of the phone that is reading it. An offline point keeps the time it was tapped, not the time it was uploaded. The offset is not used to merge. A point that was already on the phone when the match was created is a seed. Its display time is clamped to the server clock, so a future or ancient phone time is not stored.
 
 ## Ambiguous chains
 
-If the parent is not in the server log, or the queue is not one chain, or the queue is longer than 64, nothing is merged. The court lists those points and shows **Add them**. That button appends them, once, on top of the current server score. It does not try to guess. Sixty-four is the most the phone will queue; a further tap is not applied. The server still stops at 500 stored events.
+If the parent is not in the server log, or the queue is not one chain, or the queue is longer than 64, nothing is merged. The court lists those points. The text says they could not be matched, and that adding them counts them again on top of the current score, because they might already be in the match. **Count them again** does that once. Sixty-four is the most the phone will queue; a further tap is not applied. The server still stops at 500 stored events.
+
+While both phones are online, each phone sets its next parent to the latest point or rename from the other phone. A point sent with a stale parent is refused. The phone reloads the server log and sends that point again with the parent and the before/after board from the merge. A second refusal leaves the point on the list. Reconnecting does not clear that list.
 
 A point the server marks `duplicate` with `reconciled: "already"` is not broadcast. Another phone must not add it a second time. The phone that receives `duplicate: true` does not apply it again.
 
