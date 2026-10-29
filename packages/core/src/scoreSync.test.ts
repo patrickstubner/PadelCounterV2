@@ -381,6 +381,11 @@ describe('three and four phones', () => {
     }
     expect(final.ended).toBe(true);
     expect(scoreBoard(final).sets[0]).toEqual({ a: 4, b: 1 });
+    const stray = linked(fourOne, ['a'], 'stray', null);
+    const kept = planMerge(fourOne, ended, stray.events);
+    expect(kept.reason).toBe('already');
+    expect(kept.send).toEqual([]);
+    expect(kept.ambiguous).toEqual([]);
   });
 
   it('keeps one score when three or four phones return in a random order', () => {

@@ -29,7 +29,13 @@ If A recorded games for team B and B recorded a game for team A from the same pa
 
 Two phones that tap the same team on the same score, including at the same moment, record one point. The phone that already showed both reloads the server score when the server answers `already`. A phone that was offline for a moment and then taps the point the other phone already stored is the same case: the match stays at that score. Ten points split across a short offline gap can finish 5:4 rather than 5:5 when both phones tapped the same team from the same point in the chain. That is the other side of not counting one game twice.
 
-Ending the match keeps the server score. A phone that still had its own points shows the ended server score when it reconnects. Those points are not added after the end.
+If the two taps are for different teams and one of them wins the set, the server places the other tap in the next set. The phone that tapped the other team is sent the events since the shared point, and shows that score. From 5:0, one A and one B at the same moment become 6:0 and 0:1 on both phones.
+
+The same games can land in different sets depending on who reconnects first. Four phones leaving 5:3 can return as 6:3 and 0:2, or as 6:4 and 0:1. The number of games for each team is the same. No game is lost. The court asks only when a point still cannot be placed. It does not ask again when that point is already in the score, and counting it again does not add it a second time.
+
+A correction is only the events after the shared point, not the whole match. A long correction is sent at most once every two seconds.
+
+Ending the match keeps the server score. A phone that had already joined on that device shows the ended server score when it reconnects. A different device, even with the same code, cannot open the finished match. Points still only on a phone are not added after the end.
 
 A new code turns off the previous code. Phones that joined with it are disconnected and told the code is no longer valid. Showing the existing code does not create a new one.
 

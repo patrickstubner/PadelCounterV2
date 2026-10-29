@@ -1,9 +1,9 @@
 import { DurableObject } from 'cloudflare:workers';
-import { LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, clampClockOffset, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
+import { LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, canonicalCausalId, clampClockOffset, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
-import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange, toLog, type RoomRecord } from './room';
+import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange, type RoomRecord } from './room';
 import { ensureActivityColumn, grantMintedInvite, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, type RoomSql } from './store';
 import { quotaMac, quotaSecret, safeEqualHex, sha256Hex } from './tokens';
 
@@ -31,6 +31,8 @@ interface AdmittedState {
   readonly deviceId: string | null;
   /** Server clock minus the phone clock at hello. Display only. */
   readonly clockOffset: number;
+  /** Last time this socket was sent a score tail. Long tails are limited to one every two seconds. */
+  readonly lastResyncAt?: number;
 }
 
 type SocketState = PendingState | AdmittedState;
@@ -199,6 +201,14 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       }
       this.reject(ws, result.code);
       return;
+    }
+    const playedNow = replayScore(room.base, room.events.map((item) => item.event));
+    if (playedNow.ended && !result.credential.host) {
+      const known = readJoined(this.sql()).some((row) => safeEqualHex(row.tokenHash, tokenHash) && deviceId !== null && row.deviceId === deviceId);
+      if (!known) {
+        this.reject(ws, 'revoked');
+        return;
+      }
     }
     const actor = this.assignActor(result.credential.host, tokenHash, deviceId);
     if (!actor) {
@@ -375,21 +385,28 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       }),
     );
     // An already-counted point is not a new score. Other phones must not apply it.
-    // The sender reloads the server log, so two taps of the same team stay one point.
-    if (result.reconciled === 'already') {
+    // A merged point was placed on a board this phone had not seen. The sender reloads the tail.
+    if (result.reconciled === 'already' || result.reconciled === 'merged') {
+      if (result.reconciled === 'merged') this.broadcast(payload, ws);
       try {
         ws.send(payload);
-        ws.send(this.courtSnapshot(state, result.record));
+        const parsedParent = canonicalCausalId(record.parentId);
+        const fork = parsedParent !== undefined
+          ? parsedParent
+          : result.reconciled === 'merged'
+            ? result.record.events[result.record.events.length - 2]?.eventId ?? null
+            : result.record.events[result.record.events.length - 1]?.eventId ?? null;
+        this.sendTail(ws, state, result.record, fork);
       } catch {
         // The sender already showed the point. The next snapshot replaces it.
       }
-      return;
-    }
-    this.broadcast(payload, ws);
-    try {
-      ws.send(payload);
-    } catch {
-      // The sender already showed the point. The ack is only for reconciliation.
+    } else {
+      this.broadcast(payload, ws);
+      try {
+        ws.send(payload);
+      } catch {
+        // The sender already showed the point. The ack is only for reconciliation.
+      }
     }
     if (!result.duplicate) {
       const at = result.event.event.at;
@@ -406,21 +423,27 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
   }
 
-  /** The log this socket should show. Sent after hello and after an already-counted point. */
-  private courtSnapshot(state: AdmittedState, record: RoomRecord): string {
-    const played = replayScore(record.base, record.events.map((item) => item.event));
-    return JSON.stringify({
-      type: 'snapshot',
+  /**
+   * Events after the fork only. A long tail is sent at most once every two seconds;
+   * a short tail is sent every time so a set-ending merge can correct the sender.
+   */
+  private sendTail(ws: WebSocket, state: AdmittedState, record: RoomRecord, fork: string | null): void {
+    const index = fork === null ? -1 : record.events.findIndex((item) => item.eventId === fork);
+    const suffix = index >= 0 ? record.events.slice(index + 1) : record.events;
+    const now = Date.now();
+    const previous = state.lastResyncAt ?? 0;
+    if (suffix.length > 8 && previous !== 0 && now - previous < 2_000) return;
+    ws.serializeAttachment({ ...state, lastResyncAt: now });
+    ws.send(JSON.stringify({
+      type: 'tail',
+      since: index >= 0 ? fork : null,
       protocol: LIVE_PROTOCOL,
-      role: state.credential.role,
       host: state.credential.host,
       players: this.admittedCount(),
-      log: toLog(record),
-      eventIds: record.events.map((item) => item.eventId),
-      clockOffset: state.clockOffset,
-      names: { A: played.teams.a.name, B: played.teams.b.name },
+      events: suffix.map((item) => item.event),
+      eventIds: suffix.map((item) => item.eventId),
       nameSeq: latestEventSeq(this.sql()),
-    });
+    }));
   }
 
   /** Deliver to admitted court sockets. One closed peer must not stop the rest. */

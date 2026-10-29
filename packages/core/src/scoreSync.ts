@@ -487,6 +487,12 @@ export function planMerge(base: MatchState, server: readonly CausalEvent[], pend
   let parent: string | null = server.length > 0 ? server[server.length - 1]?.id ?? null : null;
   const send: CausalEvent[] = [];
   for (const item of pendingSend) {
+    // Game points on a finished match are discarded above. If that return is removed, they must not be sent.
+    if (head.ended && item.event.type !== 'match/resume') {
+      send.push({ id: item.id, parentId: parent, event: item.event, claim: item.claim });
+      parent = item.id;
+      continue;
+    }
     const claim = isScoreEvent(item.event.type) ? scoreClaimFor(head, item.event) : null;
     const next = matchReducer(head, item.event);
     if (next === head || (isScoreEvent(item.event.type) && !claim)) {

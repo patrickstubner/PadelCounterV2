@@ -946,6 +946,43 @@ describe('live socket reconnect', () => {
     expect(scoreLine()).not.toContain('Team A 2');
   });
 
+  it('shows the server set when a merged tail arrives after a local tap', async () => {
+    FakeSocket.scriptedLogs = [played(['a', 'a', 'a', 'a', 'a'])];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/join')) {
+        joins += 1;
+        return Response.json({ ticket: TICKET }, { status: 201 });
+      }
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }) as typeof fetch;
+    await mountJoined();
+    expect(scoreLine()).toContain('Team A 5, Team B 0');
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="increment-b"]')?.click();
+    });
+    expect(scoreLine()).toContain('Team A 5, Team B 1');
+    const socket = FakeSocket.sockets.at(-1);
+    await act(async () => {
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          type: 'tail',
+          since: '00000000-0000-4000-8000-000000000005',
+          host: false,
+          players: 2,
+          nameSeq: 7,
+          eventIds: ['00000000-0000-4000-8000-000000000006', '00000000-0000-4000-8000-000000000007'],
+          events: [
+            { type: 'game/increment', team: 'a', at: 1_700_000_000_100 },
+            { type: 'game/increment', team: 'b', at: 1_700_000_000_101 },
+          ],
+        }),
+      });
+    });
+    expect(scoreLine()).toContain('Set 2');
+    expect(scoreLine()).toContain('Team A 0, Team B 1');
+    expect(scoreLine()).not.toContain('Team A 5, Team B 1');
+  });
+
   it('parents the next tap on a rename from the other phone', async () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/join')) {

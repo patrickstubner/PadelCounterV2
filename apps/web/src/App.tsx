@@ -67,7 +67,7 @@ function useUpdateReady(): boolean {
 
 export function App() {
   const match = useMatch();
-  const room = useLive(match.liveRef, match.replaceLog, match.applyLive, match.revertLive);
+  const room = useLive(match.liveRef, match.replaceLog, match.applyLive, match.revertLive, match.readLog);
   const install = useInstallOffer();
   useWakeLock(!match.state.ended);
   const updateReady = useUpdateReady();
@@ -460,8 +460,7 @@ export function App() {
                 className="btn-solid"
                 data-testid="restore-points-add"
                 onClick={() => {
-                  for (const item of room.pendingRestore) match.reapply(item.event);
-                  room.clearRestore();
+                  for (const event of room.commitRestore()) match.reapply(event);
                 }}
               >
                 Count them again

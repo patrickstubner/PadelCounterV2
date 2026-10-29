@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, type CausalEvent, type MatchEvent, type MatchLog, type ScoreClaim } from '@padel/core';
+import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, sameBoard, scoreBoard, type CausalEvent, type MatchEvent, type MatchLog, type ScoreClaim } from '@padel/core';
 import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
@@ -41,8 +41,9 @@ export interface LiveController {
   readonly joinError: string | null;
   readonly joining: boolean;
   readonly offer: string | null;
-  readonly pendingRestore: readonly { readonly id: string; readonly event: MatchEvent }[];
+  readonly pendingRestore: readonly { readonly id: string; readonly event: MatchEvent; readonly claim: ScoreClaim | null }[];
   readonly clearRestore: () => void;
+  readonly commitRestore: () => MatchEvent[];
   readonly share: (log: MatchLog, options?: ShareOptions) => void;
   readonly rotate: () => void;
   readonly connect: (token: string) => void;
@@ -98,6 +99,7 @@ export function useLive(
   replaceLog: (log: MatchLog) => void,
   applyLive: (event: MatchEvent) => void,
   revertLive: (event: MatchEvent) => void,
+  readLog: () => MatchLog,
 ): LiveController {
   const api = apiBase();
   const [status, setStatus] = useState<'off' | 'connecting' | 'live' | 'disconnected'>('off');
@@ -110,7 +112,7 @@ export function useLive(
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [offer, setOffer] = useState<string | null>(null);
-  const [pendingRestore, setPendingRestore] = useState<readonly { id: string; event: MatchEvent }[]>([]);
+  const [pendingRestore, setPendingRestore] = useState<readonly { id: string; event: MatchEvent; claim: ScoreClaim | null }[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
   const hostRef = useRef<{
     matchId: string;
@@ -141,6 +143,11 @@ export function useLive(
   const conflictNote = useRef(false);
   const keptRetry = useRef(new Set<string>());
   const headRef = useRef<string | null>(null);
+  const logIdsRef = useRef<string[]>([]);
+  const readLogRef = useRef(readLog);
+  const pendingRef = useRef(pendingRestore);
+  readLogRef.current = readLog;
+  pendingRef.current = pendingRestore;
   const unackedRef = useRef<PendingPoint[]>([]);
   const queueRef = useRef<PendingPoint[]>([]);
   const wakeRef = useRef<() => void>(() => undefined);
@@ -368,6 +375,7 @@ export function useLive(
         parentId,
       };
       headRef.current = eventId;
+      logIdsRef.current.push(eventId);
       seenRef.current.add(eventId);
       unackedRef.current.push(point);
       applyRef.current(courtEvent);
@@ -423,6 +431,12 @@ export function useLive(
         claim: null,
       }];
     });
+    const stateNow = replayScore(log.base, log.events);
+    const listed = (items: readonly CausalEvent[]) => items.filter((item) => {
+      if (item.claim && sameBoard(scoreBoard(stateNow), item.claim.after)) return false;
+      const alone = planMerge(log.base, server, [item]);
+      return alone.reason !== 'already';
+    }).map((item) => ({ id: item.id, event: item.event, claim: item.claim }));
     const plan = planMerge(
       log.base,
       server,
@@ -437,7 +451,7 @@ export function useLive(
     unackedRef.current = sending;
     const known = new Set(eventIds);
     if (plan.reason === 'ambiguous') {
-      const incoming = plan.ambiguous.map((item) => ({ id: item.id, event: item.event }));
+      const incoming = listed(plan.ambiguous);
       const incomingIds = new Set(incoming.map((item) => item.id));
       setPendingRestore((current) => {
         const kept = current.filter((item) => !known.has(item.id) && !incomingIds.has(item.id));
@@ -596,14 +610,26 @@ export function useLive(
             unackedRef.current = unackedRef.current.filter((item) => item.id !== rejectedId);
             queueRef.current = queueRef.current.filter((item) => item.id !== rejectedId);
             if (keptRetry.current.has(rejectedId)) {
-              if (rejected) {
+              const currentLog = readLogRef.current();
+              const checked = rejected
+                ? planMerge(currentLog.base, currentLog.events.map((event, index) => ({
+                  id: logIdsRef.current[index] ?? `local-${index}`,
+                  parentId: index === 0 ? null : logIdsRef.current[index - 1] ?? null,
+                  event,
+                  claim: null,
+                })), [{ id: rejected.id, parentId: rejected.parentId, event: rejected.event, claim: rejected.claim }])
+                : null;
+              const board = scoreBoard(replayScore(currentLog.base, currentLog.events));
+              const alreadyThere = checked?.reason === 'already'
+                || (rejected?.claim != null && sameBoard(board, rejected.claim.after));
+              if (!alreadyThere && rejected) {
                 seenRef.current.delete(rejected.id);
                 setPendingRestore((current) => {
                   if (current.some((item) => item.id === rejected.id)) return current;
-                  return [...current, { id: rejected.id, event: rejected.event }].slice(0, MAX_PENDING_EVENTS);
+                  return [...current, { id: rejected.id, event: rejected.event, claim: rejected.claim }].slice(0, MAX_PENDING_EVENTS);
                 });
+                noteError(ROOM_MESSAGES.score_kept);
               }
-              noteError(ROOM_MESSAGES.score_kept);
               return;
             }
             keptRetry.current.add(rejectedId);
@@ -622,6 +648,7 @@ export function useLive(
               unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
               queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
               seenRef.current.delete(notice.eventId);
+              if (logIdsRef.current.at(-1) === notice.eventId) logIdsRef.current.pop();
               revertRef.current(failed.event);
             }
           }
@@ -659,6 +686,7 @@ export function useLive(
           queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
           if (foreign) {
             applyRef.current(notice.event);
+            logIdsRef.current.push(notice.eventId);
             headRef.current = notice.eventId;
           }
           seenRef.current.add(notice.eventId);
@@ -667,12 +695,39 @@ export function useLive(
           flushQueued(ws);
           return;
         }
+        if (notice.kind === 'tail') {
+          const current = readLogRef.current();
+          const ids = logIdsRef.current;
+          const cut = notice.since === null ? -1 : ids.lastIndexOf(notice.since);
+          if (notice.since !== null && cut < 0) {
+            reconnectNowRef.current();
+            return;
+          }
+          const prefixEvents = notice.since === null ? [] : current.events.slice(0, cut + 1);
+          const prefixIds = notice.since === null ? [] : ids.slice(0, cut + 1);
+          const nextLog = { ...current, events: [...prefixEvents, ...notice.events] };
+          const nextIds = [...prefixIds, ...notice.eventIds];
+          logIdsRef.current = nextIds;
+          seenRef.current = new Set(nextIds.map((id) => id.toLowerCase()));
+          headRef.current = nextIds[nextIds.length - 1] ?? null;
+          const kept = new Set(nextIds);
+          unackedRef.current = unackedRef.current.filter((item) => !kept.has(item.id));
+          queueRef.current = queueRef.current.filter((item) => !kept.has(item.id));
+          replaceRef.current(nextLog);
+          setPlayers(notice.players);
+          nameSeq.current = Math.max(nameSeq.current, notice.nameSeq);
+          resendOutstanding(ws, matchRef.current, nextLog, nextIds);
+          return;
+        }
         if (notice.kind === 'rename') {
           unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
           queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
           if (notice.seq <= nameSeq.current) return;
           nameSeq.current = notice.seq;
-          if (!seenRef.current.has(notice.eventId)) headRef.current = notice.eventId;
+          if (!seenRef.current.has(notice.eventId)) {
+            logIdsRef.current.push(notice.eventId);
+            headRef.current = notice.eventId;
+          }
           seenRef.current.add(notice.eventId);
           applyRef.current({ type: 'team/rename', team: notice.team, name: notice.name, at: Date.now() });
           return;
@@ -681,6 +736,7 @@ export function useLive(
           const matchId = notice.log.base.matchId.toLowerCase();
           matchRef.current = matchId;
           seenRef.current = new Set(notice.eventIds.map((id) => id.toLowerCase()));
+          logIdsRef.current = [...notice.eventIds];
           headRef.current = notice.eventIds[notice.eventIds.length - 1] ?? null;
           replaceRef.current(notice.log);
           readyRef.current = true;
@@ -962,6 +1018,26 @@ export function useLive(
     offer,
     pendingRestore,
     clearRestore: () => setPendingRestore([]),
+    commitRestore: () => {
+      const log = readLogRef.current();
+      const state = replayScore(log.base, log.events);
+      const board = scoreBoard(state);
+      const server: CausalEvent[] = log.events.map((event, index) => ({
+        id: logIdsRef.current[index] ?? `local-${index}`,
+        parentId: index === 0 ? null : logIdsRef.current[index - 1] ?? null,
+        event,
+        claim: null,
+      }));
+      const events: MatchEvent[] = [];
+      for (const item of pendingRef.current) {
+        if (item.claim && sameBoard(board, item.claim.after)) continue;
+        const plan = planMerge(log.base, server, [{ id: item.id, parentId: headRef.current, event: item.event, claim: item.claim }]);
+        if (plan.reason === 'already' || (plan.send.length === 0 && plan.ambiguous.length === 0)) continue;
+        events.push(item.event);
+      }
+      setPendingRestore([]);
+      return events;
+    },
     disconnect,
     acceptOffer: () => {
       const token = offerRef.current;

@@ -70,6 +70,7 @@ export function useMatch() {
         at: at(),
       });
     },
+    readLog: () => logRef.current,
     replaceLog: (next: MatchLog) => {
       logRef.current = next;
       dispatch({ type: 'replace', log: next });

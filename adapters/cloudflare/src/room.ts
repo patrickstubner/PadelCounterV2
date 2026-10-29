@@ -255,7 +255,7 @@ export function applyLiveEvent(
       readonly record: RoomRecord;
       readonly event: StoredEvent;
       readonly duplicate: boolean;
-      readonly reconciled?: 'already';
+      readonly reconciled?: 'already' | 'merged';
     }
   | RoomFailure {
   const blocked = credentialAllowsEvent({
@@ -294,7 +294,7 @@ export function applyPlay(
       readonly record: RoomRecord;
       readonly event: StoredEvent;
       readonly duplicate: boolean;
-      readonly reconciled?: 'already';
+      readonly reconciled?: 'already' | 'merged';
     }
   | RoomFailure {
   const canonical = canonicalEventId(eventId);
@@ -325,6 +325,20 @@ export function applyPlay(
     if (plan.reason === 'ambiguous') return fail('score_kept');
     if (plan.send.length === 0) {
       return { ok: true, record, duplicate: true, reconciled: 'already', event: { eventId: canonical, event: stamped } };
+    }
+    if (plan.reason === 'merged') {
+      const current = replayScore(record.base, record.events.map((item) => item.event));
+      const next = replayScore(current, [stamped]);
+      if (next === current) return fail('not_applied');
+      if (record.events.length >= MAX_EVENTS) return fail('not_applied');
+      const event: StoredEvent = { eventId: canonical, event: stamped };
+      return {
+        ok: true,
+        duplicate: false,
+        reconciled: 'merged',
+        event,
+        record: { ...record, events: [...record.events, event] },
+      };
     }
   } else if (parsed.type === 'match/end') {
     const current = replayScore(record.base, record.events.map((item) => item.event));
@@ -358,14 +372,14 @@ export function eventDelta(input: {
   readonly event: MatchEvent;
   readonly duplicate: boolean;
   readonly players: number;
-  readonly reconciled?: 'already';
+  readonly reconciled?: 'already' | 'merged';
 }): {
   readonly type: 'event';
   readonly eventId: string;
   readonly event: MatchEvent;
   readonly duplicate: boolean;
   readonly players: number;
-  readonly reconciled?: 'already';
+  readonly reconciled?: 'already' | 'merged';
 } {
   return {
     type: 'event',

@@ -988,11 +988,8 @@ describe('offline score reconcile in the durable object', () => {
     expect(acks.filter((message) => message.duplicate === false)).toHaveLength(1);
     expect(acks.filter((message) => message.reconciled === 'already')).toHaveLength(1);
     const loser = hostAck.reconciled === 'already' ? host : phone;
-    const snap = await loser.messages.waitFor((message) => {
-      const events = (message.log as { events?: unknown[] } | undefined)?.events;
-      return message.type === 'snapshot' && Array.isArray(events) && events.length === 1;
-    });
-    expect(snap.type).toBe('snapshot');
+    const tail = await loser.messages.waitFor((message) => message.type === 'tail');
+    expect((tail.events as unknown[]).length).toBe(1);
     expect((await storedBoard(created.hostToken, 'd0e000003')).sets[0]).toEqual({ a: 1, b: 0 });
   });
 
@@ -1058,6 +1055,60 @@ describe('offline score reconcile in the durable object', () => {
     expect(notice.code).toBe('revoked');
     const host = await connect(created.hostToken, 'd0e000031');
     expect((await host.messages.waitFor((message) => message.type === 'snapshot')).host).toBe(true);
+  });
+
+  it('sends the sender a short tail when a point is merged across a set win', async () => {
+    const created = await createLive('d0f000001', ['a', 'a', 'a', 'a', 'a']);
+    const host = await connect(created.hostToken, 'd0f000001');
+    const win = offlineFrom(created.state, ['a'])[0];
+    const other = offlineFrom(created.state, ['b'])[0];
+    if (!win || !other) throw new Error('point');
+    await push(host.ws, host.messages, stepId(270), win.event, win.claim, 'seed-5');
+    const invite = await call(`/matches/${created.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${created.hostToken}` },
+      body: JSON.stringify({ role: 'player' }),
+    });
+    expect(invite.status).toBe(201);
+    const shared = (await invite.json()) as { token: string };
+    const phone = await connect(shared.token, 'd0f000002');
+    const ack = await push(phone.ws, phone.messages, stepId(271), other.event, other.claim, 'seed-5');
+    expect(ack).toMatchObject({ type: 'event', duplicate: false, reconciled: 'merged' });
+    const tail = await phone.messages.waitFor((message) => message.type === 'tail');
+    expect(tail.since).toBe('seed-5');
+    expect((tail.events as unknown[]).length).toBe(2);
+    const board = await storedBoard(created.hostToken, 'd0f000003');
+    expect(board.sets[0]).toEqual({ a: 6, b: 0 });
+    expect(board.sets[1]).toEqual({ a: 0, b: 1 });
+    expect(board.activeSet).toBe(1);
+  });
+
+  it('refuses a new device after the match has ended and still admits the phone that joined', async () => {
+    const created = await createLive('d0f000011', ['a']);
+    const invite = await call(`/matches/${created.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${created.hostToken}` },
+      body: JSON.stringify({ role: 'player' }),
+    });
+    expect(invite.status).toBe(201);
+    const shared = (await invite.json()) as { token: string };
+    const known = await connect(shared.token, 'd0f000012');
+    known.ws.close();
+    const host = await connect(created.hostToken, 'd0f000011');
+    const endEvent: MatchEvent = { type: 'match/end', at: T0 + 40 };
+    await push(host.ws, host.messages, stepId(280), endEvent, scoreClaimFor(created.state, endEvent), 'seed-1');
+    const response = await call(`/ws/${await ticketFor(shared.token, 'd0f000013')}`, { headers: { upgrade: 'websocket' } });
+    const ws = response.webSocket;
+    if (!ws) throw new Error('socket');
+    ws.accept();
+    const messages = inbox(ws);
+    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: shared.token, device: 'd0f000013' }));
+    const error = await messages.waitFor((message) => message.type === 'error');
+    expect(error.code).toBe('revoked');
+    expect(messages.all().some((message) => message.type === 'snapshot')).toBe(false);
+    const again = await connect(shared.token, 'd0f000012');
+    const snap = await again.messages.waitFor((message) => message.type === 'snapshot');
+    expect((snap.log as { events: { type?: string }[] }).events.at(-1)?.type).toBe('match/end');
   });
 
   it('closes a protocol 1 hello and asks for an update', async () => {

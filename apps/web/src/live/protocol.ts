@@ -340,6 +340,7 @@ export function captureJoinHash(
 
 export type LiveNotice =
   | { readonly kind: 'log'; readonly log: MatchLog; readonly players: number; readonly host: boolean; readonly eventIds: readonly string[]; readonly nameSeq: number }
+  | { readonly kind: 'tail'; readonly since: string | null; readonly events: readonly MatchEvent[]; readonly eventIds: readonly string[]; readonly players: number; readonly host: boolean; readonly nameSeq: number }
   | { readonly kind: 'delta'; readonly eventId: string; readonly event: MatchEvent; readonly duplicate: boolean; readonly players: number }
   | { readonly kind: 'rename'; readonly eventId: string; readonly team: 'a' | 'b'; readonly name: string; readonly seq: number }
   | { readonly kind: 'presence'; readonly players: number }
@@ -395,6 +396,23 @@ export function interpretMessage(data: unknown): LiveNotice {
       duplicate: record.duplicate === true,
       players: playerCount(record.players),
     };
+  }
+  if (record.type === 'tail' && Array.isArray(record.events) && Array.isArray(record.eventIds)) {
+    const events = record.events.flatMap((item) => {
+      const parsed = parseStoredEvent(item);
+      return parsed ? [parsed] : [];
+    });
+    const eventIds = record.eventIds.flatMap((id) => {
+      const causal = canonicalCausalId(id);
+      return typeof causal === 'string' ? [causal] : [];
+    });
+    const parsedSince = record.since === null || record.since === undefined ? null : canonicalCausalId(record.since);
+    if (events.length !== record.events.length || eventIds.length !== events.length || (record.since != null && typeof parsedSince !== 'string')) {
+      return { kind: 'ignore' };
+    }
+    const since: string | null = typeof parsedSince === 'string' ? parsedSince : null;
+    const nameSeq = typeof record.nameSeq === 'number' && Number.isInteger(record.nameSeq) && record.nameSeq > 0 ? record.nameSeq : 0;
+    return { kind: 'tail', since, events, eventIds, players: playerCount(record.players), host: record.host === true, nameSeq };
   }
   if (record.type === 'snapshot' && record.log) {
     const log = parseMatchLog(record.log);
