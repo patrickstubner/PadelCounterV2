@@ -31,17 +31,27 @@ function render(node: ReactNode): HTMLDivElement {
   return host;
 }
 
-function camera() {
-  const stop = vi.fn();
+function paceFrames(): void {
+  window.requestAnimationFrame = (callback) => window.setTimeout(() => callback(0), 16);
+  window.cancelAnimationFrame = (id) => {
+    window.clearTimeout(id);
+  };
+}
+
+function camera(trackCount = 1) {
+  paceFrames();
+  const stops = Array.from({ length: trackCount }, () => vi.fn());
+  const tracks = stops.map((stop) => ({ stop, kind: 'video' as const, getCapabilities: () => ({}) }));
   const stream = new MediaStream();
-  Object.defineProperty(stream, 'getTracks', { value: () => [{ stop }] });
+  Object.defineProperty(stream, 'getTracks', { value: () => tracks });
+  Object.defineProperty(stream, 'getVideoTracks', { value: () => tracks });
   const getUserMedia = vi.fn(async () => stream);
   Object.defineProperty(navigator, 'mediaDevices', {
     configurable: true,
     value: { getUserMedia },
   });
   HTMLVideoElement.prototype.play = () => Promise.resolve();
-  return { stop, getUserMedia };
+  return { stop: stops[0] ?? vi.fn(), stops, getUserMedia };
 }
 
 describe('join match in the app', () => {
@@ -70,6 +80,22 @@ describe('join match in the app', () => {
       }
     });
     expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(media.getUserMedia).toHaveBeenCalledWith({
+      audio: false,
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      },
+    });
+    expect(document.querySelector('[data-testid="join-match-dialog"]')?.classList.contains('join-scanning')).toBe(true);
+    expect(document.querySelector('[data-testid="enter-code"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="match-code-input"]')).toBeNull();
+    expect(document.querySelector('[data-testid="scan-hint"]')?.textContent).toContain('Fill the frame');
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="enter-code"]')?.click();
+    });
+    expect(document.querySelector('[data-testid="match-code-input"]')).not.toBeNull();
     expect(scanned).toBeGreaterThan(0);
     const video = document.querySelector('video');
     expect(video?.muted).toBe(true);
@@ -126,8 +152,14 @@ describe('join match in the app', () => {
   });
 
   it('joins from a scanned frame and closes the dialog', async () => {
-    const media = camera();
+    const media = camera(2);
     const tokens: string[] = [];
+    const order: string[] = [];
+    media.stops.forEach((stop) => {
+      stop.mockImplementation(() => {
+        order.push('stop');
+      });
+    });
     const page = 'https://patrickstubner.github.io/PadelCounterV2/index.html?source=pwa';
     const link = `${PAGE}#/join?t=${TOKEN}`;
     function Harness() {
@@ -140,6 +172,7 @@ describe('join match in the app', () => {
           pageHref={page}
           onCode={() => undefined}
           onToken={(token) => {
+            order.push('token');
             tokens.push(token);
             setOpen(false);
           }}
@@ -156,6 +189,9 @@ describe('join match in the app', () => {
       }
     });
     expect(tokens).toEqual([TOKEN]);
+    expect(order[0]).toBe('stop');
+    expect(order).toContain('token');
+    expect(media.stops.every((stop) => stop.mock.calls.length > 0)).toBe(true);
     expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
     expect(document.body.textContent ?? '').not.toContain(TOKEN);
     expect(document.body.textContent ?? '').not.toContain('evil.example');

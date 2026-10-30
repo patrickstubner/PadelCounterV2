@@ -94,7 +94,7 @@ export function ConnectPage({
     >
       <div
         ref={panelRef}
-        className="connect-dialog"
+        className={qr ? 'connect-dialog connect-bright' : 'connect-dialog'}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -124,8 +124,9 @@ export function ConnectPage({
         {status === 'connecting' ? <p data-testid="connect-waiting">Connecting…</p> : null}
         {status === 'live' ? <p data-testid="player-count">{`Live · ${players} of 4 players`}</p> : null}
         {qr ? (
-          <>
+          <div className="qr-stage" data-testid="qr-stage">
             <QrCode text={qr} />
+            <p data-testid="qr-brightness">Turn this screen to full brightness, then hold it flat toward the other phone.</p>
             <p data-testid="qr-note">This code works for 2 hours.</p>
             <p data-testid="new-code-note">New code turns this code off and disconnects the phones that joined with it.</p>
             {code ? (
@@ -149,7 +150,7 @@ export function ConnectPage({
                 {sent === 'copied' ? <p data-testid="code-copied">Copied.</p> : null}
               </>
             ) : null}
-          </>
+          </div>
         ) : null}
         <div className="connect-actions">
           {configured && host && !qr && status !== 'connecting' ? (

@@ -22,7 +22,7 @@ The privacy note in the menu says the same thing in the app. It is not legal adv
 
 1. Open the app. The court shows Team A and Team B, both on 0.
 2. Tap **+** beside a team when that team wins a game. Tap **−** if that game should not have counted.
-3. To share the match, open the menu and choose **Connect players**, then **Show QR code**. The QR code and a short code open over the court. Send code uses the share sheet, or copies the code. Close it with X, Close, or a tap outside. The other phones open **Join match**, then Use camera or type the code. A link in the browser still works. Up to four phones can score. A phone that joined does not get a new QR.
+3. To share the match, open the menu and choose **Connect players**, then **Show QR code**. Turn that screen to full brightness and hold it flat. The QR code is large, with a white margin, and a short code is under it. Send code uses the share sheet, or copies the code. Close it with X, Close, or a tap outside. The other phones open **Join match**, then Use camera. The camera fills the screen. Close and Enter code sit on the picture. A link in the browser still works. Up to four phones can score. A phone that joined does not get a new QR.
 4. When you are done, open the menu and choose **End match**, then confirm. The score stays. Choose **Resume** later if the match should continue.
 5. To start another match, open the menu and choose **New match**. If the current match is still open, choose **Finish & new** or **Cancel**. Within one hour you can turn on **Reconnect players from last match**. Those phones tap **Join** on “Join new match?”.
 6. Open **History** in the menu to read the games, who changed them, and the score after each change.
@@ -78,7 +78,7 @@ Do not create sign-in providers yet. They belong to a later change: a Google cli
 
 Details are in `SECURITY.md`. The short version:
 
-- The QR code carries a 128-bit token in the URL fragment (`#/join?t=<token>`), not in the query string and not next to the match id. The scanning phone removes that fragment with `history.replaceState` and then joins. Join match in the app accepts that link only when the origin and the path are this app. A short code is a separate random value. The server stores its hash and maps it to the current player invite. It is not derived from the token or the match id.
+- The QR code carries a 128-bit token in the URL fragment (`#/join?t=<token>`), not in the query string and not next to the match id. The scanning phone removes that fragment with `history.replaceState` and then joins. Join match in the app accepts that link only when the origin and the path are this app. A short code is a separate random value. The server stores its hash and maps it to the current player invite. It is not derived from the token or the match id. The camera scan, and what still has to be tried on a real iPhone, is described in `docs/qr-scan.md`.
 - The token expires after 2 hours. The creating phone’s credential expires after 12 hours and is kept in this tab’s `sessionStorage`, so a refresh can show the current code. It is not in `localStorage`.
 - New code revokes the previous code and disconnects the phones that joined with it. Showing the current code does not.
 - The worker stores SHA-256 hashes of tokens. The raw token is returned once.

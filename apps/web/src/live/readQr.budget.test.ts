@@ -6,7 +6,7 @@ const clock = vi.hoisted(() => ({ now: 1_000, attempts: 0 }));
 vi.mock('qr/decode.js', () => ({
   default: () => {
     clock.attempts += 1;
-    clock.now += 90;
+    clock.now += 400;
     throw new Error('finder');
   },
 }));
@@ -30,7 +30,7 @@ describe('one time budget per frame', () => {
     delete (globalThis as { BarcodeDetector?: unknown }).BarcodeDetector;
   });
 
-  it('skips the remaining crops once the frame has used about 80 ms', async () => {
+  it('skips the remaining preparations once the frame budget is spent', async () => {
     vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
     const frame = blankFrame();
     frame.data.fill(255);
