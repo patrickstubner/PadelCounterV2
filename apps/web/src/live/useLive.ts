@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, sameBoard, scoreBoard, type CausalEvent, type MatchEvent, type MatchLog, type ScoreClaim } from '@padel/core';
+import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, sameBoard, scoreBoard, type CausalEvent, type MatchEvent, type MatchLog, type PublicPhone, type ScoreClaim } from '@padel/core';
 import { deviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
@@ -35,6 +35,7 @@ export interface LiveController {
   readonly courtTone: 'local' | 'online' | 'offline';
   readonly host: boolean;
   readonly players: number;
+  readonly phones: readonly PublicPhone[];
   readonly qr: string | null;
   readonly code: string | null;
   readonly error: string | null;
@@ -109,6 +110,7 @@ export function useLive(
   const [courtTone, setCourtTone] = useState<'local' | 'online' | 'offline'>('local');
   const [host, setHost] = useState(true);
   const [players, setPlayers] = useState(0);
+  const [phones, setPhones] = useState<readonly PublicPhone[]>([]);
   const [qr, setQr] = useState<string | null>(null);
   const [matchCode, setMatchCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -518,6 +520,7 @@ export function useLive(
     setQr(null);
     setMatchCode(null);
     setPlayers(0);
+    setPhones([]);
     setError(null);
     setPendingRestore([]);
     rememberOffer(null);
@@ -724,6 +727,11 @@ export function useLive(
         }
         if (notice.kind === 'presence') {
           setPlayers(notice.players);
+          return;
+        }
+        if (notice.kind === 'roster') {
+          setPhones(notice.phones);
+          setPlayers(notice.phones.filter((phone) => phone.online).length);
           return;
         }
         if (notice.kind === 'delta') {
@@ -1044,6 +1052,7 @@ export function useLive(
     courtTone,
     host,
     players,
+    phones,
     qr,
     code: matchCode,
     error,
@@ -1109,6 +1118,7 @@ export function useLive(
       setQr(null);
       setMatchCode(null);
       setPlayers(0);
+      setPhones([]);
       return previous;
     },
     connect: (token) => {

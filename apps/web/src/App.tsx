@@ -5,6 +5,7 @@ import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
 import { JoinMatchPage } from './components/JoinMatchPage';
 import { CourtHeader, type CourtAction } from './components/CourtHeader';
+import { PhoneList } from './components/PhoneList';
 import { HistoryPage } from './components/HistoryPage';
 import { PrivacyPage } from './components/PrivacyPage';
 import { TeamPanel } from './components/TeamPanel';
@@ -90,6 +91,7 @@ export function App() {
   });
   const [connectOpen, setConnectOpen] = useState(false);
   const [connectMode, setConnectMode] = useState<'choose' | 'show'>('choose');
+  const [phonesOpen, setPhonesOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
   const joinStarted = useRef(false);
   const applyJoin = useCallback((attempt: { readonly ok: true; readonly token: string } | { readonly ok: false; readonly invalid: boolean }) => {
@@ -411,7 +413,13 @@ export function App() {
 
   return (
     <div className={room.courtTone === 'local' ? 'app' : `app is-${room.courtTone}`}>
-      <CourtHeader setLabel={`Set ${state.activeSet + 1}`} onBrand={openMatches} actions={actions} />
+      <CourtHeader
+        setLabel={`Set ${state.activeSet + 1}`}
+        onBrand={openMatches}
+        actions={actions}
+        phoneCount={room.status === 'live' ? (room.phones.length > 0 ? room.phones.filter((phone) => phone.online).length : room.players) : null}
+        onPhones={room.status === 'live' ? () => setPhonesOpen(true) : undefined}
+      />
       {showVictory && screen.view === 'court' && celebrated ? (
         <Victory
           name={state.teams[celebrated].name}
@@ -572,6 +580,9 @@ export function App() {
           onCancel={room.dismissOffer}
           onConfirm={room.acceptOffer}
         />
+      ) : null}
+      {phonesOpen && room.status === 'live' ? (
+        <PhoneList phones={room.phones} onClose={() => setPhonesOpen(false)} />
       ) : null}
       {connectOpen ? (
         <ConnectPage

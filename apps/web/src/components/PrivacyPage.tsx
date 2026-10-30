@@ -25,6 +25,9 @@ export function PrivacyPage({ onBack }: PrivacyPageProps) {
           camera fills the screen. It starts only after you tap Use camera, and it stops as soon as a code
           is read, when you close the scanner, or when you leave the app. The picture stays on this phone.
           The short code is kept in this tab so you can send it. It is not written to local storage.
+          Phones in the same match can see how many are connected, a coarse device type (iPhone, Android,
+          desktop, or other), and when each phone connected or was last seen. They do not receive the
+          join code, the network address, or the full browser identity.
         </p>
         <p>
           A shared match is processed by Cloudflare (Workers and Durable Objects) so the phones can stay in

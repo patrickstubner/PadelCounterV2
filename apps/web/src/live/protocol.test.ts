@@ -83,6 +83,28 @@ describe('join links', () => {
     expect(interpretMessage({ type: 'match_moved', token: 'short' })).toEqual({ kind: 'ignore' });
     expect(interpretMessage({ type: 'match_notice', code: 'continued' })).toEqual({ kind: 'match_notice' });
     expect(interpretMessage({ type: 'match_notice', code: 'other', token: TOKEN })).toEqual({ kind: 'ignore' });
+    const roster = interpretMessage({
+      type: 'roster',
+      phones: [{
+        seat: 'p2',
+        since: 10,
+        seen: 20,
+        online: true,
+        kind: 'iphone',
+        self: false,
+        token: TOKEN,
+        ip: '203.0.113.8',
+        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+      }],
+    });
+    expect(roster).toEqual({
+      kind: 'roster',
+      phones: [{ seat: 'p2', since: 10, seen: 20, online: true, kind: 'iphone', self: false }],
+    });
+    expect(JSON.stringify(roster)).not.toContain(TOKEN);
+    expect(JSON.stringify(roster)).not.toContain('203.0.113.8');
+    expect(JSON.stringify(roster)).not.toContain('Mozilla');
+    expect(interpretMessage({ type: 'roster', phones: [{ seat: 'p2', since: 10, seen: 20, online: true, kind: 'phone', self: false }] })).toEqual({ kind: 'ignore' });
   });
 
   it('shows the fixed full-match sentence and ignores a forged message', () => {

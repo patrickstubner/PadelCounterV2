@@ -1,11 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
-import { JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, canonicalCausalId, clampClockOffset, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
+import { JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, canonicalCausalId, clampClockOffset, connectionCloses, deviceKindFromAgent, isDeviceKind, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
 import { applyLiveEvent, chooseActor, createRoom, currentSharedInvite, eventDelta, helloPayload, issueInvite, serverLastChange, type RoomRecord } from './room';
 import { openText, sealText } from './seal';
-import { ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, writeSeal, type RoomSql } from './store';
+import { ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, markRosterOffline, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, readRoster, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, saveRosterPhone, writeSeal, type RoomSql } from './store';
 import { quotaMac, quotaSecret, safeEqualHex, sha256Hex } from './tokens';
 
 /** Fixed scope. A minute in the MAC would split one address across two pending caps. */
@@ -18,6 +18,8 @@ interface PendingState {
   /** HMAC of the client address. Never the address itself. */
   readonly ip: string;
   readonly openedAt: number;
+  /** Coarse class of the upgrade's User-Agent. The agent string is not stored. */
+  readonly kind: DeviceKind;
 }
 
 interface AdmittedState {
@@ -109,7 +111,8 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [COURT_TAG]);
     const openedAt = Date.now();
-    server.serializeAttachment({ admitted: false, ip: ipMac, openedAt } satisfies PendingState);
+    const kind = deviceKindFromAgent(request.headers.get('user-agent'));
+    server.serializeAttachment({ admitted: false, ip: ipMac, openedAt, kind } satisfies PendingState);
     await this.armAlarm(openedAt);
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -165,11 +168,20 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
-    void ws;
     void code;
     void reason;
     void wasClean;
+    const state = this.readState(ws);
+    if (state?.admitted && state.deviceId) {
+      const still = this.ctx.getWebSockets(COURT_TAG).some((socket) => {
+        if (socket === ws) return false;
+        const other = this.readState(socket);
+        return other?.admitted === true && other.deviceId === state.deviceId;
+      });
+      if (!still) markRosterOffline(this.sql(), state.deviceId, Date.now());
+    }
     this.broadcastPresence();
+    this.sendRoster(ws);
     await this.armAlarm(Date.now());
   }
 
@@ -235,10 +247,35 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       names: { A: played.teams.a.name, B: played.teams.b.name },
       nameSeq: latestEventSeq(this.sql()),
     }));
+    if (deviceId) {
+      const kind = pending && pending.admitted === false && isDeviceKind(pending.kind) ? pending.kind : 'other';
+      saveRosterPhone(this.sql(), { deviceId, seat: actor, kind, now: Date.now() });
+    }
     await this.sendHandover(ws, deviceId, tokenHash);
     this.closeSuperseded(seated.same);
     this.broadcastPresence();
+    this.sendRoster();
     await this.armAlarm(Date.now());
+  }
+
+  /** One roster per admitted socket. `self` is true only for that socket's device. */
+  private sendRoster(except?: WebSocket): void {
+    const live = new Set<string>();
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      if (socket === except) continue;
+      const state = this.readState(socket);
+      if (state?.admitted === true && state.deviceId) live.add(state.deviceId);
+    }
+    const rows = readRoster(this.sql()).map((row) => ({ ...row, online: live.has(row.deviceId) }));
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      const state = this.readState(socket);
+      if (state?.admitted !== true) continue;
+      try {
+        socket.send(JSON.stringify({ type: 'roster', phones: publicPhoneList(rows, state.deviceId) }));
+      } catch {
+        // A closed peer must not stop the others.
+      }
+    }
   }
 
   /** Admitted sockets for this device do not take another seat. */

@@ -39,6 +39,16 @@ const CREATE_EVENTS = `CREATE TABLE IF NOT EXISTS events (
   payload TEXT NOT NULL
 )`;
 
+/** Coarse phone list. No token, address, or User-Agent. */
+const CREATE_ROSTER = `CREATE TABLE IF NOT EXISTS roster (
+  device_id TEXT PRIMARY KEY,
+  seat TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  since INTEGER NOT NULL,
+  seen INTEGER NOT NULL,
+  online INTEGER NOT NULL
+)`;
+
 /** Ciphertext only. `id` is `invite` or `move:<device>`. */
 const CREATE_SEALED = `CREATE TABLE IF NOT EXISTS sealed (
   id TEXT PRIMARY KEY,
@@ -53,12 +63,17 @@ export function migrate(sql: RoomSql): void {
   sql.exec(CREATE_EVENTS);
   sql.exec(CREATE_JOINED);
   sql.exec(CREATE_SEALED);
+  sql.exec(CREATE_ROSTER);
   ensureActivityColumn(sql);
 }
 
 /** Rooms created before the seal table still accept a later invite. */
 export function ensureSealedTable(sql: RoomSql): void {
   sql.exec(CREATE_SEALED);
+}
+
+export function ensureRosterTable(sql: RoomSql): void {
+  sql.exec(CREATE_ROSTER);
 }
 
 /** Older rooms predate the activity column. Create already includes it. */
@@ -283,6 +298,54 @@ export function readSeal(sql: RoomSql, id: string): SealRow | null {
     return { tokenHash, payload, expiresAt };
   } catch {
     return null;
+  }
+}
+
+export interface RosterRecord {
+  readonly deviceId: string;
+  readonly seat: string;
+  readonly kind: string;
+  readonly since: number;
+  readonly seen: number;
+  readonly online: boolean;
+}
+
+export function saveRosterPhone(
+  sql: RoomSql,
+  phone: { deviceId: string; seat: string; kind: string; now: number },
+): void {
+  ensureRosterTable(sql);
+  const existing = sql.exec('SELECT since FROM roster WHERE device_id = ?', phone.deviceId).toArray()[0];
+  const since = integer(existing?.since) ?? phone.now;
+  sql.exec(
+    `INSERT INTO roster (device_id, seat, kind, since, seen, online) VALUES (?, ?, ?, ?, ?, 1)
+     ON CONFLICT(device_id) DO UPDATE SET seat = excluded.seat, kind = excluded.kind, seen = excluded.seen, online = 1`,
+    phone.deviceId,
+    phone.seat,
+    phone.kind,
+    since,
+    phone.now,
+  );
+}
+
+export function markRosterOffline(sql: RoomSql, deviceId: string, seen: number): void {
+  ensureRosterTable(sql);
+  sql.exec('UPDATE roster SET online = 0, seen = ? WHERE device_id = ?', seen, deviceId);
+}
+
+export function readRoster(sql: RoomSql): RosterRecord[] {
+  try {
+    return sql.exec('SELECT device_id, seat, kind, since, seen, online FROM roster ORDER BY since, device_id').toArray().flatMap((row) => {
+      const deviceId = text(row.device_id);
+      const seat = text(row.seat);
+      const kind = text(row.kind);
+      const since = integer(row.since);
+      const seen = integer(row.seen);
+      if (!deviceId || !seat || !kind || since === null || seen === null) return [];
+      return [{ deviceId, seat, kind, since, seen, online: row.online === 1 }];
+    });
+  } catch {
+    return [];
   }
 }
 

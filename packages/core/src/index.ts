@@ -60,6 +60,15 @@ export {
   tiebreakHint,
 } from './rules';
 export type { MatchResult } from './rules';
+export {
+  DEVICE_KINDS,
+  deviceKindFromAgent,
+  deviceKindLabel,
+  isDeviceKind,
+  parsePublicPhones,
+  publicPhoneList,
+} from './phones';
+export type { DeviceKind, PublicPhone, RosterSource } from './phones';
 export { assignMatchId, createMatch, matchReducer, prepareLiveLog, replayScore } from './reducer';
 export {
   FUTURE_SLACK_MS,
