@@ -1,13 +1,30 @@
 import { DurableObject } from 'cloudflare:workers';
-import { CARRY_PER_MATCH, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, canonicalCausalId, clampClockOffset, connectionCloses, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
+import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, UNUSED_MINT_MS, actorId, canonicalCausalId, clampClockOffset, connectionCloses, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isLegacyDeviceId, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
 import { applyLiveEvent, chooseActor, createRoom, currentSharedInvite, eventDelta, helloPayload, issueInvite, serverLastChange, type RoomRecord } from './room';
 import { openText, sealText } from './seal';
 import { randomToken } from './tokens';
-import { dropMemberHashes, ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, markRosterOffline, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, readRoster, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, saveRosterPhone, takeMatchBudget, writeSeal, type RoomSql } from './store';
+import { deleteSeal, dropMemberHashes, ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, markRosterOffline, matchBudgetOpen, openRoomForCreate, pendingMintStale, readActivityTouch, readEventSeq, readJoined, readRoom, readRoster, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, saveRosterPhone, takeMatchBudget, writeSeal, type RoomSql } from './store';
 import { quotaMac, quotaSecret, safeEqualHex, sha256Hex } from './tokens';
+
+function publicSeat(value: unknown): string | null {
+  if (value === 'host') return 'host';
+  if (typeof value !== 'string' || isDeviceId(value)) return null;
+  return actorId(value) === value && /^p[1-9]\d*$/.test(value) ? value : null;
+}
+
+function packedMove(plain: string | null): { token: string | null; seat: string | null } {
+  if (!plain) return { token: null, seat: null };
+  if (!plain.startsWith('{')) return { token: plain, seat: null };
+  try {
+    const parsed = JSON.parse(plain) as { token?: unknown; seat?: unknown };
+    return { token: typeof parsed.token === 'string' ? parsed.token : null, seat: publicSeat(parsed.seat) };
+  } catch {
+    return { token: null, seat: null };
+  }
+}
 
 /** Fixed scope. A minute in the MAC would split one address across two pending caps. */
 const SOCKET_IP_SCOPE = 'socket';
@@ -146,6 +163,10 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       await this.hello(ws, record, state);
       return;
     }
+    if (record.type === 'decline_move') {
+      if (state.deviceId) deleteSeal(this.sql(), `move:${state.deviceId}`);
+      return;
+    }
     if (record.type === 'team_renamed') {
       const renameBudget = allowRate(state.renameStamps ?? [], Date.now(), RENAME_PER_SECOND, 1_000);
       ws.serializeAttachment({ ...state, renameStamps: renameBudget.stamps });
@@ -192,13 +213,31 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       this.reject(ws, record.protocol === LIVE_PROTOCOL ? 'bad_token' : 'upgrade_required');
       return;
     }
-    const room = readRoom(this.sql());
-    if (!room) {
+    if (!readRoom(this.sql())) {
       this.reject(ws, 'unavailable');
       return;
     }
     const tokenHash = await sha256Hex(record.token);
     const deviceId = isDeviceId(record.device) ? record.device : null;
+    const previousDevice = isLegacyDeviceId(record.previousDevice) ? record.previousDevice : null;
+    if (deviceId && previousDevice) {
+      this.rebindDevice(tokenHash, previousDevice, deviceId);
+      try {
+        await d1MatchIndex(this.env.DB).rebindCredential(tokenHash, previousDevice, deviceId);
+      } catch {
+        // The room binding is already moved. D1 can catch up on the next hello.
+      }
+    }
+    if (pendingMintStale(this.sql(), tokenHash, Date.now(), UNUSED_MINT_MS)) {
+      revokeInviteHash(this.sql(), tokenHash, Date.now());
+      this.reject(ws, 'expired');
+      return;
+    }
+    const room = readRoom(this.sql());
+    if (!room) {
+      this.reject(ws, 'unavailable');
+      return;
+    }
     const seated = this.seatedSockets(ws, deviceId);
     const result = helloPayload(room, tokenHash, seated.others, Date.now(), deviceId);
     if (!result.ok) {
@@ -253,6 +292,16 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     if (deviceId) {
       const kind = pending && pending.admitted === false && isDeviceKind(pending.kind) ? pending.kind : 'other';
       saveRosterPhone(this.sql(), { deviceId, seat: actor, kind, now: Date.now() });
+    }
+    if (!result.credential.host) {
+      const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, tokenHash));
+      if (invite) {
+        try {
+          await d1MatchIndex(this.env.DB).admitCredential(tokenHash, invite.expiresAt);
+        } catch {
+          // The socket is already in the room. A later hello can mark the row.
+        }
+      }
     }
     await this.sendHandover(ws, deviceId, alreadyJoined);
     this.closeSuperseded(seated.same);
@@ -567,8 +616,9 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       });
     }
     if (!isJoinToken(fields.inviteToken)) return json(400, { error: 'invalid_match' });
-    const budgetKind = rotate ? 'rotate' : 'mint';
-    const budgetLimit = rotate ? ROTATE_PER_MATCH : MINT_PER_MATCH;
+    const guestDevice = isDeviceId(caller.deviceId) ? caller.deviceId : this.callerDevice(callerHash);
+    const budgetKind = !rotate ? 'mint' : caller.host ? 'rotate:host' : `rotate:${guestDevice ?? callerHash.slice(0, 32)}`;
+    const budgetLimit = !rotate ? MINT_PER_MATCH : caller.host ? ROTATE_PER_MATCH : GUEST_ROTATE_PER_DEVICE;
     if (!takeMatchBudget(this.sql(), budgetKind, now, budgetLimit, MATCH_BUDGET_WINDOW_MS)) {
       return json(429, { error: 'invite_limited' });
     }
@@ -663,7 +713,9 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       }
       return;
     }
-    const token = await openText(secret, row.payload);
+    const opened = await openText(secret, row.payload);
+    const packed = packedMove(opened);
+    const token = packed.token;
     if (!isJoinToken(token)) {
       try {
         ws.send(JSON.stringify({ type: 'match_notice', code: 'continued' }));
@@ -673,7 +725,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       return;
     }
     try {
-      ws.send(JSON.stringify({ type: 'match_moved', token }));
+      ws.send(JSON.stringify({ type: 'match_moved', token, ...(packed.seat ? { seat: packed.seat } : {}) }));
     } catch {
       // The peer is already gone.
     }
@@ -689,6 +741,31 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, state.tokenHash));
       if (!invite || invite.revokedAt !== null) this.reject(socket, 'revoked');
     }
+  }
+
+  /** Move a stored 32-bit id onto the new 128-bit id for this credential only. */
+  private rebindDevice(tokenHash: string, from: string, to: string): void {
+    if (!isLegacyDeviceId(from) || !isDeviceId(to) || from === to) return;
+    const sql = this.sql();
+    sql.exec('UPDATE invites SET device_id = ? WHERE token_hash = ? AND device_id = ?', to, tokenHash, from);
+    sql.exec('UPDATE joined SET device_id = ? WHERE token_hash = ? AND device_id = ?', to, tokenHash, from);
+    try {
+      sql.exec('UPDATE roster SET device_id = ? WHERE device_id = ?', to, from);
+    } catch {
+      // No roster yet.
+    }
+    try {
+      ensureSealedTable(sql);
+      sql.exec('UPDATE sealed SET id = ? WHERE id = ?', `move:${to}`, `move:${from}`);
+    } catch {
+      // No seal yet.
+    }
+  }
+
+  /** Seat label already shown in the phone list. Never a device id. */
+  private starterSeat(deviceId: string): string | null {
+    const row = readJoined(this.sql()).find((item) => item.deviceId === deviceId);
+    return row ? publicSeat(row.playerId) : null;
   }
 
   /** A sealed move for this device is still inside its lifetime. */
@@ -807,11 +884,12 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     if (!room || !isJoinToken(token)) return json(401, { error: 'bad_token' });
     const starter = this.starterDevice(room, await sha256Hex(token));
     if (!starter) return json(401, { error: 'bad_token' });
-    if (!takeMatchBudget(this.sql(), 'carry', Date.now(), CARRY_PER_MATCH, 0)) {
+    const members = this.memberList(room).filter((member) => member.deviceId !== starter);
+    const now = Date.now();
+    if (members.length > 0 && !matchBudgetOpen(this.sql(), `carry:${starter}`, now, CARRY_PER_DEVICE, 0)) {
       return json(429, { error: 'carry_limited' });
     }
-    const members = this.memberList(room).filter((member) => member.deviceId !== starter);
-    return json(200, { starterDevice: starter, members });
+    return json(200, { starterDevice: starter, starterSeat: this.starterSeat(starter), members });
   }
 
   private async playerInvite(request: Request): Promise<Response> {
@@ -834,7 +912,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       expiresAt,
       revokedAt: null,
       deviceId,
-    }, Date.now(), MAX_MINTED_TOKENS));
+    }, Date.now(), MAX_MINTED_TOKENS, UNUSED_MINT_MS));
     if (decision.status === 'full') return json(409, { error: 'join_code' });
     return json(201, { ok: true, replaced: decision.replaced, revokedAt: decision.revokedAt });
   }
@@ -879,28 +957,42 @@ export class MatchRoom extends DurableObject<RoomEnv> {
 
   private async notify(request: Request): Promise<Response> {
     const body = await readBody(request, 8000);
-    const fields = body && typeof body === 'object' ? (body as { hostToken?: unknown; offers?: unknown }) : {};
+    const fields = body && typeof body === 'object'
+      ? (body as { hostToken?: unknown; offers?: unknown; starterDevice?: unknown; seat?: unknown })
+      : {};
     const room = await this.requireMember(fields.hostToken);
     if (!room) return json(401, { error: 'bad_token' });
     const secret = quotaSecret(this.env.QUOTA_HMAC_KEY);
     if (!secret) return json(503, { error: 'not_configured' });
+    const starter = isDeviceId(fields.starterDevice) ? fields.starterDevice : null;
+    const seat = publicSeat(fields.seat);
     const offers = Array.isArray(fields.offers) ? fields.offers : [];
     const allowed = new Set(this.memberList(room).map((member) => member.deviceId));
-    ensureSealedTable(this.sql());
-    const now = Date.now();
+    const moving: { deviceId: string; token: string }[] = [];
     for (const offer of offers) {
       if (!offer || typeof offer !== 'object') continue;
       const row = offer as { deviceId?: unknown; token?: unknown };
-      if (!isJoinToken(row.token) || typeof row.deviceId !== 'string' || !allowed.has(row.deviceId)) continue;
+      if (!isJoinToken(row.token) || !isDeviceId(row.deviceId) || !allowed.has(row.deviceId)) continue;
+      if (row.deviceId === starter) continue;
+      moving.push({ deviceId: row.deviceId, token: row.token });
+    }
+    if (moving.length === 0) return json(200, { ok: true });
+    if (!starter) return json(401, { error: 'bad_token' });
+    const now = Date.now();
+    if (!takeMatchBudget(this.sql(), `carry:${starter}`, now, CARRY_PER_DEVICE, 0)) {
+      return json(429, { error: 'carry_limited' });
+    }
+    ensureSealedTable(this.sql());
+    for (const row of moving) {
       const expiresAt = now + JOIN_TOKEN_TTL_MS;
       writeSeal(
         this.sql(),
         `move:${row.deviceId}`,
         await sha256Hex(row.token),
-        await sealText(secret, row.token),
+        await sealText(secret, JSON.stringify({ token: row.token, seat })),
         expiresAt,
       );
-      const payload = JSON.stringify({ type: 'match_moved', token: row.token });
+      const payload = JSON.stringify({ type: 'match_moved', token: row.token, ...(seat ? { seat } : {}) });
       for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
         const state = this.readState(socket);
         if (state?.admitted !== true || state.deviceId !== row.deviceId) continue;

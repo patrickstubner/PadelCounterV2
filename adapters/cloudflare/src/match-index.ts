@@ -2,6 +2,7 @@ import {
   CODE_ALARM_GLOBAL,
   CODE_ATTEMPTS_PER_PREFIX,
   MAX_MINTED_TOKENS,
+  UNUSED_MINT_MS,
   HISTORY_RETAIN_MS,
   JOINS_PER_DEVICE,
   JOINS_PER_NETWORK,
@@ -32,11 +33,17 @@ const REVOKE_CREDENTIAL = 'UPDATE credentials SET revoked_at = ? WHERE token_has
 const FIND_MINTED =
   'SELECT token_hash, expires_at FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL AND expires_at > ?';
 const COUNT_MINTED =
-  'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND expires_at > ?';
+  'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND admitted = 1 AND expires_at > ?';
+const REVOKE_EXPIRED_PENDING =
+  'UPDATE credentials SET revoked_at = ? WHERE match_id = ? AND admitted = 0 AND revoked_at IS NULL AND expires_at <= ?';
 const REVOKE_OTHER_DEVICE =
   'UPDATE credentials SET revoked_at = ? WHERE match_id = ? AND device_id = ? AND token_hash != ? AND revoked_at IS NULL AND EXISTS (SELECT 1 FROM credentials WHERE token_hash = ? AND revoked_at IS NULL)';
 const INSERT_MINTED =
-  'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at, device_id) SELECT ?, ?, 0, ?, NULL, ? WHERE (SELECT COUNT(*) FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND expires_at > ? AND device_id != ?) < ?';
+  'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at, device_id, admitted) SELECT ?, ?, 0, ?, NULL, ?, 0 WHERE (SELECT COUNT(*) FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND admitted = 1 AND expires_at > ? AND device_id != ?) < ?';
+const ADMIT_CREDENTIAL =
+  'UPDATE credentials SET admitted = 1, expires_at = ? WHERE token_hash = ? AND revoked_at IS NULL';
+const REBIND_CREDENTIAL =
+  'UPDATE credentials SET device_id = ? WHERE token_hash = ? AND device_id = ? AND revoked_at IS NULL';
 const REVOKE_SHARED_CREDS =
   'UPDATE credentials SET revoked_at = ? WHERE match_id = ? AND host = 0 AND revoked_at IS NULL';
 const FIND_CREDENTIAL =
@@ -114,6 +121,8 @@ export interface MatchIndex {
   takeCodeAttempt(ipHash: string, now: number): Promise<{ ok: true } | { ok: false }>;
   noteCodeAlarm(globalHash: string, now: number): Promise<boolean>;
   claimMinted(row: CredentialRow, now: number): Promise<boolean>;
+  admitCredential(tokenHash: string, expiresAt: number): Promise<void>;
+  rebindCredential(tokenHash: string, fromDevice: string, toDevice: string): Promise<void>;
   findJoinCode(codeHash: string): Promise<JoinCodeRow | null>;
   countMinted(matchId: string, now: number): Promise<number>;
   findMinted(matchId: string, deviceId: string, now: number): Promise<{ tokenHash: string } | null>;
@@ -243,10 +252,11 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
     async claimMinted(row, now) {
       if (!row.deviceId) return false;
       const results = await db.batch([
+        db.prepare(REVOKE_EXPIRED_PENDING).bind(now, row.matchId, now),
         db.prepare(INSERT_MINTED).bind(
           row.tokenHash,
           row.matchId,
-          row.expiresAt,
+          now + UNUSED_MINT_MS,
           row.deviceId,
           row.matchId,
           now,
@@ -255,8 +265,14 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
         ),
         db.prepare(REVOKE_OTHER_DEVICE).bind(now, row.matchId, row.deviceId, row.tokenHash, row.tokenHash),
       ]);
-      const inserted = (results as readonly { meta?: { changes?: number } }[] | undefined)?.[0];
+      const inserted = (results as readonly { meta?: { changes?: number } }[] | undefined)?.[1];
       return (inserted?.meta?.changes ?? 0) > 0;
+    },
+    async admitCredential(tokenHash, expiresAt) {
+      await db.prepare(ADMIT_CREDENTIAL).bind(expiresAt, tokenHash).run();
+    },
+    async rebindCredential(tokenHash, fromDevice, toDevice) {
+      await db.prepare(REBIND_CREDENTIAL).bind(toDevice, tokenHash, fromDevice).run();
     },
     async findJoinCode(codeHash) {
       const row = await db.prepare(FIND_CODE).bind(codeHash).first();

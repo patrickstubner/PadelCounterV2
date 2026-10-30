@@ -500,7 +500,7 @@ describe('short match codes', () => {
     expect(kept.status).toBe(201);
   });
 
-  it('stores an HMAC of the code, reuses one token per device, and stops at eight', async () => {
+  it('stores an HMAC of the code, reuses one token per device, and ignores scans that never connect', async () => {
     const invited = await issuedCode('d04040404000000000000000000000000');
     const compact = invited.code.replace('-', '');
     const row = await env.DB.prepare('SELECT code_hash FROM join_codes WHERE match_id = ?').bind(invited.matchId).first();
@@ -523,18 +523,18 @@ describe('short match codes', () => {
       body: JSON.stringify({ device: 'd05050505000000000000000000000000' }),
     });
     expect(stale.status).toBe(401);
-    for (let n = 0; n < MAX_MINTED_TOKENS - 1; n += 1) {
+    for (let n = 0; n < MAX_MINTED_TOKENS; n += 1) {
       const device = `d${(n + 64).toString(16).padStart(8, '0').padEnd(32, '0')}`;
       const response = await redeem(invited.code, device);
       expect(response.status).toBe(201);
     }
-    const extra = await redeem(invited.code, 'd0e0e0e0e000000000000000000000000');
-    expect(extra.status).toBe(401);
-    expect(await extra.json()).toEqual(NEUTRAL);
-    const minted = await env.DB.prepare(
-      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL',
+    await connect(secondBody.token, 'd05050505000000000000000000000000');
+    const admitted = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND admitted = 1',
     ).bind(invited.matchId).first();
-    expect(minted?.n).toBe(MAX_MINTED_TOKENS);
+    expect(admitted?.n).toBe(1);
+    const extra = await redeem(invited.code, 'd0e0e0e0e000000000000000000000000');
+    expect(extra.status).toBe(201);
   });
 
   it('keeps the token cap when many devices redeem at the same time', async () => {
@@ -544,11 +544,11 @@ describe('short match codes', () => {
       return redeem(invited.code, device);
     }));
     const statuses = many.map((response) => response.status);
-    expect(statuses.filter((status) => status === 201)).toHaveLength(MAX_MINTED_TOKENS);
-    const minted = await env.DB.prepare(
-      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL',
+    expect(statuses.filter((status) => status === 201)).toHaveLength(20);
+    const admitted = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND admitted = 1',
     ).bind(invited.matchId).first();
-    expect(minted?.n).toBe(MAX_MINTED_TOKENS);
+    expect(admitted?.n).toBe(0);
   });
 
   it('keeps one row when one device redeems many times at once', async () => {
@@ -635,13 +635,12 @@ describe('short match codes', () => {
     const first = await redeem(invited.code, 'dcd000002000000000000000000000000');
     expect(first.status).toBe(201);
     const body = (await first.json()) as { token: string };
-    for (let n = 0; n < MAX_MINTED_TOKENS - 1; n += 1) {
+    for (let n = 0; n < MAX_MINTED_TOKENS; n += 1) {
       const device = `d${(n + 1).toString(16).padStart(8, 'e').padEnd(32, '0')}`;
-      expect((await redeem(invited.code, device)).status).toBe(201);
+      await env.DB.prepare(
+        'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at, device_id, admitted) VALUES (?, ?, 0, ?, NULL, ?, 1)',
+      ).bind(`${n.toString(16).padStart(2, '0')}${'ab'.repeat(31)}`, invited.matchId, Date.now() + 3_600_000, device).run();
     }
-    await env.DB.prepare(
-      'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at, device_id) VALUES (?, ?, 0, ?, NULL, ?)',
-    ).bind('ab'.repeat(32), invited.matchId, Date.now() + 3_600_000, 'd0f0f0f0f000000000000000000000000').run();
     const replaced = await redeem(invited.code, 'dcd000002000000000000000000000000');
     expect(replaced.status).toBe(401);
     expect(await replaced.json()).toEqual(NEUTRAL);

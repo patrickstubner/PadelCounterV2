@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { isOpenMatch, lastChangeAt, planNewMatch, scoreClaimFor, type NewMatchPlan } from '@padel/core';
+import { isOpenMatch, lastChangeAt, planNewMatch, scoreClaimFor, whoLabel, type NewMatchPlan } from '@padel/core';
 import { detailHistoryState, joinHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
@@ -573,7 +573,9 @@ export function App() {
         <ConfirmDialog
           titleId="join-new-title"
           title="Join the new match?"
-          body="A phone from this match started a new one. Join it, or stay here."
+          body={room.offer.seat && whoLabel(room.offer.seat)
+            ? `${whoLabel(room.offer.seat)} started a new match. Join it, or stay here.`
+            : 'A phone from this match started a new one. Join it, or stay here.'}
           confirmLabel="Accept"
           confirmTestId="join-new-match"
           cancelLabel="Decline"

@@ -66,6 +66,7 @@ export function migrate(sql: RoomSql): void {
   sql.exec(CREATE_ROSTER);
   sql.exec(CREATE_BUDGET);
   ensureActivityColumn(sql);
+  ensureMintedColumn(sql);
 }
 
 /** Rooms created before the seal table still accept a later invite. */
@@ -172,9 +173,18 @@ export function insertRoom(sql: RoomSql, record: RoomRecord): void {
   for (const event of record.events) insertEvent(sql, event);
 }
 
+/** When the scan was minted. 0 means the row is not a pending scan. */
+export function ensureMintedColumn(sql: RoomSql): void {
+  const names = sql.exec('PRAGMA table_info(invites)').toArray().map((row) => row.name);
+  if (!names.includes('minted_at')) {
+    sql.exec('ALTER TABLE invites ADD COLUMN minted_at INTEGER NOT NULL DEFAULT 0');
+  }
+}
+
 export function insertInvite(sql: RoomSql, invite: InviteRow): void {
+  ensureMintedColumn(sql);
   sql.exec(
-    'INSERT INTO invites (token_hash, role, host, expires_at, revoked_at, device_id) VALUES (?, ?, ?, ?, ?, ?)',
+    'INSERT INTO invites (token_hash, role, host, expires_at, revoked_at, device_id, minted_at) VALUES (?, ?, ?, ?, ?, ?, 0)',
     invite.tokenHash,
     invite.role,
     invite.host ? 1 : 0,
@@ -182,6 +192,25 @@ export function insertInvite(sql: RoomSql, invite: InviteRow): void {
     invite.revokedAt,
     invite.deviceId ?? null,
   );
+}
+
+/** A scan that has not said hello. Carry and host rows stay at 0 and are not pending. */
+export function markPendingMint(sql: RoomSql, tokenHash: string, now: number): void {
+  ensureMintedColumn(sql);
+  sql.exec('UPDATE invites SET minted_at = ? WHERE token_hash = ?', now, tokenHash);
+}
+
+export function pendingMintStale(sql: RoomSql, tokenHash: string, now: number, windowMs: number): boolean {
+  ensureMintedColumn(sql);
+  let minted: number | null;
+  try {
+    minted = integer(sql.exec('SELECT minted_at FROM invites WHERE token_hash = ?', tokenHash).toArray()[0]?.minted_at);
+  } catch {
+    return false;
+  }
+  if (!minted || minted <= 0) return false;
+  if (readJoined(sql).some((row) => row.tokenHash === tokenHash)) return false;
+  return now - minted > windowMs;
 }
 
 export function insertJoined(sql: RoomSql, tokenHash: string, playerId: string, deviceId: string): void {
@@ -229,21 +258,44 @@ export interface MintGrant {
   readonly revokedAt: number;
 }
 
-/** One grant for a device token. The count and the insert stay in the caller's transaction. */
+/** One grant for a device token. Only a phone that has said hello counts toward `max`. */
 export function grantMintedInvite(
   sql: RoomSql,
   invite: InviteRow,
   now: number,
   max: number,
+  unusedMs: number,
 ): MintGrant | { readonly status: 'full' } {
-  const rows = sql.exec(
-    'SELECT token_hash, device_id FROM invites WHERE host = 0 AND revoked_at IS NULL AND device_id IS NOT NULL AND expires_at > ?',
+  ensureMintedColumn(sql);
+  sql.exec(
+    `UPDATE invites SET revoked_at = ?
+     WHERE host = 0 AND device_id IS NOT NULL AND revoked_at IS NULL
+     AND minted_at > 0 AND minted_at <= ?
+     AND token_hash NOT IN (SELECT token_hash FROM joined)`,
+    now,
+    now - unusedMs,
+  );
+  const deviceId = invite.deviceId ?? '';
+  const joinedMine = sql.exec(
+    `SELECT i.token_hash AS token_hash FROM invites i
+     WHERE i.host = 0 AND i.revoked_at IS NULL AND i.device_id = ? AND i.expires_at > ?
+     AND EXISTS (SELECT 1 FROM joined j WHERE j.token_hash = i.token_hash)`,
+    deviceId,
     now,
   ).toArray();
-  const deviceId = invite.deviceId ?? '';
-  const mine = rows.filter((row) => row.device_id === deviceId && typeof row.token_hash === 'string');
-  const others = rows.length - mine.length;
-  if (mine.length === 0 && others >= max) return { status: 'full' };
+  const others = sql.exec(
+    `SELECT COUNT(*) AS n FROM invites i
+     WHERE i.host = 0 AND i.revoked_at IS NULL AND i.device_id IS NOT NULL AND i.device_id != ? AND i.expires_at > ?
+     AND EXISTS (SELECT 1 FROM joined j WHERE j.token_hash = i.token_hash)`,
+    deviceId,
+    now,
+  ).toArray()[0];
+  const otherCount = integer(others?.n) ?? 0;
+  if (joinedMine.length === 0 && otherCount >= max) return { status: 'full' };
+  const mine = sql.exec(
+    'SELECT token_hash FROM invites WHERE host = 0 AND revoked_at IS NULL AND device_id = ?',
+    deviceId,
+  ).toArray();
   const replaced: string[] = [];
   for (const row of mine) {
     const hash = row.token_hash;
@@ -252,6 +304,7 @@ export function grantMintedInvite(
     replaced.push(hash);
   }
   insertInvite(sql, invite);
+  markPendingMint(sql, invite.tokenHash, now);
   return { status: 'granted', replaced, revokedAt: now };
 }
 
@@ -288,6 +341,16 @@ const CREATE_BUDGET = `CREATE TABLE IF NOT EXISTS budget (
 
 export function ensureBudgetTable(sql: RoomSql): void {
   sql.exec(CREATE_BUDGET);
+}
+
+/** True when another take would still fit. Does not increment. */
+export function matchBudgetOpen(sql: RoomSql, kind: string, now: number, limit: number, windowMs: number): boolean {
+  ensureBudgetTable(sql);
+  const row = sql.exec('SELECT window_start, n FROM budget WHERE kind = ?', kind).toArray()[0];
+  const start = integer(row?.window_start);
+  const count = integer(row?.n);
+  const expired = start === null || count === null || (windowMs > 0 && now - start >= windowMs);
+  return expired || count < limit;
 }
 
 /** `windowMs` of 0 never resets. A fresh window starts at 1. */
@@ -342,6 +405,14 @@ export function writeSeal(sql: RoomSql, id: string, tokenHash: string, payload: 
     payload,
     expiresAt,
   );
+}
+
+export function deleteSeal(sql: RoomSql, id: string): void {
+  try {
+    sql.exec('DELETE FROM sealed WHERE id = ?', id);
+  } catch {
+    // No seal table yet.
+  }
 }
 
 export function readSeal(sql: RoomSql, id: string): SealRow | null {

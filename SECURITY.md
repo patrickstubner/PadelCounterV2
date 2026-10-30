@@ -381,6 +381,17 @@ Follow-up on pull request 23 before it is merged. The checks below are in the tr
 - P23-08. A device id is 16 random bytes, written as `d` and 32 hex characters. The handover is given only to the token and device that had already joined, and only while the seal has not expired. A hello that names someone else's device id does not receive their token, and it does not store that pair, so a second hello still does not receive it.
 - P23-09. The court stays in English: “leading”, “Draw”, “Accept”, “Decline”.
 
+## Review 26, 2026-10-30
+
+Follow-up on the second pass over pull request 23. A guest must not be able to use up the host’s move or the host’s new code, and a scan that never connects must not fill the court.
+
+- P23r-01. A carry is counted on the phone that started it, and only when at least one other phone is actually offered the new match. Three carries from one phone do not stop another phone. The offer names the starter’s seat (Host or Player N), the same label the phone list already shows.
+- P23r-02. The host’s new-code budget is separate. A guest phone may replace the code twice an hour. That does not spend the host’s five.
+- P23r-03. A personal token from a scan counts toward the mint cap when the phone says hello. Until then it expires after three minutes and does not take a place. Connected phones are not dropped by unused scans.
+- P23r-05. Decline deletes that phone’s move seal, so the same offer does not return on the next reconnect.
+- P23r-06. If the browser cannot store a device id, the page keeps one id in memory for the rest of the visit. Join and hello use that same id.
+- P23r-07. A device id saved as 32 bits is kept beside the new 128-bit id. The next hello moves the seat, the roster row, and the credential onto the new id. The old id is accepted only as that upgrade, and only for the credential that already had it.
+
 Old archived matches are not rewritten. The sentences in the app stay English.
 
 ## Out of scope

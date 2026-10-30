@@ -1,4 +1,4 @@
-import { CARRY_PER_MATCH, LIVE_PROTOCOL, ROTATE_PER_MATCH, createMatch } from '@padel/core';
+import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, LIVE_PROTOCOL, createMatch } from '@padel/core';
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
@@ -156,7 +156,7 @@ describe('review 23 fixes', () => {
       body: JSON.stringify({ device: dev('d52000002000000000000000000000000') }),
     });
     expect(still.status).toBe(201);
-    for (let n = 1; n < ROTATE_PER_MATCH; n += 1) {
+    for (let n = 1; n < GUEST_ROTATE_PER_DEVICE; n += 1) {
       const again = await invite(created.matchId, own.token, true);
       expect(again.status).toBe(201);
     }
@@ -167,6 +167,9 @@ describe('review 23 fixes', () => {
       headers: { authorization: `Bearer ${own.token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'player', rotate: true }),
     }).then((response) => response.json())) as { error: string }).toMatchObject({ error: 'invite_limited' });
+    const hostStill = await invite(created.matchId, created.hostToken, true);
+    expect(hostStill.status).toBe(201);
+    expect(hostStill.token).toBeTruthy();
   });
 
   it('refuses a shared code as the mover, ignores a forged starter, and caps carries', async () => {
@@ -193,7 +196,7 @@ describe('review 23 fixes', () => {
     expect(typeof moved.token).toBe('string');
     expect(host.messages.all().some((message) => message.type === 'match_moved')).toBe(false);
 
-    for (let n = 1; n < CARRY_PER_MATCH; n += 1) {
+    for (let n = 1; n < CARRY_PER_DEVICE; n += 1) {
       const extra = await createLive(dev(`d5300001${n}`));
       const again = await call(`/matches/${extra.matchId}/carry`, {
         method: 'POST',
@@ -313,5 +316,271 @@ describe('review 23 fixes', () => {
     await connect(created.hostToken, dev('d54000007000000000000000000000000'));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(quietMessages.all().some((message) => message.type === 'roster')).toBe(false);
+  });
+});
+
+describe('review 23 round 2', () => {
+  it('does not let a shared code or an unused device token move the court', async () => {
+    const created = await createLive(dev('d61000001000000000000000000000000'));
+    await connect(created.hostToken, dev('d61000001000000000000000000000000'));
+    const first = await invite(created.matchId, created.hostToken);
+    if (!first.token || !first.code) throw new Error('code');
+    const sharedJoin = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${first.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: dev('d61000002000000000000000000000000') }),
+    });
+    expect(sharedJoin.status).toBe(201);
+    const sharedBody = (await sharedJoin.json()) as { ticket: string; token?: string };
+    expect(typeof sharedBody.token).toBe('string');
+    expect(sharedBody.token).not.toBe(first.token);
+    const sharedSocket = await call(`/ws/${sharedBody.ticket}`, { headers: { upgrade: 'websocket' } });
+    const shared = sharedSocket.webSocket;
+    if (!shared) throw new Error('socket');
+    shared.accept();
+    const sharedMessages = inbox(shared);
+    shared.send(JSON.stringify({
+      type: 'hello',
+      protocol: LIVE_PROTOCOL,
+      token: first.token,
+      device: dev('d61000002000000000000000000000000'),
+      clientNow: Date.now(),
+    }));
+    await sharedMessages.waitFor((message) => message.type === 'snapshot');
+    const next = await createLive(dev('d61000003000000000000000000000000'));
+    const sharedCarry = await call(`/matches/${next.matchId}/carry`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${next.hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: true, previousHostToken: first.token }),
+    });
+    expect(sharedCarry.status).toBe(401);
+
+    const redeemed = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: dev('d61000004000000000000000000000000'), code: first.code }),
+    });
+    expect(redeemed.status).toBe(201);
+    const unused = (await redeemed.json()) as { token: string };
+    const unusedCarry = await call(`/matches/${(await createLive(dev('d61000005000000000000000000000000'))).matchId}/carry`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${(await createLive(dev('d61000006000000000000000000000000'))).hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: true, previousHostToken: unused.token }),
+    });
+    expect(unusedCarry.status).toBe(401);
+  });
+
+  it('refuses a host carry when two of the host phones are connected', async () => {
+    const created = await createLive(dev('d62000001000000000000000000000000'));
+    await connect(created.hostToken, dev('d62000001000000000000000000000000'));
+    await connect(created.hostToken, dev('d62000002000000000000000000000000'));
+    const first = await invite(created.matchId, created.hostToken);
+    await connect(first.token ?? '', dev('d62000003000000000000000000000000'));
+    const next = await createLive(dev('d62000004000000000000000000000000'));
+    const carry = await call(`/matches/${next.matchId}/carry`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${next.hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: true, previousHostToken: created.hostToken }),
+    });
+    expect(carry.status).toBe(401);
+  });
+
+  it('keeps a session for a phone that still shows the shared code', async () => {
+    const created = await createLive(dev('d63000001000000000000000000000000'));
+    await connect(created.hostToken, dev('d63000001000000000000000000000000'));
+    const first = await invite(created.matchId, created.hostToken);
+    if (!first.token) throw new Error('token');
+    const joined = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${first.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: dev('d63000002000000000000000000000000') }),
+    });
+    const ticket = (await joined.json()) as { ticket: string };
+    const socket = await call(`/ws/${ticket.ticket}`, { headers: { upgrade: 'websocket' } });
+    const ws = socket.webSocket;
+    if (!ws) throw new Error('socket');
+    ws.accept();
+    const messages = inbox(ws);
+    ws.send(JSON.stringify({
+      type: 'hello',
+      protocol: LIVE_PROTOCOL,
+      token: first.token,
+      device: dev('d63000002000000000000000000000000'),
+      clientNow: Date.now(),
+    }));
+    await messages.waitFor((message) => message.type === 'snapshot');
+    const rotated = await call(`/matches/${created.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${first.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'player', rotate: true }),
+    });
+    expect(rotated.status).toBe(201);
+    const body = (await rotated.json()) as { sessionToken?: string };
+    expect(typeof body.sessionToken).toBe('string');
+    const still = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${body.sessionToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: dev('d63000002000000000000000000000000') }),
+    });
+    expect(still.status).toBe(201);
+  });
+
+  it('deletes revoked credential rows when the code changes', async () => {
+    const created = await createLive(dev('d64000001000000000000000000000000'));
+    await connect(created.hostToken, dev('d64000001000000000000000000000000'));
+    const first = await invite(created.matchId, created.hostToken);
+    await connect(first.token ?? '', dev('d64000002000000000000000000000000'));
+    const rotated = await invite(created.matchId, created.hostToken, true);
+    expect(rotated.status).toBe(201);
+    const creds = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND revoked_at IS NOT NULL',
+    ).bind(created.matchId).first();
+    const codes = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM join_codes WHERE match_id = ? AND revoked_at IS NOT NULL',
+    ).bind(created.matchId).first();
+    expect(creds?.n).toBe(0);
+    expect(codes?.n).toBe(0);
+  });
+
+  it('does not spend a carry when nobody else is there, and a guest cannot spend the host budget', async () => {
+    const created = await createLive(dev('d65000001000000000000000000000000'));
+    await connect(created.hostToken, dev('d65000001000000000000000000000000'));
+    for (let n = 0; n < CARRY_PER_DEVICE + 1; n += 1) {
+      const extra = await createLive(dev(`d6500002${n}`));
+      const empty = await call(`/matches/${extra.matchId}/carry`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${extra.hostToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ confirm: true, previousHostToken: created.hostToken }),
+      });
+      expect(empty.status).toBe(200);
+      expect(await empty.json()).toMatchObject({ carried: 0 });
+    }
+    const first = await invite(created.matchId, created.hostToken);
+    if (!first.code) throw new Error('code');
+    const redeemed = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: dev('d65000003000000000000000000000000'), code: first.code }),
+    });
+    const own = (await redeemed.json()) as { token: string };
+    const guest = await connect(own.token, dev('d65000003000000000000000000000000'));
+    for (let n = 0; n < CARRY_PER_DEVICE; n += 1) {
+      const extra = await createLive(dev(`d6500004${n}`));
+      const moved = await call(`/matches/${extra.matchId}/carry`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${extra.hostToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ confirm: true, previousHostToken: own.token }),
+      });
+      expect(moved.status).toBe(200);
+    }
+    const blockedNext = await createLive(dev('d65000009000000000000000000000000'));
+    const blocked = await call(`/matches/${blockedNext.matchId}/carry`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${blockedNext.hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: true, previousHostToken: own.token }),
+    });
+    expect(blocked.status).toBe(429);
+    const hostNext = await createLive(dev('d65000008000000000000000000000000'));
+    const hostCarry = await call(`/matches/${hostNext.matchId}/carry`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostNext.hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: true, previousHostToken: created.hostToken }),
+    });
+    expect(hostCarry.status).toBe(200);
+    expect(await hostCarry.json()).toMatchObject({ carried: 1 });
+    const offered = await guest.messages.waitFor((message) => message.type === 'match_moved');
+    expect(offered.seat).toBe('host');
+    guest.ws.send(JSON.stringify({ type: 'decline_move' }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    guest.ws.close();
+    const again = await connect(own.token, dev('d65000003000000000000000000000000'));
+    const notice = await again.messages.waitFor((message) => message.type === 'match_notice' || message.type === 'match_moved');
+    expect(notice.type).toBe('match_notice');
+  });
+
+  it('lets a new phone join after scans that never connected', async () => {
+    const created = await createLive(dev('d66000001000000000000000000000000'));
+    await connect(created.hostToken, dev('d66000001000000000000000000000000'));
+    const first = await invite(created.matchId, created.hostToken);
+    await connect(first.token ?? '', dev('d66000002000000000000000000000000'));
+    await connect(first.token ?? '', dev('d66000003000000000000000000000000'));
+    await connect(first.token ?? '', dev('d66000004000000000000000000000000'));
+    for (let n = 0; n < 5; n += 1) {
+      const scan = await call('/join', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${first.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ device: dev(`d6600005${n}`) }),
+      });
+      expect(scan.status).toBe(201);
+    }
+    const another = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${first.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: dev('d66000006000000000000000000000000') }),
+    });
+    expect(another.status).toBe(201);
+  });
+
+  it('keeps the seat when a stored 32-bit id is replaced', async () => {
+    const created = await createLive(dev('d67000001000000000000000000000000'));
+    await connect(created.hostToken, dev('d67000001000000000000000000000000'));
+    const first = await invite(created.matchId, created.hostToken);
+    if (!first.code) throw new Error('code');
+    const redeemed = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: dev('d67000002000000000000000000000000'), code: first.code }),
+    });
+    const own = (await redeemed.json()) as { token: string; ticket: string };
+    const firstSocket = await call(`/ws/${own.ticket}`, { headers: { upgrade: 'websocket' } });
+    const ws = firstSocket.webSocket;
+    if (!ws) throw new Error('socket');
+    ws.accept();
+    const messages = inbox(ws);
+    ws.send(JSON.stringify({
+      type: 'hello',
+      protocol: LIVE_PROTOCOL,
+      token: own.token,
+      device: dev('d67000002000000000000000000000000'),
+      clientNow: Date.now(),
+    }));
+    await messages.waitFor((message) => message.type === 'snapshot');
+    const roster = await messages.waitFor((message) => message.type === 'roster');
+    const seat = (roster.phones as { self?: boolean; seat?: string }[]).find((phone) => phone.self)?.seat;
+    expect(seat).toMatch(/^p/);
+    const legacy = 'dabc12345';
+    const room = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(created.matchId));
+    await runInDurableObject(room, (_instance, state) => {
+      state.storage.sql.exec('UPDATE invites SET device_id = ? WHERE device_id = ?', legacy, dev('d67000002000000000000000000000000'));
+      state.storage.sql.exec('UPDATE joined SET device_id = ? WHERE device_id = ?', legacy, dev('d67000002000000000000000000000000'));
+    });
+    await env.DB.prepare('UPDATE credentials SET device_id = ? WHERE device_id = ?')
+      .bind(legacy, dev('d67000002000000000000000000000000'))
+      .run();
+    ws.close();
+    const rebound = dev('d67000009000000000000000000000000');
+    const ticket = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${own.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: rebound }),
+    });
+    expect(ticket.status).toBe(201);
+    const nextBody = (await ticket.json()) as { ticket: string };
+    const nextSocket = await call(`/ws/${nextBody.ticket}`, { headers: { upgrade: 'websocket' } });
+    const next = nextSocket.webSocket;
+    if (!next) throw new Error('socket');
+    next.accept();
+    const nextMessages = inbox(next);
+    next.send(JSON.stringify({
+      type: 'hello',
+      protocol: LIVE_PROTOCOL,
+      token: own.token,
+      device: rebound,
+      previousDevice: legacy,
+      clientNow: Date.now(),
+    }));
+    await nextMessages.waitFor((message) => message.type === 'snapshot');
+    const after = await nextMessages.waitFor((message) => message.type === 'roster');
+    expect((after.phones as { self?: boolean; seat?: string }[]).find((phone) => phone.self)?.seat).toBe(seat);
   });
 });

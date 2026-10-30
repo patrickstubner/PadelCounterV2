@@ -345,11 +345,6 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
       deviceId: payload.sessionDevice,
     });
   }
-  try {
-    await index.deleteRevokedAccess(matchId);
-  } catch {
-    // The new code is already stored. Old rows can wait for the next purge.
-  }
   let savedCode: string | null = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const next = attempt === 0 ? code : randomJoinCode();
@@ -366,6 +361,11 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
     } catch (error) {
       if (!isIdConflict(error) || attempt === 4) throw error;
     }
+  }
+  try {
+    await index.deleteRevokedAccess(matchId);
+  } catch {
+    // The new code is already stored. Old rows can wait for the next purge.
   }
   if (savedCode && savedCode !== code) {
     await stub.fetch('https://match.internal/invite', {
@@ -649,8 +649,11 @@ async function carryPlayers(request: Request, env: ServerEnv, pathname: string):
   });
   if (claim.status === 429) return pass(claim);
   if (!claim.ok) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
-  const claimed = (await claim.json()) as { starterDevice?: unknown; members?: unknown };
+  const claimed = (await claim.json()) as { starterDevice?: unknown; starterSeat?: unknown; members?: unknown };
   const starterDevice = isDeviceId(claimed.starterDevice) ? claimed.starterDevice : null;
+  const starterSeat = claimed.starterSeat === 'host' || (typeof claimed.starterSeat === 'string' && /^p[1-9]\d*$/.test(claimed.starterSeat))
+    ? claimed.starterSeat
+    : null;
   const members = Array.isArray(claimed.members)
     ? claimed.members.flatMap((row) => {
         if (!row || typeof row !== 'object') return [];
@@ -686,10 +689,11 @@ async function carryPlayers(request: Request, env: ServerEnv, pathname: string):
     });
     offers.push({ deviceId, token });
   }
-  await previousStub.fetch('https://match.internal/notify', {
+  const notified = await previousStub.fetch('https://match.internal/notify', {
     method: 'POST',
-    body: JSON.stringify({ hostToken: previousHostToken, offers }),
+    body: JSON.stringify({ hostToken: previousHostToken, offers, starterDevice, seat: starterSeat }),
   });
+  if (notified.status === 429) return pass(notified);
   return Response.json({ carried: offers.length, offered: true }, { status: 200, headers: { 'cache-control': 'no-store' } });
 }
 

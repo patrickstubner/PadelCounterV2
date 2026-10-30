@@ -40,18 +40,34 @@ export const HOST_ACTOR = 'host';
 /** 128 random bits, written as hex with a leading d. */
 export const DEVICE_ID_PATTERN = /^d[a-f0-9]{32}$/;
 
+/** Ids stored before 2.2.6. Accepted only as a one-time upgrade of the same phone. */
+export const LEGACY_DEVICE_ID_PATTERN = /^d[a-f0-9]{8}$/;
+
 export function isDeviceId(value: unknown): value is string {
   return typeof value === 'string' && DEVICE_ID_PATTERN.test(value);
+}
+
+export function isLegacyDeviceId(value: unknown): value is string {
+  return typeof value === 'string' && LEGACY_DEVICE_ID_PATTERN.test(value);
 }
 
 /** New codes a match may mint in one hour. Showing the current code does not count. */
 export const MINT_PER_MATCH = 10;
 
-/** Times New code may replace the shared invite in one hour. */
+/** Times the host may replace the shared invite in one hour. Guests do not spend this. */
 export const ROTATE_PER_MATCH = 5;
 
-/** Times one match may move its phones into a later match. */
-export const CARRY_PER_MATCH = 3;
+/** Times one guest phone may replace the shared invite in one hour. */
+export const GUEST_ROTATE_PER_DEVICE = 2;
+
+/** Times one phone may move the court. Another phone keeps its own count. */
+export const CARRY_PER_DEVICE = 3;
+
+/** Same number as {@link CARRY_PER_DEVICE}. The cap is per starter phone, not per match. */
+export const CARRY_PER_MATCH = CARRY_PER_DEVICE;
+
+/** A scanned code that never says hello is dropped after this. */
+export const UNUSED_MINT_MS = 3 * 60 * 1000;
 
 export const MATCH_BUDGET_WINDOW_MS = 60 * 60 * 1000;
 

@@ -348,7 +348,7 @@ export type LiveNotice =
   | { readonly kind: 'presence'; readonly players: number }
   | { readonly kind: 'roster'; readonly phones: readonly PublicPhone[] }
   | { readonly kind: 'join_offer'; readonly token: string }
-  | { readonly kind: 'match_moved'; readonly token: string }
+  | { readonly kind: 'match_moved'; readonly token: string; readonly seat: string | null }
   | { readonly kind: 'match_notice' }
   | { readonly kind: 'error'; readonly message: string; readonly close: boolean; readonly code: RoomCode | null; readonly eventId: string | null }
   | { readonly kind: 'pong' }
@@ -444,7 +444,10 @@ export function interpretMessage(data: unknown): LiveNotice {
     return { kind: 'join_offer', token: record.token };
   }
   if (record.type === 'match_moved' && isJoinToken(record.token)) {
-    return { kind: 'match_moved', token: record.token };
+    const seat = record.seat === 'host' || (typeof record.seat === 'string' && /^p[1-9]\d*$/.test(record.seat))
+      ? record.seat
+      : null;
+    return { kind: 'match_moved', token: record.token, seat };
   }
   if (record.type === 'match_notice' && record.code === 'continued') {
     return { kind: 'match_notice' };

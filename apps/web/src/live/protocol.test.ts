@@ -79,7 +79,10 @@ describe('join links', () => {
   it('accepts a one-tap reconnect offer and ignores a forged token', () => {
     expect(interpretMessage({ type: 'join_offer', token: TOKEN })).toEqual({ kind: 'join_offer', token: TOKEN });
     expect(interpretMessage({ type: 'join_offer', token: 'short' })).toEqual({ kind: 'ignore' });
-    expect(interpretMessage({ type: 'match_moved', token: TOKEN })).toEqual({ kind: 'match_moved', token: TOKEN });
+    expect(interpretMessage({ type: 'match_moved', token: TOKEN })).toEqual({ kind: 'match_moved', token: TOKEN, seat: null });
+    expect(interpretMessage({ type: 'match_moved', token: TOKEN, seat: 'p3' })).toEqual({ kind: 'match_moved', token: TOKEN, seat: 'p3' });
+    const hiddenSeat = interpretMessage({ type: 'match_moved', token: TOKEN, seat: 'd' + 'a'.repeat(32) });
+    expect(hiddenSeat.kind === 'match_moved' ? hiddenSeat.seat : 'kept').toBeNull();
     expect(interpretMessage({ type: 'match_moved', token: 'short' })).toEqual({ kind: 'ignore' });
     expect(interpretMessage({ type: 'match_notice', code: 'continued' })).toEqual({ kind: 'match_notice' });
     expect(interpretMessage({ type: 'match_notice', code: 'other', token: TOKEN })).toEqual({ kind: 'ignore' });

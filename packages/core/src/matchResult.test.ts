@@ -28,6 +28,7 @@ describe('matchResult', () => {
     expect(matchResult(ended([{ a: 6, b: 4 }, { a: 4, b: 6 }, { a: 4, b: 0 }]))).toEqual({ kind: 'leading', team: 'a' });
     expect(matchResult(ended([{ a: 6, b: 4 }, { a: 4, b: 6 }, { a: 0, b: 0 }]))).toEqual({ kind: 'draw' });
     expect(matchResult(ended([{ a: 6, b: 4 }, { a: 3, b: 6 }, { a: 0, b: 0 }]))).toEqual({ kind: 'leading', team: 'b' });
+    expect(matchResult(ended([{ a: 6, b: 4 }, { a: 0, b: 5 }, { a: 0, b: 0 }]))).toEqual({ kind: 'leading', team: 'a' });
     expect(matchResult(ended([{ a: 0, b: 0 }, { a: 0, b: 0 }, { a: 0, b: 0 }]))).toEqual({ kind: 'draw' });
     expect(matchResult(ended([{ a: 6, b: 5 }, { a: 0, b: 0 }, { a: 0, b: 0 }]))).toEqual({ kind: 'leading', team: 'a' });
     expect(matchResult(ended([{ a: 1, b: 1 }, { a: 0, b: 0 }, { a: 0, b: 0 }], false))).toEqual({ kind: 'playing' });

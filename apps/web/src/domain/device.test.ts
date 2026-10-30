@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isDeviceId } from '@padel/core';
-import { DEVICE_KEY, deviceId } from './device';
+import { DEVICE_KEY, LEGACY_DEVICE_KEY, deviceId, legacyDeviceId, rememberedDeviceId } from './device';
 
 describe('deviceId', () => {
   it('stores 128 random bits and replaces a short legacy id', () => {
@@ -19,5 +19,24 @@ describe('deviceId', () => {
     const replaced = deviceId(storage);
     expect(isDeviceId(replaced)).toBe(true);
     expect(replaced).not.toBe('d00000000');
+    expect(legacyDeviceId(storage)).toBe('d00000000');
+    expect(saved.get(DEVICE_KEY)).toBe(replaced);
+    expect(saved.get(LEGACY_DEVICE_KEY)).toBe('d00000000');
+  });
+
+  it('keeps one id when storage cannot remember it', () => {
+    const broken = {
+      getItem: () => {
+        throw new Error('blocked');
+      },
+      setItem: () => {
+        throw new Error('blocked');
+      },
+    };
+    const first = deviceId(broken);
+    const second = deviceId(broken);
+    expect(first).toBe(second);
+    expect(isDeviceId(first)).toBe(true);
+    expect(rememberedDeviceId()).toBe(first);
   });
 });

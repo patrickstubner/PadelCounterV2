@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, sameBoard, scoreBoard, type CausalEvent, type MatchEvent, type MatchLog, type PublicPhone, type ScoreClaim } from '@padel/core';
-import { deviceId } from '../domain/device';
+import { DEVICE_KEY, clearLegacyDeviceId, deviceId, legacyDeviceId, rememberedDeviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
 import {
@@ -41,7 +41,7 @@ export interface LiveController {
   readonly error: string | null;
   readonly joinError: string | null;
   readonly joining: boolean;
-  readonly offer: string | null;
+  readonly offer: { readonly token: string; readonly seat: string | null } | null;
   /** The old match ended and this phone was not moved into the new one. */
   readonly continued: boolean;
   readonly dismissContinued: () => void;
@@ -72,16 +72,23 @@ async function errorText(response: Response): Promise<string> {
 
 function thisDevice(): string {
   try {
-    if (typeof localStorage !== 'undefined') return deviceId(localStorage);
+    if (typeof localStorage !== 'undefined') {
+      const id = deviceId(localStorage);
+      if (localStorage.getItem(DEVICE_KEY) === id) return id;
+    }
   } catch {
-    // Storage can throw in private mode; fall through to a fresh id.
+    // Storage can throw in private mode; fall through to the page id.
   }
-  return deviceId({
-    getItem: () => null,
-    setItem: () => {
-      throw new Error('unavailable');
-    },
-  });
+  return rememberedDeviceId();
+}
+
+function thisLegacy(): string | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    return legacyDeviceId(localStorage);
+  } catch {
+    return null;
+  }
 }
 
 function devApiOverride(): string {
@@ -121,7 +128,7 @@ export function useLive(
   const [error, setError] = useState<string | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
-  const [offer, setOffer] = useState<string | null>(null);
+  const [offer, setOffer] = useState<{ token: string; seat: string | null } | null>(null);
   const [continued, setContinued] = useState(false);
   const [pendingRestore, setPendingRestore] = useState<readonly { id: string; event: MatchEvent; claim: ScoreClaim | null }[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
@@ -137,7 +144,7 @@ export function useLive(
   const revertRef = useRef(revertLive);
   const readyRef = useRef(false);
   const generation = useRef(0);
-  const offerRef = useRef<string | null>(null);
+  const offerRef = useRef<{ token: string; seat: string | null } | null>(null);
   const tokenRef = useRef<{ token: string; expiresAt: number } | null>(null);
   const matchRef = useRef('');
   const resumes = useRef(0);
@@ -503,9 +510,9 @@ export function useLive(
     return plan.reason;
   };
 
-  const rememberOffer = (token: string | null) => {
-    offerRef.current = token;
-    setOffer(token);
+  const rememberOffer = (next: { token: string; seat: string | null } | null) => {
+    offerRef.current = next;
+    setOffer(next);
   };
 
   const disconnect = () => {
@@ -633,7 +640,15 @@ export function useLive(
       const ws = new WebSocket(socketUrl(api, ticket));
       socketRef.current = ws;
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: sessionToken, device: thisDevice(), clientNow: Date.now() }));
+        const legacy = thisLegacy();
+        ws.send(JSON.stringify({
+          type: 'hello',
+          protocol: LIVE_PROTOCOL,
+          token: sessionToken,
+          device: thisDevice(),
+          ...(legacy ? { previousDevice: legacy } : {}),
+          clientNow: Date.now(),
+        }));
       };
       ws.onmessage = (event) => {
         if (socketRef.current !== ws) return;
@@ -645,12 +660,12 @@ export function useLive(
         }
         const notice = interpretMessage(parsed);
         if (notice.kind === 'join_offer') {
-          rememberOffer(notice.token);
+          rememberOffer({ token: notice.token, seat: null });
           return;
         }
         if (notice.kind === 'match_moved') {
           setContinued(false);
-          rememberOffer(notice.token);
+          rememberOffer({ token: notice.token, seat: notice.seat });
           return;
         }
         if (notice.kind === 'match_notice') {
@@ -816,6 +831,11 @@ export function useLive(
           setError(null);
           if (notice.host && tokenRef.current) persistHost(matchId, tokenRef.current);
           else if (tokenRef.current) persistMember(matchId, tokenRef.current);
+          try {
+            if (typeof localStorage !== 'undefined') clearLegacyDeviceId(localStorage);
+          } catch {
+            // The next hello can send the old id again.
+          }
           setContinued(false);
           setStatus('live');
           resumes.current = 0;
@@ -1101,13 +1121,23 @@ export function useLive(
     },
     disconnect,
     acceptOffer: () => {
-      const token = offerRef.current;
+      const token = offerRef.current?.token ?? null;
       rememberOffer(null);
       if (!token) return;
       setJoining(true);
       open(token, true);
     },
-    dismissOffer: () => rememberOffer(null),
+    dismissOffer: () => {
+      const ws = socketRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: 'decline_move' }));
+        } catch {
+          // The next hello still asks until the seal is gone.
+        }
+      }
+      rememberOffer(null);
+    },
     finishShared: (event, claim) => {
       const previous = tokenRef.current?.token ?? hostRef.current?.token ?? null;
       const ws = socketRef.current;
