@@ -348,9 +348,9 @@ describe('create quota', () => {
     const { db } = memory();
     const index = d1MatchIndex(db);
     const window = joinWindow(NOW);
-    const device = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd00000001', String(window));
+    const device = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd00000001000000000000000000000000', String(window));
     const network = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '192.0.2.1', String(window));
-    expect(device).not.toBe(await sha256Hex('d00000001'));
+    expect(device).not.toBe(await sha256Hex('d00000001000000000000000000000000'));
     expect(network).not.toBe(await sha256Hex('192.0.2.1'));
     for (let i = 0; i < JOINS_PER_DEVICE; i += 1) {
       expect((await index.takeJoinDevice(device, NOW)).ok).toBe(true);
@@ -367,7 +367,7 @@ describe('create quota', () => {
     expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toEqual({ n: JOINS_PER_NETWORK });
     expect(await index.noteJoinFailure(shared, NOW)).toEqual({ ok: false, reason: 'network' });
     expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toEqual({ n: JOINS_PER_NETWORK });
-    const overflowPhone = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd000000ff', String(window));
+    const overflowPhone = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd000000ff000000000000000000000000', String(window));
     expect((await index.takeJoinDevice(overflowPhone, NOW)).ok).toBe(true);
 
     await index.purgeEphemeral(NOW + 3 * 24 * 60 * 60 * 1000);

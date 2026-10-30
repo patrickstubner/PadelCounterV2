@@ -180,7 +180,7 @@ Expect `200` and JSON with `"ok": true`, `"service": "padel-counter"`, and `"pro
 ```sh
 curl -sS -o /tmp/padel-match.json -w "%{http_code}\n" \
   -H "origin: $ORIGIN" -H "content-type: application/json" \
-  -d '{"device":"d00000001","log":{"schemaVersion":2,"base":{"schemaVersion":2,"matchId":"11111111-1111-4111-8111-111111111111","revision":0,"createdAt":1700000000000,"updatedAt":1700000000000,"teams":{"a":{"name":"Team A"},"b":{"name":"Team B"}},"sets":[{"a":0,"b":0},{"a":0,"b":0},{"a":0,"b":0}],"activeSet":0,"serve":null},"events":[]}}' \
+  -d '{"device":"d00000001000000000000000000000000","log":{"schemaVersion":2,"base":{"schemaVersion":2,"matchId":"11111111-1111-4111-8111-111111111111","revision":0,"createdAt":1700000000000,"updatedAt":1700000000000,"teams":{"a":{"name":"Team A"},"b":{"name":"Team B"}},"sets":[{"a":0,"b":0},{"a":0,"b":0},{"a":0,"b":0}],"activeSet":0,"serve":null},"events":[]}}' \
   "$BASE/matches"
 ```
 
@@ -204,7 +204,7 @@ Expect `201` and JSON with `token`, `role` `"player"`, `matchId`, and `expiresAt
 curl -sS -o /tmp/padel-join-bad.json -w "%{http_code}\n" \
   -H "origin: $ORIGIN" -H "content-type: application/json" \
   -H "authorization: Bearer aaaaaaaaaaaaaaaaaaaaaa" \
-  -d '{"device":"d00000002"}' \
+  -d '{"device":"d00000002000000000000000000000000"}' \
   "$BASE/join"
 ```
 
@@ -214,7 +214,7 @@ The same path with the invite token expects `201` and JSON with `ticket` and `ex
 curl -sS -o /tmp/padel-join.json -w "%{http_code}\n" \
   -H "origin: $ORIGIN" -H "content-type: application/json" \
   -H "authorization: Bearer $INVITE" \
-  -d '{"device":"d00000002"}' \
+  -d '{"device":"d00000002000000000000000000000000"}' \
   "$BASE/join"
 ```
 
@@ -234,7 +234,7 @@ curl -sS -o /tmp/padel-ws-origin.json -w "%{http_code}\n" \
   "$BASE/ws/$TICKET"
 ```
 
-Open a WebSocket to `wss://padel-counter-staging.<workers.dev subdomain>.workers.dev/ws/$TICKET` with `Origin: https://patrickstubner.github.io`. Expect HTTP `101`. `curl` does not complete this handshake or read the frames; use a WebSocket client such as `websocat`. The first client message is `{"type":"hello","protocol":1,"token":"<invite token>","device":"d00000002"}`. The server then sends a text frame `{ "type": "snapshot", "protocol": 1, ... }` and a text frame `{ "type": "presence", "players": <number> }`. A second upgrade with the same ticket expects `401` and `bad_token`.
+Open a WebSocket to `wss://padel-counter-staging.<workers.dev subdomain>.workers.dev/ws/$TICKET` with `Origin: https://patrickstubner.github.io`. Expect HTTP `101`. `curl` does not complete this handshake or read the frames; use a WebSocket client such as `websocat`. The first client message is `{"type":"hello","protocol":1,"token":"<invite token>","device":"d00000002000000000000000000000000"}`. The server then sends a text frame `{ "type": "snapshot", "protocol": 1, ... }` and a text frame `{ "type": "presence", "players": <number> }`. A second upgrade with the same ticket expects `401` and `bad_token`.
 
 Then open the court, share a match, and join from a second browser only after production Pages has the `PUBLIC_API_URL` from step 9. A staging worker and the published court are different hosts until that variable is the production origin and Pages has been deployed.
 

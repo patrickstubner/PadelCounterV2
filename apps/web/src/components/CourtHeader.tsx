@@ -30,6 +30,8 @@ interface CourtHeaderProps {
   readonly actions: readonly CourtAction[];
   /** Tests pin the header. Otherwise a wide landscape shows the buttons. */
   readonly layout?: 'menu' | 'bar';
+  readonly phoneCount?: number | null;
+  readonly onPhones?: () => void;
 }
 
 const WIDE_BAR = '(orientation: landscape) and (min-width: 900px)';
@@ -48,7 +50,7 @@ function useWideBar(): boolean {
   return wide;
 }
 
-export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderProps) {
+export function CourtHeader({ setLabel, onBrand, actions, layout, phoneCount, onPhones }: CourtHeaderProps) {
   const wide = useWideBar();
   const mode = layout ?? (wide ? 'bar' : 'menu');
   const shown = useMemo(() => menuActions(actions, mode), [actions, mode]);
@@ -110,6 +112,17 @@ export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderP
       <p className="set-heading" data-testid="active-set">{setLabel}</p>
       {mode === 'bar' ? (
         <div className="top-actions">
+          {typeof phoneCount === 'number' && onPhones ? (
+            <button
+              type="button"
+              className="phone-count"
+              data-testid="phone-count"
+              aria-label={`${phoneCount} phones connected`}
+              onClick={onPhones}
+            >
+              {phoneCount}
+            </button>
+          ) : null}
           {shown.map((action) => (
             <button
               key={action.id}
@@ -125,6 +138,17 @@ export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderP
         </div>
       ) : (
         <div className="top-end">
+          {typeof phoneCount === 'number' && onPhones ? (
+            <button
+              type="button"
+              className="phone-count"
+              data-testid="phone-count"
+              aria-label={`${phoneCount} phones connected`}
+              onClick={onPhones}
+            >
+              {phoneCount}
+            </button>
+          ) : null}
           <button
             ref={toggleRef}
             type="button"

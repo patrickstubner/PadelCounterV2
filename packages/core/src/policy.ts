@@ -37,10 +37,47 @@ export const MAX_PLAYER_ACTOR = 32;
 
 export const HOST_ACTOR = 'host';
 
+/** 128 random bits, written as hex with a leading d. */
+export const DEVICE_ID_PATTERN = /^d[a-f0-9]{32}$/;
+
+/** Ids stored before 2.2.6. Accepted only as a one-time upgrade of the same phone. */
+export const LEGACY_DEVICE_ID_PATTERN = /^d[a-f0-9]{8}$/;
+
+export function isDeviceId(value: unknown): value is string {
+  return typeof value === 'string' && DEVICE_ID_PATTERN.test(value);
+}
+
+export function isLegacyDeviceId(value: unknown): value is string {
+  return typeof value === 'string' && LEGACY_DEVICE_ID_PATTERN.test(value);
+}
+
+/** New codes a match may mint in one hour. Showing the current code does not count. */
+export const MINT_PER_MATCH = 10;
+
+/** Times the host may replace the shared invite in one hour. Guests do not spend this. */
+export const ROTATE_PER_MATCH = 5;
+
+/** Times one guest phone may replace the shared invite in one hour. */
+export const GUEST_ROTATE_PER_DEVICE = 2;
+
+/** Times one phone may move the court. Another phone keeps its own count. */
+export const CARRY_PER_DEVICE = 3;
+
+/** Same number as {@link CARRY_PER_DEVICE}. The cap is per starter phone, not per match. */
+export const CARRY_PER_MATCH = CARRY_PER_DEVICE;
+
+/** A scanned code that never says hello is dropped after this. */
+export const UNUSED_MINT_MS = 3 * 60 * 1000;
+
+export const MATCH_BUDGET_WINDOW_MS = 60 * 60 * 1000;
+
+/** An offline phone is still part of the court for this long after it was last seen. */
+export const MEMBER_SEEN_MS = RECONNECT_WINDOW_MS;
+
 export function actorId(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   if (value === 'host' || value === 'device') return value;
-  if (/^d[a-f0-9]{8}$/.test(value)) return value;
+  if (isDeviceId(value)) return value;
   const player = /^p([1-9]\d*)$/.exec(value);
   if (!player) return undefined;
   const n = Number(player[1]);
@@ -56,7 +93,7 @@ export function withActor(event: MatchEvent, by: unknown): MatchEvent {
 export function whoLabel(by: string | undefined): string | null {
   if (!by) return null;
   if (by === HOST_ACTOR) return 'Host';
-  if (by === 'device' || /^d[a-f0-9]{8}$/.test(by)) return 'This phone';
+  if (by === 'device' || isDeviceId(by)) return 'This phone';
   const player = /^p([1-9]\d*)$/.exec(by);
   if (player && actorId(by)) return `Player ${player[1]}`;
   return null;
@@ -86,23 +123,60 @@ export interface CarryInvite {
   readonly deviceId?: string | null;
 }
 
-/** Previously connected non-host devices, and only after the host confirmed. */
+/** Other phones moved with the starter. The starter is the fourth seat. */
+export const CARRY_LIMIT = 3;
+
+export interface CarryMember {
+  readonly deviceId: string;
+  readonly connected: boolean;
+}
+
+/**
+ * Devices that may enter the next match.
+ * The caller must be a member. The list itself comes from the room, not from the client.
+ * Connected phones come first, then phones that joined and are offline. At most three.
+ */
+export function carryDeviceIds(input: {
+  readonly confirm: boolean;
+  readonly memberInitiated: boolean;
+  readonly members: readonly CarryMember[];
+  readonly excludeDeviceId?: string | null;
+  readonly limit?: number;
+}): readonly string[] {
+  if (input.confirm !== true || input.memberInitiated !== true) return [];
+  const limit = input.limit ?? CARRY_LIMIT;
+  const exclude = input.excludeDeviceId ?? null;
+  const seen = new Set<string>();
+  const connected: string[] = [];
+  const offline: string[] = [];
+  for (const member of input.members) {
+    if (!isDeviceId(member.deviceId)) continue;
+    if (member.deviceId === exclude || seen.has(member.deviceId)) continue;
+    seen.add(member.deviceId);
+    if (member.connected) connected.push(member.deviceId);
+    else offline.push(member.deviceId);
+  }
+  return [...connected, ...offline].slice(0, limit);
+}
+
+/** Previously joined devices, and only after a member confirmed. */
 export function carryTokenHashes(input: {
   readonly confirm: boolean;
-  readonly hostInitiated: boolean;
+  readonly memberInitiated: boolean;
   readonly joinedHashes: readonly string[];
   readonly invites: readonly CarryInvite[];
+  readonly excludeDeviceId?: string | null;
 }): readonly CarryInvite[] {
-  if (input.confirm !== true || input.hostInitiated !== true) return [];
+  if (input.confirm !== true || input.memberInitiated !== true) return [];
   const joined = new Set(input.joinedHashes);
   const carried: CarryInvite[] = [];
   for (const invite of input.invites) {
-    if (invite.host || !invite.deviceId) continue;
+    if (!invite.deviceId || invite.deviceId === input.excludeDeviceId) continue;
     if (!joined.has(invite.tokenHash)) continue;
     if (carried.some((row) => row.deviceId === invite.deviceId)) continue;
     carried.push(invite);
   }
-  return carried;
+  return carried.slice(0, CARRY_LIMIT);
 }
 
 export function credentialAllowsEvent(input: {
@@ -167,6 +241,8 @@ export interface NewMatchPlan {
   readonly kind: 'finish' | 'leave' | 'reset';
   readonly showReconnect: boolean;
   readonly reconnectSelected: boolean;
+  /** A live match with other phones asks whether to take them along. */
+  readonly askCarry: boolean;
 }
 
 export function planNewMatch(input: {
@@ -176,13 +252,15 @@ export function planNewMatch(input: {
   readonly now: number;
   readonly coPlayers: number;
 }): NewMatchPlan {
-  if (!input.host) return { kind: 'leave', showReconnect: false, reconnectSelected: false };
-  if (!input.open) return { kind: 'reset', showReconnect: false, reconnectSelected: false };
+  const askCarry = input.open && input.coPlayers > 0;
+  if (!input.host) return { kind: 'leave', showReconnect: false, reconnectSelected: false, askCarry };
+  if (!input.open) return { kind: 'reset', showReconnect: false, reconnectSelected: false, askCarry: false };
   const recent = offerReconnect(input.lastEventAt, input.now);
   const coPlayers = input.coPlayers > 0;
   return {
     kind: 'finish',
-    showReconnect: recent,
-    reconnectSelected: recent && coPlayers,
+    showReconnect: recent && !askCarry,
+    reconnectSelected: recent && coPlayers && !askCarry,
+    askCarry,
   };
 }

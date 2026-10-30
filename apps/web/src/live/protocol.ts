@@ -9,10 +9,12 @@ import {
   isRoomCode,
   JOIN_TOKEN_TTL_MS,
   parseMatchLog,
+  parsePublicPhones,
   parseStoredEvent,
   ROOM_MESSAGES,
   type MatchEvent,
   type MatchLog,
+  type PublicPhone,
   type RoomCode,
   type ScoreClaim,
 } from '@padel/core';
@@ -344,7 +346,10 @@ export type LiveNotice =
   | { readonly kind: 'delta'; readonly eventId: string; readonly event: MatchEvent; readonly duplicate: boolean; readonly players: number }
   | { readonly kind: 'rename'; readonly eventId: string; readonly team: 'a' | 'b'; readonly name: string; readonly seq: number }
   | { readonly kind: 'presence'; readonly players: number }
+  | { readonly kind: 'roster'; readonly phones: readonly PublicPhone[] }
   | { readonly kind: 'join_offer'; readonly token: string }
+  | { readonly kind: 'match_moved'; readonly token: string; readonly seat: string | null }
+  | { readonly kind: 'match_notice' }
   | { readonly kind: 'error'; readonly message: string; readonly close: boolean; readonly code: RoomCode | null; readonly eventId: string | null }
   | { readonly kind: 'pong' }
   | { readonly kind: 'ignore' };
@@ -372,6 +377,11 @@ export function interpretMessage(data: unknown): LiveNotice {
   }
   if (record.type === 'presence' && typeof record.players === 'number' && record.players >= 0 && record.players <= 4) {
     return { kind: 'presence', players: record.players };
+  }
+  if (record.type === 'roster') {
+    const phones = parsePublicPhones(record.phones);
+    if (!phones) return { kind: 'ignore' };
+    return { kind: 'roster', phones };
   }
   if (record.type === 'team_renamed') {
     const eventId = canonicalEventId(record.eventId);
@@ -432,6 +442,15 @@ export function interpretMessage(data: unknown): LiveNotice {
   }
   if (record.type === 'join_offer' && isJoinToken(record.token)) {
     return { kind: 'join_offer', token: record.token };
+  }
+  if (record.type === 'match_moved' && isJoinToken(record.token)) {
+    const seat = record.seat === 'host' || (typeof record.seat === 'string' && /^p[1-9]\d*$/.test(record.seat))
+      ? record.seat
+      : null;
+    return { kind: 'match_moved', token: record.token, seat };
+  }
+  if (record.type === 'match_notice' && record.code === 'continued') {
+    return { kind: 'match_notice' };
   }
   return { kind: 'ignore' };
 }

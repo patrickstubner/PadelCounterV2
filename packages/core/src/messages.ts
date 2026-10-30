@@ -25,6 +25,8 @@ export const ROOM_MESSAGES = {
   invalid_device: 'This device id is not valid.',
   closed: 'This match is closed. It can no longer be scored.',
   reconnect_unavailable: 'The previous players can no longer be reconnected. Share a new code.',
+  invite_limited: 'This match has had too many new codes. Wait a while.',
+  carry_limited: 'These phones were already moved. Start again with a new code.',
 } as const;
 
 export type RoomCode = keyof typeof ROOM_MESSAGES;

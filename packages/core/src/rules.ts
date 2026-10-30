@@ -72,6 +72,37 @@ export function matchWinner(sets: readonly [SetScore, SetScore, SetScore]): Team
   return null;
 }
 
+/**
+ * What the court may call the result.
+ * A winner exists only when a team has two sets. Ending early is a lead or a draw, never a win.
+ */
+export type MatchResult =
+  | { readonly kind: 'playing' }
+  | { readonly kind: 'winner'; readonly team: TeamId }
+  | { readonly kind: 'leading'; readonly team: TeamId }
+  | { readonly kind: 'draw' };
+
+function gameLead(sets: readonly [SetScore, SetScore, SetScore]): { a: number; b: number } {
+  let a = 0;
+  let b = 0;
+  for (const set of sets) {
+    a += set.a;
+    b += set.b;
+  }
+  return { a, b };
+}
+
+export function matchResult(state: MatchState): MatchResult {
+  const decided = matchWinner(state.sets);
+  if (decided) return { kind: 'winner', team: decided };
+  if (!state.ended) return { kind: 'playing' };
+  const sets = setLead(state.sets);
+  if (sets.a !== sets.b) return { kind: 'leading', team: sets.a > sets.b ? 'a' : 'b' };
+  const games = gameLead(state.sets);
+  if (games.a !== games.b) return { kind: 'leading', team: games.a > games.b ? 'a' : 'b' };
+  return { kind: 'draw' };
+}
+
 function setLead(sets: readonly [SetScore, SetScore, SetScore]): { a: number; b: number } {
   let a = 0;
   let b = 0;
@@ -83,17 +114,10 @@ function setLead(sets: readonly [SetScore, SetScore, SetScore]): { a: number; b:
   return { a, b };
 }
 
-/**
- * Full celebration when a team has won the match (two sets), or when End match
- * leaves one team ahead. A tie or an abandoned match with no lead stays quiet.
- */
+/** Celebration only when the match is won by two sets. An early ending stays quiet. */
 export function celebrationWinner(state: MatchState): TeamId | null {
-  const decided = matchWinner(state.sets);
-  if (decided) return decided;
-  if (!state.ended) return null;
-  const lead = setLead(state.sets);
-  if (lead.a === lead.b) return null;
-  return lead.a > lead.b ? 'a' : 'b';
+  const result = matchResult(state);
+  return result.kind === 'winner' ? result.team : null;
 }
 
 export function canIncrement(score: SetScore, team: TeamId): boolean {

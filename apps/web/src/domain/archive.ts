@@ -2,7 +2,7 @@ import { isUuid } from './id';
 import { MAX_EVENTS, replay, type MatchLog } from './log';
 import { isValidStoredName } from './names';
 import { parseStoredEvent } from './persistence';
-import { celebrationWinner, isPlausibleSetScore } from './rules';
+import { isPlausibleSetScore, matchResult } from './rules';
 import { isTimestamp, type MatchEvent, type MatchState, type SetScore, type TeamId } from './types';
 
 export const ARCHIVE_KEY = 'pcv2:matches';
@@ -10,7 +10,7 @@ export const ARCHIVE_SCHEMA = 1 as const;
 export const MAX_ARCHIVED_MATCHES = 100;
 export const MAX_ARCHIVE_RAW = 1_500_000;
 
-export type ArchiveStatus = 'winner-a' | 'winner-b' | 'ended-early';
+export type ArchiveStatus = 'winner-a' | 'winner-b' | 'leading-a' | 'leading-b' | 'draw' | 'ended-early';
 
 export interface ArchivedMatch {
   readonly id: string;
@@ -74,9 +74,10 @@ export function setScoreLine(sets: readonly [SetScore, SetScore, SetScore]): str
 }
 
 export function liveStatus(state: MatchState): ListedStatus {
-  const winner = celebrationWinner(state);
-  if (winner === 'a') return 'winner-a';
-  if (winner === 'b') return 'winner-b';
+  const result = matchResult(state);
+  if (result.kind === 'winner') return result.team === 'a' ? 'winner-a' : 'winner-b';
+  if (result.kind === 'leading') return result.team === 'a' ? 'leading-a' : 'leading-b';
+  if (result.kind === 'draw') return 'draw';
   if (state.ended) return 'ended-early';
   return 'in-progress';
 }
@@ -84,13 +85,18 @@ export function liveStatus(state: MatchState): ListedStatus {
 export function statusLabel(status: ListedStatus, names: { readonly a: string; readonly b: string }): string {
   if (status === 'winner-a') return `${names.a} wins`;
   if (status === 'winner-b') return `${names.b} wins`;
+  if (status === 'leading-a') return `${names.a} leading`;
+  if (status === 'leading-b') return `${names.b} leading`;
+  if (status === 'draw') return 'Draw';
   if (status === 'ended-early') return 'ended early';
   return 'in progress';
 }
 
 function archiveStatus(state: MatchState): ArchiveStatus {
-  const winner = celebrationWinner(state);
-  if (winner === 'a' || winner === 'b') return winner === 'a' ? 'winner-a' : 'winner-b';
+  const result = matchResult(state);
+  if (result.kind === 'winner') return result.team === 'a' ? 'winner-a' : 'winner-b';
+  if (result.kind === 'leading') return result.team === 'a' ? 'leading-a' : 'leading-b';
+  if (result.kind === 'draw') return 'draw';
   return 'ended-early';
 }
 
@@ -144,7 +150,14 @@ function parseScore(value: unknown): SetScore | null {
 }
 
 function parseStatus(value: unknown): ArchiveStatus | null {
-  if (value === 'winner-a' || value === 'winner-b' || value === 'ended-early') return value;
+  if (
+    value === 'winner-a' ||
+    value === 'winner-b' ||
+    value === 'leading-a' ||
+    value === 'leading-b' ||
+    value === 'draw' ||
+    value === 'ended-early'
+  ) return value;
   return null;
 }
 

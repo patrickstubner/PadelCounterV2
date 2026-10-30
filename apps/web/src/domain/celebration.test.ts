@@ -95,18 +95,14 @@ describe('celebration keys', () => {
     expect(shouldCelebrate(again, first)).toBe(true);
   });
 
-  it('celebrates again after undo of End match and a new End match', () => {
+  it('does not celebrate End match on a one-set lead', () => {
     const ended = appendEvent(games(createLog(T0, ID), 'b', 6, T0 + 1), { type: 'match/end', at: T0 + 20 });
-    const first = currentWin(ended);
-    expect(first).toEqual({ matchId: ID, at: T0 + 20 });
-    expect(shouldCelebrate(ended, null)).toBe(true);
-
+    expect(currentWin(ended)).toBeNull();
+    expect(shouldCelebrate(ended, null)).toBe(false);
     const undone = undoLog(ended);
     expect(currentWin(undone)).toBeNull();
     const again = appendEvent(undone, { type: 'match/end', at: T0 + 30 });
-    expect(currentWin(again)).toEqual({ matchId: ID, at: T0 + 30 });
-    expect(shouldCelebrate(again, first)).toBe(true);
-    expect(shouldCelebrate(again, currentWin(again))).toBe(false);
+    expect(currentWin(again)).toBeNull();
   });
 
   it('does not treat End match on an already decided score as a new win', () => {
@@ -116,16 +112,14 @@ describe('celebration keys', () => {
     expect(shouldCelebrate(ended, null)).toBe(false);
   });
 
-  it('celebrates End match on a one-set lead, and again if resume clears it', () => {
+  it('does not celebrate an early end, and resume does not create a win', () => {
     const lead = appendEvent(games(createLog(T0, ID), 'b', 6, T0 + 1), { type: 'match/end', at: T0 + 20 });
-    expect(currentWin(lead)).toEqual({ matchId: ID, at: T0 + 20 });
-    expect(shouldCelebrate(lead, null)).toBe(true);
-
+    expect(currentWin(lead)).toBeNull();
+    expect(shouldCelebrate(lead, null)).toBe(false);
     const resumed = appendEvent(lead, { type: 'match/resume', at: T0 + 21 });
     expect(currentWin(resumed)).toBeNull();
     const endedAgain = appendEvent(resumed, { type: 'match/end', at: T0 + 22 });
-    expect(currentWin(endedAgain)).toEqual({ matchId: ID, at: T0 + 22 });
-    expect(shouldCelebrate(endedAgain, currentWin(lead))).toBe(true);
+    expect(currentWin(endedAgain)).toBeNull();
   });
 
   it('starts a fresh key on a new match', () => {

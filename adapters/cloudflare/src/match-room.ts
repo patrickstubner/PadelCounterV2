@@ -1,11 +1,30 @@
 import { DurableObject } from 'cloudflare:workers';
-import { LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, canonicalCausalId, clampClockOffset, connectionCloses, isJoinToken, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, replayScore, type Credential, type Role } from '@padel/core';
+import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, UNUSED_MINT_MS, actorId, canonicalCausalId, clampClockOffset, connectionCloses, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isLegacyDeviceId, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
-import { applyLiveEvent, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange, type RoomRecord } from './room';
-import { ensureActivityColumn, grantMintedInvite, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, openRoomForCreate, readActivityTouch, readEventSeq, readJoined, readRoom, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, type RoomSql } from './store';
+import { applyLiveEvent, chooseActor, createRoom, currentSharedInvite, eventDelta, helloPayload, issueInvite, serverLastChange, type RoomRecord } from './room';
+import { openText, sealText } from './seal';
+import { randomToken } from './tokens';
+import { deleteSeal, dropMemberHashes, ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, markRosterOffline, matchBudgetOpen, openRoomForCreate, pendingMintStale, readActivityTouch, readEventSeq, readJoined, readRoom, readRoster, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, saveRosterPhone, takeMatchBudget, writeSeal, type RoomSql } from './store';
 import { quotaMac, quotaSecret, safeEqualHex, sha256Hex } from './tokens';
+
+function publicSeat(value: unknown): string | null {
+  if (value === 'host') return 'host';
+  if (typeof value !== 'string' || isDeviceId(value)) return null;
+  return actorId(value) === value && /^p[1-9]\d*$/.test(value) ? value : null;
+}
+
+function packedMove(plain: string | null): { token: string | null; seat: string | null } {
+  if (!plain) return { token: null, seat: null };
+  if (!plain.startsWith('{')) return { token: plain, seat: null };
+  try {
+    const parsed = JSON.parse(plain) as { token?: unknown; seat?: unknown };
+    return { token: typeof parsed.token === 'string' ? parsed.token : null, seat: publicSeat(parsed.seat) };
+  } catch {
+    return { token: null, seat: null };
+  }
+}
 
 /** Fixed scope. A minute in the MAC would split one address across two pending caps. */
 const SOCKET_IP_SCOPE = 'socket';
@@ -17,6 +36,8 @@ interface PendingState {
   /** HMAC of the client address. Never the address itself. */
   readonly ip: string;
   readonly openedAt: number;
+  /** Coarse class of the upgrade's User-Agent. The agent string is not stored. */
+  readonly kind: DeviceKind;
 }
 
 interface AdmittedState {
@@ -73,6 +94,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         return json(200, { ok: true });
       }
       if (request.method === 'POST' && url.pathname === '/reconnect-info') return this.reconnectInfo(request);
+      if (request.method === 'POST' && url.pathname === '/carry-claim') return this.carryClaim(request);
       if (request.method === 'POST' && url.pathname === '/carry-invite') return this.carryInvite(request);
       if (request.method === 'POST' && url.pathname === '/notify') return this.notify(request);
       if (request.method === 'POST' && url.pathname === '/create') return this.create(request);
@@ -108,7 +130,8 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [COURT_TAG]);
     const openedAt = Date.now();
-    server.serializeAttachment({ admitted: false, ip: ipMac, openedAt } satisfies PendingState);
+    const kind = deviceKindFromAgent(request.headers.get('user-agent'));
+    server.serializeAttachment({ admitted: false, ip: ipMac, openedAt, kind } satisfies PendingState);
     await this.armAlarm(openedAt);
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -140,6 +163,10 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       await this.hello(ws, record, state);
       return;
     }
+    if (record.type === 'decline_move') {
+      if (state.deviceId) deleteSeal(this.sql(), `move:${state.deviceId}`);
+      return;
+    }
     if (record.type === 'team_renamed') {
       const renameBudget = allowRate(state.renameStamps ?? [], Date.now(), RENAME_PER_SECOND, 1_000);
       ws.serializeAttachment({ ...state, renameStamps: renameBudget.stamps });
@@ -164,11 +191,20 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
-    void ws;
     void code;
     void reason;
     void wasClean;
+    const state = this.readState(ws);
+    if (state?.admitted && state.deviceId) {
+      const still = this.ctx.getWebSockets(COURT_TAG).some((socket) => {
+        if (socket === ws) return false;
+        const other = this.readState(socket);
+        return other?.admitted === true && other.deviceId === state.deviceId;
+      });
+      if (!still) markRosterOffline(this.sql(), state.deviceId, Date.now());
+    }
     this.broadcastPresence();
+    this.sendRoster(ws);
     await this.armAlarm(Date.now());
   }
 
@@ -177,13 +213,31 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       this.reject(ws, record.protocol === LIVE_PROTOCOL ? 'bad_token' : 'upgrade_required');
       return;
     }
+    if (!readRoom(this.sql())) {
+      this.reject(ws, 'unavailable');
+      return;
+    }
+    const tokenHash = await sha256Hex(record.token);
+    const deviceId = isDeviceId(record.device) ? record.device : null;
+    const previousDevice = isLegacyDeviceId(record.previousDevice) ? record.previousDevice : null;
+    if (deviceId && previousDevice) {
+      this.rebindDevice(tokenHash, previousDevice, deviceId);
+      try {
+        await d1MatchIndex(this.env.DB).rebindCredential(tokenHash, previousDevice, deviceId);
+      } catch {
+        // The room binding is already moved. D1 can catch up on the next hello.
+      }
+    }
+    if (pendingMintStale(this.sql(), tokenHash, Date.now(), UNUSED_MINT_MS)) {
+      revokeInviteHash(this.sql(), tokenHash, Date.now());
+      this.reject(ws, 'expired');
+      return;
+    }
     const room = readRoom(this.sql());
     if (!room) {
       this.reject(ws, 'unavailable');
       return;
     }
-    const tokenHash = await sha256Hex(record.token);
-    const deviceId = typeof record.device === 'string' && /^d[a-f0-9]{8}$/.test(record.device) ? record.device : null;
     const seated = this.seatedSockets(ws, deviceId);
     const result = helloPayload(room, tokenHash, seated.others, Date.now(), deviceId);
     if (!result.ok) {
@@ -210,7 +264,8 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         return;
       }
     }
-    const actor = this.assignActor(result.credential.host, tokenHash, deviceId);
+    const alreadyJoined = deviceId !== null && readJoined(this.sql()).some((row) => safeEqualHex(row.tokenHash, tokenHash) && row.deviceId === deviceId);
+    const actor = this.assignActor(result.credential.host, tokenHash, deviceId, !this.liveMoveSeal(deviceId));
     if (!actor) {
       this.reject(ws, 'unavailable');
       return;
@@ -234,9 +289,45 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       names: { A: played.teams.a.name, B: played.teams.b.name },
       nameSeq: latestEventSeq(this.sql()),
     }));
+    if (deviceId) {
+      const kind = pending && pending.admitted === false && isDeviceKind(pending.kind) ? pending.kind : 'other';
+      saveRosterPhone(this.sql(), { deviceId, seat: actor, kind, now: Date.now() });
+    }
+    if (!result.credential.host) {
+      const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, tokenHash));
+      if (invite) {
+        try {
+          await d1MatchIndex(this.env.DB).admitCredential(tokenHash, invite.expiresAt);
+        } catch {
+          // The socket is already in the room. A later hello can mark the row.
+        }
+      }
+    }
+    await this.sendHandover(ws, deviceId, alreadyJoined);
     this.closeSuperseded(seated.same);
     this.broadcastPresence();
+    this.sendRoster();
     await this.armAlarm(Date.now());
+  }
+
+  /** One roster per admitted socket. `self` is true only for that socket's device. */
+  private sendRoster(except?: WebSocket): void {
+    const live = new Set<string>();
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      if (socket === except) continue;
+      const state = this.readState(socket);
+      if (state?.admitted === true && state.deviceId) live.add(state.deviceId);
+    }
+    const rows = readRoster(this.sql()).map((row) => ({ ...row, online: live.has(row.deviceId) }));
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      const state = this.readState(socket);
+      if (state?.admitted !== true) continue;
+      try {
+        socket.send(JSON.stringify({ type: 'roster', phones: publicPhoneList(rows, state.deviceId) }));
+      } catch {
+        // A closed peer must not stop the others.
+      }
+    }
   }
 
   /** Admitted sockets for this device do not take another seat. */
@@ -480,30 +571,164 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   private async invite(request: Request): Promise<Response> {
     const body = await readBody(request, 4000);
     if (!body || typeof body !== 'object') return json(400, { error: 'invalid_match' });
-    const fields = body as { hostToken?: unknown; role?: unknown; inviteToken?: unknown };
-    if (!isJoinToken(fields.hostToken) || !isJoinToken(fields.inviteToken) || !isRole(fields.role)) {
-      return json(400, { error: 'invalid_match' });
-    }
+    const fields = body as {
+      hostToken?: unknown;
+      memberToken?: unknown;
+      role?: unknown;
+      inviteToken?: unknown;
+      rotate?: unknown;
+      reseal?: unknown;
+      code?: unknown;
+    };
+    const memberToken = isJoinToken(fields.memberToken) ? fields.memberToken : fields.hostToken;
+    if (!isJoinToken(memberToken) || !isRole(fields.role)) return json(400, { error: 'invalid_match' });
+    if (fields.role !== 'player') return json(403, { error: 'spectator_not_available' });
     const room = readRoom(this.sql());
     if (!room) return json(404, { error: 'unavailable' });
     const now = Date.now();
-    const issued = issueInvite(
-      room,
-      await sha256Hex(fields.hostToken),
-      fields.role,
-      await sha256Hex(fields.inviteToken),
-      now,
-    );
+    const callerHash = await sha256Hex(memberToken);
+    const caller = room.invites.find((row) => safeEqualHex(row.tokenHash, callerHash));
+    if (!caller || caller.revokedAt !== null || now >= caller.expiresAt || caller.role !== 'player') {
+      return json(401, { error: 'bad_token' });
+    }
+    const rotate = fields.rotate === true;
+    const current = currentSharedInvite(room, now);
+    if (fields.reseal === true && isJoinToken(fields.inviteToken) && current) {
+      const hash = await sha256Hex(fields.inviteToken);
+      if (!safeEqualHex(current.tokenHash, hash)) return json(409, { error: 'unavailable' });
+      const secret = quotaSecret(this.env.QUOTA_HMAC_KEY);
+      if (!secret) return json(503, { error: 'not_configured' });
+      const code = typeof fields.code === 'string' ? fields.code : null;
+      const sealed = await sealText(secret, JSON.stringify({ token: fields.inviteToken, code }));
+      ensureSealedTable(this.sql());
+      writeSeal(this.sql(), 'invite', current.tokenHash, sealed, current.expiresAt);
+      return json(200, { role: 'player' satisfies Role, expiresAt: current.expiresAt, reuse: true, token: fields.inviteToken, code });
+    }
+    if (!rotate && current) {
+      const opened = await this.openInviteSeal(current.tokenHash);
+      if (!opened) return json(409, { error: 'unavailable' });
+      return json(200, {
+        role: 'player' satisfies Role,
+        expiresAt: current.expiresAt,
+        token: opened.token,
+        code: opened.code,
+        reuse: true,
+      });
+    }
+    if (!isJoinToken(fields.inviteToken)) return json(400, { error: 'invalid_match' });
+    const guestDevice = isDeviceId(caller.deviceId) ? caller.deviceId : this.callerDevice(callerHash);
+    const budgetKind = !rotate ? 'mint' : caller.host ? 'rotate:host' : `rotate:${guestDevice ?? callerHash.slice(0, 32)}`;
+    const budgetLimit = !rotate ? MINT_PER_MATCH : caller.host ? ROTATE_PER_MATCH : GUEST_ROTATE_PER_DEVICE;
+    if (!takeMatchBudget(this.sql(), budgetKind, now, budgetLimit, MATCH_BUDGET_WINDOW_MS)) {
+      return json(429, { error: 'invite_limited' });
+    }
+    const code = typeof fields.code === 'string' ? fields.code : null;
+    const keepHash = caller.deviceId ? caller.tokenHash : undefined;
+    const issued = issueInvite(room, callerHash, fields.role, await sha256Hex(fields.inviteToken), now, keepHash);
     if (!issued.ok) return json(issued.code === 'spectator_not_available' ? 403 : 401, { error: issued.code });
-    const created = issued.record.invites.find((row) => row.revokedAt === null && !row.host);
+    const created = issued.record.invites.find((row) => row.revokedAt === null && !row.host && !row.deviceId);
     if (!created) return json(500, { error: 'unavailable' });
+    const secret = quotaSecret(this.env.QUOTA_HMAC_KEY);
+    if (!secret) return json(503, { error: 'not_configured' });
+    const sealed = await sealText(secret, JSON.stringify({ token: fields.inviteToken, code }));
+    const callerDevice = this.callerDevice(callerHash);
+    let sessionToken: string | null = null;
+    let sessionDevice: string | null = null;
+    if (rotate && !caller.deviceId && !caller.host && callerDevice) {
+      sessionToken = randomToken();
+      sessionDevice = callerDevice;
+    }
+    const revokedHashes = room.invites
+      .filter((row) => !row.host && row.revokedAt === null && row.tokenHash !== keepHash)
+      .map((row) => row.tokenHash);
+    const sessionHash = sessionToken ? await sha256Hex(sessionToken) : null;
+    ensureSealedTable(this.sql());
     this.ctx.storage.transactionSync(() => {
       const sql = this.sql();
-      revokePlayerInvites(sql, now);
+      revokePlayerInvites(sql, now, keepHash);
       insertInvite(sql, created);
+      if (sessionHash && sessionDevice) {
+        insertInvite(sql, {
+          tokenHash: sessionHash,
+          role: 'player',
+          host: false,
+          expiresAt: issued.expiresAt,
+          revokedAt: null,
+          deviceId: sessionDevice,
+        });
+      }
+      writeSeal(sql, 'invite', created.tokenHash, sealed, issued.expiresAt);
+      dropMemberHashes(sql, revokedHashes);
     });
     this.closeRevokedPlayers();
-    return json(201, { role: 'player' satisfies Role, expiresAt: issued.expiresAt });
+    return json(201, {
+      role: 'player' satisfies Role,
+      expiresAt: issued.expiresAt,
+      reuse: false,
+      ...(keepHash ? { keepHash } : {}),
+      ...(sessionToken && sessionDevice ? { sessionToken, sessionDevice, sessionExpiresAt: issued.expiresAt } : {}),
+    });
+  }
+
+  /** The admitted socket that is using this credential, if it sent a device id. */
+  private callerDevice(tokenHash: string): string | null {
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      const state = this.readState(socket);
+      if (state?.admitted === true && state.deviceId && safeEqualHex(state.tokenHash, tokenHash)) return state.deviceId;
+    }
+    return null;
+  }
+
+  private async openInviteSeal(tokenHash: string): Promise<{ token: string; code: string | null } | null> {
+    const secret = quotaSecret(this.env.QUOTA_HMAC_KEY);
+    if (!secret) return null;
+    ensureSealedTable(this.sql());
+    const row = readSeal(this.sql(), 'invite');
+    if (!row || !safeEqualHex(row.tokenHash, tokenHash)) return null;
+    const plain = await openText(secret, row.payload);
+    if (!plain) return null;
+    try {
+      const parsed = JSON.parse(plain) as { token?: unknown; code?: unknown };
+      if (!isJoinToken(parsed.token)) return null;
+      const code = typeof parsed.code === 'string' && parsed.code.length > 0 ? parsed.code : null;
+      return { token: parsed.token, code };
+    } catch {
+      return null;
+    }
+  }
+
+  /** A phone that was offline follows the new match. Anyone else gets a notice and no token. */
+  private async sendHandover(ws: WebSocket, deviceId: string | null, alreadyJoined: boolean): Promise<void> {
+    ensureSealedTable(this.sql());
+    const sql = this.sql();
+    if (!hasMoveSeal(sql)) return;
+    const secret = quotaSecret(this.env.QUOTA_HMAC_KEY);
+    const row = deviceId ? readSeal(sql, `move:${deviceId}`) : null;
+    const now = Date.now();
+    if (!secret || !row || now >= row.expiresAt || !alreadyJoined) {
+      try {
+        ws.send(JSON.stringify({ type: 'match_notice', code: 'continued' }));
+      } catch {
+        // The peer is already gone.
+      }
+      return;
+    }
+    const opened = await openText(secret, row.payload);
+    const packed = packedMove(opened);
+    const token = packed.token;
+    if (!isJoinToken(token)) {
+      try {
+        ws.send(JSON.stringify({ type: 'match_notice', code: 'continued' }));
+      } catch {
+        // The peer is already gone.
+      }
+      return;
+    }
+    try {
+      ws.send(JSON.stringify({ type: 'match_moved', token, ...(packed.seat ? { seat: packed.seat } : {}) }));
+    } catch {
+      // The peer is already gone.
+    }
   }
 
   /** A new code revokes the old one. Phones that joined with it leave the live match now. */
@@ -518,7 +743,40 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
   }
 
-  private assignActor(host: boolean, tokenHash: string, deviceId: string | null): string | null {
+  /** Move a stored 32-bit id onto the new 128-bit id for this credential only. */
+  private rebindDevice(tokenHash: string, from: string, to: string): void {
+    if (!isLegacyDeviceId(from) || !isDeviceId(to) || from === to) return;
+    const sql = this.sql();
+    sql.exec('UPDATE invites SET device_id = ? WHERE token_hash = ? AND device_id = ?', to, tokenHash, from);
+    sql.exec('UPDATE joined SET device_id = ? WHERE token_hash = ? AND device_id = ?', to, tokenHash, from);
+    try {
+      sql.exec('UPDATE roster SET device_id = ? WHERE device_id = ?', to, from);
+    } catch {
+      // No roster yet.
+    }
+    try {
+      ensureSealedTable(sql);
+      sql.exec('UPDATE sealed SET id = ? WHERE id = ?', `move:${to}`, `move:${from}`);
+    } catch {
+      // No seal yet.
+    }
+  }
+
+  /** Seat label already shown in the phone list. Never a device id. */
+  private starterSeat(deviceId: string): string | null {
+    const row = readJoined(this.sql()).find((item) => item.deviceId === deviceId);
+    return row ? publicSeat(row.playerId) : null;
+  }
+
+  /** A sealed move for this device is still inside its lifetime. */
+  private liveMoveSeal(deviceId: string | null): boolean {
+    if (!deviceId) return false;
+    ensureSealedTable(this.sql());
+    const row = readSeal(this.sql(), `move:${deviceId}`);
+    return row !== null && Date.now() < row.expiresAt;
+  }
+
+  private assignActor(host: boolean, tokenHash: string, deviceId: string | null, bindNewPair: boolean): string | null {
     const joined = readJoined(this.sql());
     const connected: { actor: string; deviceId: string | null }[] = [];
     for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
@@ -528,7 +786,8 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const actor = chooseActor({ host, tokenHash, deviceId, joined, connected });
     if (!actor || !deviceId) return actor;
     const already = joined.some((row) => row.tokenHash === tokenHash && row.deviceId === deviceId);
-    if (!already) insertJoined(this.sql(), tokenHash, actor, deviceId);
+    // A hello must not create the pair that would unlock someone else's move token.
+    if (!already && bindNewPair) insertJoined(this.sql(), tokenHash, actor, deviceId);
     return actor;
   }
 
@@ -543,17 +802,94 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     return room;
   }
 
+  /** Any unexpired player credential for this room. The check is the row in this object, not the caller's claim. */
+  private async requireMember(token: unknown): Promise<ReturnType<typeof readRoom>> {
+    if (!isJoinToken(token)) return null;
+    const room = readRoom(this.sql());
+    if (!room) return null;
+    const hash = await sha256Hex(token);
+    const now = Date.now();
+    const row = room.invites.find((invite) => safeEqualHex(invite.tokenHash, hash));
+    if (!row || row.role !== 'player' || row.revokedAt !== null || now >= row.expiresAt) return null;
+    return room;
+  }
+
+  private memberList(room: RoomRecord): { deviceId: string; connected: boolean }[] {
+    const now = Date.now();
+    const valid = new Set(
+      room.invites
+        .filter((row) => row.revokedAt === null && now < row.expiresAt && row.role === 'player')
+        .map((row) => row.tokenHash),
+    );
+    const connected = new Set<string>();
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      const state = this.readState(socket);
+      if (state?.admitted === true && state.deviceId) connected.add(state.deviceId);
+    }
+    const seenAt = new Map(readRoster(this.sql()).map((row) => [row.deviceId, row.seen]));
+    const members: { deviceId: string; connected: boolean }[] = [];
+    const seen = new Set<string>();
+    for (const row of readJoined(this.sql())) {
+      if (!row.deviceId || !isDeviceId(row.deviceId) || seen.has(row.deviceId)) continue;
+      if (!valid.has(row.tokenHash)) continue;
+      const online = connected.has(row.deviceId);
+      const last = seenAt.get(row.deviceId) ?? 0;
+      if (!online && (last === 0 || now - last > MEMBER_SEEN_MS)) continue;
+      seen.add(row.deviceId);
+      members.push({ deviceId: row.deviceId, connected: online });
+    }
+    return members;
+  }
+
+  /**
+   * The phone that asked to move the court.
+   * A shared QR has no device of its own and cannot start a move.
+   * A host or a device-bound credential must already have joined with that device.
+   */
+  private starterDevice(room: RoomRecord, tokenHash: string): string | null {
+    const now = Date.now();
+    const row = room.invites.find((invite) => safeEqualHex(invite.tokenHash, tokenHash));
+    if (!row || row.revokedAt !== null || now >= row.expiresAt || row.role !== 'player') return null;
+    const joined = readJoined(this.sql()).filter((item) => safeEqualHex(item.tokenHash, tokenHash) && item.deviceId && isDeviceId(item.deviceId));
+    if (row.deviceId) {
+      return joined.some((item) => item.deviceId === row.deviceId) ? row.deviceId : null;
+    }
+    if (!row.host) return null;
+    const live = new Set<string>();
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      const state = this.readState(socket);
+      if (state?.admitted === true && state.deviceId) live.add(state.deviceId);
+    }
+    const connected = joined.filter((item) => item.deviceId && live.has(item.deviceId));
+    if (connected.length === 1) return connected[0]?.deviceId ?? null;
+    if (joined.length === 1) return joined[0]?.deviceId ?? null;
+    return null;
+  }
+
   private async reconnectInfo(request: Request): Promise<Response> {
     const body = await readBody(request, 2000);
-    const hostToken = body && typeof body === 'object' ? (body as { hostToken?: unknown }).hostToken : undefined;
-    const room = await this.requireHost(hostToken);
+    const token = body && typeof body === 'object' ? (body as { hostToken?: unknown }).hostToken : undefined;
+    const room = await this.requireMember(token);
     if (!room) return json(401, { error: 'bad_token' });
-    const joined = readJoined(this.sql());
     return json(200, {
       lastChangeAt: serverLastChange(room),
-      joinedHashes: [...new Set(joined.filter((row) => row.playerId !== 'host' && row.deviceId).map((row) => row.tokenHash))],
-      invites: invitesForCarry(room.invites, joined),
+      members: this.memberList(room),
     });
+  }
+
+  private async carryClaim(request: Request): Promise<Response> {
+    const body = await readBody(request, 2000);
+    const token = body && typeof body === 'object' ? (body as { hostToken?: unknown }).hostToken : undefined;
+    const room = await this.requireMember(token);
+    if (!room || !isJoinToken(token)) return json(401, { error: 'bad_token' });
+    const starter = this.starterDevice(room, await sha256Hex(token));
+    if (!starter) return json(401, { error: 'bad_token' });
+    const members = this.memberList(room).filter((member) => member.deviceId !== starter);
+    const now = Date.now();
+    if (members.length > 0 && !matchBudgetOpen(this.sql(), `carry:${starter}`, now, CARRY_PER_DEVICE, 0)) {
+      return json(429, { error: 'carry_limited' });
+    }
+    return json(200, { starterDevice: starter, starterSeat: this.starterSeat(starter), members });
   }
 
   private async playerInvite(request: Request): Promise<Response> {
@@ -564,9 +900,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     if (!isJoinToken(fields.token) || typeof fields.expiresAt !== 'number' || !Number.isInteger(fields.expiresAt)) {
       return json(400, { error: 'invalid_match' });
     }
-    if (typeof fields.deviceId !== 'string' || !/^d[a-f0-9]{8}$/.test(fields.deviceId)) {
-      return json(400, { error: 'invalid_match' });
-    }
+    if (!isDeviceId(fields.deviceId)) return json(400, { error: 'invalid_match' });
     if (!readRoom(this.sql())) return json(404, { error: 'unavailable' });
     const expiresAt = fields.expiresAt;
     const deviceId = fields.deviceId;
@@ -578,7 +912,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       expiresAt,
       revokedAt: null,
       deviceId,
-    }, Date.now(), MAX_MINTED_TOKENS));
+    }, Date.now(), MAX_MINTED_TOKENS, UNUSED_MINT_MS));
     if (decision.status === 'full') return json(409, { error: 'join_code' });
     return json(201, { ok: true, replaced: decision.replaced, revokedAt: decision.revokedAt });
   }
@@ -607,9 +941,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     if (!isJoinToken(fields.token) || typeof fields.expiresAt !== 'number' || !Number.isInteger(fields.expiresAt)) {
       return json(400, { error: 'invalid_match' });
     }
-    if (typeof fields.deviceId !== 'string' || !/^d[a-f0-9]{8}$/.test(fields.deviceId)) {
-      return json(400, { error: 'invalid_match' });
-    }
+    if (!isDeviceId(fields.deviceId)) return json(400, { error: 'invalid_match' });
     const room = await this.requireHost(fields.hostToken);
     if (!room) return json(401, { error: 'bad_token' });
     insertInvite(this.sql(), {
@@ -625,22 +957,49 @@ export class MatchRoom extends DurableObject<RoomEnv> {
 
   private async notify(request: Request): Promise<Response> {
     const body = await readBody(request, 8000);
-    const fields = body && typeof body === 'object' ? (body as { hostToken?: unknown; offers?: unknown }) : {};
-    const room = await this.requireHost(fields.hostToken);
+    const fields = body && typeof body === 'object'
+      ? (body as { hostToken?: unknown; offers?: unknown; starterDevice?: unknown; seat?: unknown })
+      : {};
+    const room = await this.requireMember(fields.hostToken);
     if (!room) return json(401, { error: 'bad_token' });
+    const secret = quotaSecret(this.env.QUOTA_HMAC_KEY);
+    if (!secret) return json(503, { error: 'not_configured' });
+    const starter = isDeviceId(fields.starterDevice) ? fields.starterDevice : null;
+    const seat = publicSeat(fields.seat);
     const offers = Array.isArray(fields.offers) ? fields.offers : [];
+    const allowed = new Set(this.memberList(room).map((member) => member.deviceId));
+    const moving: { deviceId: string; token: string }[] = [];
     for (const offer of offers) {
       if (!offer || typeof offer !== 'object') continue;
       const row = offer as { deviceId?: unknown; token?: unknown };
-      if (!isJoinToken(row.token) || typeof row.deviceId !== 'string') continue;
-      const payload = JSON.stringify({ type: 'join_offer', token: row.token });
+      if (!isJoinToken(row.token) || !isDeviceId(row.deviceId) || !allowed.has(row.deviceId)) continue;
+      if (row.deviceId === starter) continue;
+      moving.push({ deviceId: row.deviceId, token: row.token });
+    }
+    if (moving.length === 0) return json(200, { ok: true });
+    if (!starter) return json(401, { error: 'bad_token' });
+    const now = Date.now();
+    if (!takeMatchBudget(this.sql(), `carry:${starter}`, now, CARRY_PER_DEVICE, 0)) {
+      return json(429, { error: 'carry_limited' });
+    }
+    ensureSealedTable(this.sql());
+    for (const row of moving) {
+      const expiresAt = now + JOIN_TOKEN_TTL_MS;
+      writeSeal(
+        this.sql(),
+        `move:${row.deviceId}`,
+        await sha256Hex(row.token),
+        await sealText(secret, JSON.stringify({ token: row.token, seat })),
+        expiresAt,
+      );
+      const payload = JSON.stringify({ type: 'match_moved', token: row.token, ...(seat ? { seat } : {}) });
       for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
         const state = this.readState(socket);
         if (state?.admitted !== true || state.deviceId !== row.deviceId) continue;
         try {
           socket.send(payload);
         } catch {
-          // A closed peer must not stop the offer.
+          // A closed peer must not stop the move.
         }
       }
     }

@@ -179,7 +179,8 @@ describe('connect overlay and scanned join', () => {
     globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
     const view = await mount();
     mounted.push(view);
-    await press('join-open');
+    await press('connect-open');
+    await press('scan-qr');
     expect(document.querySelector('[data-testid="join-match-dialog"]')).not.toBeNull();
     expect(window.history.state).toEqual({ padelArchive: 'join' });
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
@@ -189,13 +190,15 @@ describe('connect overlay and scanned join', () => {
     });
     expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
 
-    await press('join-open');
+    await press('connect-open');
+    await press('scan-qr');
     await act(async () => {
       window.history.back();
     });
     expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
 
-    await press('join-open');
+    await press('connect-open');
+    await press('scan-qr');
     const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
     if (!input) throw new Error('code field missing');
     await act(async () => {
@@ -228,7 +231,7 @@ describe('connect overlay and scanned join', () => {
     expect(document.activeElement).toBe(document.querySelector('[data-testid="connect-close-x"]'));
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
-    expect(document.activeElement).toBe(document.querySelector('[data-testid="connect-close"]'));
+    expect(document.activeElement).toBe(document.querySelector('[data-testid="show-qr"]'));
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
     expect(document.activeElement).toBe(document.querySelector('[data-testid="connect-close-x"]'));
 
@@ -270,7 +273,7 @@ describe('connect overlay and scanned join', () => {
     mounted.push(view);
     await press('connect-open');
     expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
-    await press('share-match');
+    await press('show-qr');
     await waitFor(() => document.querySelector('.qr') !== null);
     expect(document.querySelector('[data-testid="connect-dialog"] .qr')).not.toBeNull();
     expect(document.querySelector('[data-testid="connect-dialog"]')?.classList.contains('connect-bright')).toBe(true);
@@ -291,7 +294,7 @@ describe('connect overlay and scanned join', () => {
     mounted.push(view);
     await waitFor(() => scoreA().includes('4'));
     expect(document.querySelector('[data-testid="join-error"]')).toBeNull();
-    expect(document.querySelector('[data-testid="connect-open"]')).toBeNull();
+    expect(document.querySelector('[data-testid="connect-open"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="connect-dialog"]')).toBeNull();
     expect(window.location.href).not.toContain(TOKEN);
     expect(window.location.hash).toBe('');
@@ -301,7 +304,7 @@ describe('connect overlay and scanned join', () => {
     expect(join?.init?.method).toBe('POST');
     expect(new Headers(join?.init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
     const body = JSON.parse(String(join?.init?.body)) as { device?: string };
-    expect(body.device).toMatch(/^d[a-f0-9]{8}$/);
+    expect(body.device).toMatch(/^d[a-f0-9]{32}$/);
     expect(fetchCalls.some((call) => call.url.includes('/ws/'))).toBe(false);
     const socket = sockets.at(-1);
     await act(async () => {
@@ -374,7 +377,7 @@ describe('connect overlay and scanned join', () => {
     await waitFor(() => scoreA().includes('4'));
     expect(window.location.hash).toBe('');
     expect(window.location.href).not.toContain(TOKEN);
-    expect(document.querySelector('[data-testid="connect-open"]')).toBeNull();
+    expect(document.querySelector('[data-testid="connect-open"]')).not.toBeNull();
   });
 
   it('shows a share failure in the dialog without clearing a join error', async () => {
@@ -386,7 +389,7 @@ describe('connect overlay and scanned join', () => {
     mounted.push(view);
     await waitFor(() => (document.querySelector('[data-testid="join-error"]')?.textContent ?? '').includes('This code is not valid.'));
     await press('connect-open');
-    await press('share-match');
+    await press('show-qr');
     await waitFor(() => document.querySelector('[data-testid="connect-error"]') !== null);
     expect(document.querySelector('[data-testid="connect-error"]')?.textContent).toContain('Live sharing is not configured in this build.');
     expect(document.querySelector('[data-testid="connect-error"]')?.textContent).not.toContain('script');
@@ -403,7 +406,7 @@ describe('connect overlay and scanned join', () => {
     const first = await mount();
     mounted.push(first);
     await press('connect-open');
-    await press('share-match');
+    await press('show-qr');
     await waitFor(() => document.querySelector('[data-testid="connect-dialog"] .qr') !== null);
     expect(fetchCalls.filter((call) => call.url.endsWith('/matches'))).toHaveLength(1);
     const stored = JSON.parse(sessionStorage.getItem(JOIN_KEY) ?? '{}') as {
@@ -427,7 +430,7 @@ describe('connect overlay and scanned join', () => {
     await waitFor(() => document.querySelector('[data-testid="connect-open"]') !== null);
     expect(JSON.parse(sessionStorage.getItem(JOIN_KEY) ?? '{}').expiresAt).toBe(expiresAt);
     await press('connect-open');
-    await press('share-match');
+    await press('show-qr');
     await waitFor(() => document.querySelector('[data-testid="connect-dialog"] .qr') !== null);
     expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
     expect(fetchCalls.some((call) => call.url.endsWith('/invites'))).toBe(false);
@@ -439,6 +442,7 @@ describe('connect overlay and scanned join', () => {
     await waitFor(() => fetchCalls.filter((call) => call.url.endsWith('/invites')).length === 1);
     expect(fetchCalls.filter((call) => call.url === `${API}/matches/${MATCH}/invites`)).toHaveLength(1);
     expect(new Headers(fetchCalls.find((call) => call.url.endsWith('/invites'))?.init?.headers).get('authorization')).toBe(`Bearer ${HOST}`);
+    expect(String(fetchCalls.find((call) => call.url.endsWith('/invites'))?.init?.body)).toContain('"rotate":true');
     expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
   });
 
@@ -513,4 +517,43 @@ describe('connect overlay and scanned join', () => {
     });
     expect(document.querySelector('[data-testid="live-error"]')).toBeNull();
   }, 8_000);
+
+  it('asks before joining a moved match, and decline stays on this one', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('scan-qr');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => sockets.length > 0 && sockets[0]?.sent.some((entry) => entry.includes('"hello"')) === true);
+    await waitFor(() => scoreA().includes('4'));
+    const joinsBefore = fetchCalls.filter((call) => call.url.endsWith('/join')).length;
+    const moved = 'bbbbbbbbbbbbbbbbbbbbbb';
+    await act(async () => {
+      sockets[0]?.onmessage?.({ data: JSON.stringify({ type: 'match_moved', token: moved, seat: 'p3' }) });
+    });
+    expect(document.body.textContent).toContain('Player 3 started a new match. Join it, or stay here.');
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(joinsBefore);
+    await press('dismiss-join');
+    expect(document.querySelector('[data-testid="join-new-match"]')).toBeNull();
+    expect(sockets[0]?.sent.some((entry) => entry.includes('"decline_move"'))).toBe(true);
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(joinsBefore);
+    await act(async () => {
+      sockets[0]?.onmessage?.({ data: JSON.stringify({ type: 'match_moved', token: moved, seat: 'p3' }) });
+    });
+    await press('join-new-match');
+    const joins = fetchCalls.filter((call) => call.url.endsWith('/join'));
+    expect(joins).toHaveLength(joinsBefore + 1);
+    expect(String(joins.at(-1)?.init?.headers && new Headers(joins.at(-1)?.init?.headers).get('authorization'))).toContain(moved);
+  });
 });

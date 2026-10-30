@@ -40,6 +40,7 @@ export {
   canIncrement,
   canTakeGame,
   celebrationWinner,
+  matchResult,
   displayGames,
   gamesPlayed,
   inferServeStart,
@@ -58,6 +59,16 @@ export {
   setWinner,
   tiebreakHint,
 } from './rules';
+export type { MatchResult } from './rules';
+export {
+  DEVICE_KINDS,
+  deviceKindFromAgent,
+  deviceKindLabel,
+  isDeviceKind,
+  parsePublicPhones,
+  publicPhoneList,
+} from './phones';
+export type { DeviceKind, PublicPhone, RosterSource } from './phones';
 export { assignMatchId, createMatch, matchReducer, prepareLiveLog, replayScore } from './reducer';
 export {
   FUTURE_SLACK_MS,
@@ -115,8 +126,22 @@ export {
   QUOTA_RETAIN_MS,
   RECONNECT_WINDOW_MS,
   ROOM_CLOSE_MS,
+  CARRY_PER_DEVICE,
+  CARRY_PER_MATCH,
+  DEVICE_ID_PATTERN,
+  GUEST_ROTATE_PER_DEVICE,
+  isDeviceId,
+  isLegacyDeviceId,
+  LEGACY_DEVICE_ID_PATTERN,
+  MATCH_BUDGET_WINDOW_MS,
+  MEMBER_SEEN_MS,
+  MINT_PER_MATCH,
+  ROTATE_PER_MATCH,
+  UNUSED_MINT_MS,
   actorId,
   canReopen,
+  CARRY_LIMIT,
+  carryDeviceIds,
   carryTokenHashes,
   credentialAllowsEvent,
   historyExpired,

@@ -5,8 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { TEST_QUOTA_HMAC_KEY, quotaMac, sha256Hex } from './tokens';
 
 const ORIGIN = 'https://patrickstubner.github.io';
-const HOST_DEVICE = 'd11111111';
-const PLAYER_DEVICE = 'd22222222';
+const HOST_DEVICE = 'd11111111000000000000000000000000';
+const PLAYER_DEVICE = 'd22222222000000000000000000000000';
 
 let ipCount = 10;
 
@@ -121,8 +121,8 @@ function sendEvent(ws: WebSocket, state: MatchState, event: MatchEvent): MatchSt
 
 describe('live match in workerd', () => {
   it('syncs a point both ways without waiting for a batch', async () => {
-    const created = await createLive('d44444444');
-    const host = await connect(created.hostToken, 'd44444444');
+    const created = await createLive('d44444444000000000000000000000000');
+    const host = await connect(created.hostToken, 'd44444444000000000000000000000000');
     const invite = await call(`/matches/${created.matchId}/invites`, {
       method: 'POST',
       headers: { authorization: `Bearer ${created.hostToken}` },
@@ -130,7 +130,7 @@ describe('live match in workerd', () => {
     });
     expect(invite.status).toBe(201);
     const invited = (await invite.json()) as { token: string };
-    const player = await connect(invited.token, 'd55555555');
+    const player = await connect(invited.token, 'd55555555000000000000000000000000');
 
     const hostEvent = '00000000-0000-4000-8000-0000000000a1';
     const playerEvent = '00000000-0000-4000-8000-0000000000a2';
@@ -162,8 +162,8 @@ describe('live match in workerd', () => {
   });
 
   it('broadcasts a team rename, keeps the later name, and limits the rate', async () => {
-    const created = await createLive('d77777777');
-    const host = await connect(created.hostToken, 'd77777777');
+    const created = await createLive('d77777777000000000000000000000000');
+    const host = await connect(created.hostToken, 'd77777777000000000000000000000000');
     const invite = await call(`/matches/${created.matchId}/invites`, {
       method: 'POST',
       headers: { authorization: `Bearer ${created.hostToken}` },
@@ -171,7 +171,7 @@ describe('live match in workerd', () => {
     });
     expect(invite.status).toBe(201);
     const invited = (await invite.json()) as { token: string };
-    const player = await connect(invited.token, 'd88888888');
+    const player = await connect(invited.token, 'd88888888000000000000000000000000');
     const opened = await host.messages.waitFor((message) => message.type === 'snapshot' && message.names !== undefined);
     expect((opened.names as { A?: string }).A).toBe('Team A');
 
@@ -227,15 +227,15 @@ describe('live match in workerd', () => {
   });
 
   it('keeps the later rename when two phones rename the same team', async () => {
-    const created = await createLive('d99999999');
-    const host = await connect(created.hostToken, 'd99999999');
+    const created = await createLive('d99999999000000000000000000000000');
+    const host = await connect(created.hostToken, 'd99999999000000000000000000000000');
     const invite = await call(`/matches/${created.matchId}/invites`, {
       method: 'POST',
       headers: { authorization: `Bearer ${created.hostToken}` },
       body: JSON.stringify({ role: 'player' }),
     });
     const invited = (await invite.json()) as { token: string };
-    const player = await connect(invited.token, 'daaaaaaa1');
+    const player = await connect(invited.token, 'daaaaaaa1000000000000000000000000');
     const hostId = '00000000-0000-4000-8000-0000000000f1';
     const playerId = '00000000-0000-4000-8000-0000000000f2';
     host.ws.send(JSON.stringify({ type: 'team_renamed', eventId: hostId, team: 'A', name: 'HostName' }));
@@ -243,15 +243,15 @@ describe('live match in workerd', () => {
     const onHost = await host.messages.waitFor((message) => message.type === 'team_renamed' && message.eventId === playerId);
     const onPlayer = await player.messages.waitFor((message) => message.type === 'team_renamed' && message.eventId === hostId);
     expect(onHost.seq as number).toBeGreaterThan(onPlayer.seq as number);
-    const again = await connect(created.hostToken, 'd99999999');
+    const again = await connect(created.hostToken, 'd99999999000000000000000000000000');
     const snap = await again.messages.waitFor((message) => message.type === 'snapshot' && (message.names as { A?: string } | undefined)?.A === 'PlayerName');
     expect((snap.names as { A?: string }).A).toBe('PlayerName');
     expect(snap.nameSeq as number).toBeGreaterThanOrEqual(onHost.seq as number);
   });
 
   it('returns the event id on a refusal and stores a mixed-case id once', async () => {
-    const created = await createLive('d66666666');
-    const host = await connect(created.hostToken, 'd66666666');
+    const created = await createLive('d66666666000000000000000000000000');
+    const host = await connect(created.hostToken, 'd66666666000000000000000000000000');
     const refusedId = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA';
     host.ws.send(JSON.stringify({
       type: 'event',
@@ -327,11 +327,11 @@ describe('live match in workerd', () => {
     const carry = await call(`/matches/${second.matchId}/carry`, {
       method: 'POST',
       headers: { authorization: `Bearer ${second.hostToken}` },
-      body: JSON.stringify({ confirm: true, previousHostToken: first.hostToken }),
+      body: JSON.stringify({ confirm: true, previousHostToken: first.hostToken, device: HOST_DEVICE }),
     });
     expect(carry.status).toBe(200);
     expect(await carry.json()).toEqual({ carried: 1, offered: true });
-    const offer = await player.messages.waitFor((message) => message.type === 'join_offer');
+    const offer = await player.messages.waitFor((message) => message.type === 'match_moved');
     expect(typeof offer.token).toBe('string');
 
     const carried = await connect(offer.token as string, PLAYER_DEVICE);
@@ -341,9 +341,9 @@ describe('live match in workerd', () => {
   });
 
   it('stores an HMAC of the client address on the socket, not the address', async () => {
-    const created = await createLive('d33333333');
+    const created = await createLive('d33333333000000000000000000000000');
     const address = '198.51.100.77';
-    const ticket = await ticketFor(created.hostToken, 'd33333333');
+    const ticket = await ticketFor(created.hostToken, 'd33333333000000000000000000000000');
     const response = await exports.default.fetch(
       new Request(`https://padel.example/ws/${ticket}`, {
         headers: { upgrade: 'websocket', origin: ORIGIN, 'cf-connecting-ip': address },
@@ -366,7 +366,7 @@ describe('live match in workerd', () => {
     expect(JSON.stringify(pending)).not.toContain(address);
 
     const messages = inbox(ws);
-    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: created.hostToken, device: 'd33333333' }));
+    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: created.hostToken, device: 'd33333333000000000000000000000000' }));
     await messages.waitFor((message) => message.type === 'snapshot');
     const admitted = await readIps();
     expect(admitted).toContain(expected);
@@ -402,11 +402,11 @@ function redeem(code: string, device: string, ip?: string): Promise<Response> {
 
 describe('short match codes', () => {
   it('mints a player token from the code and leaves the QR token working', async () => {
-    const invited = await issuedCode('d12121212');
+    const invited = await issuedCode('d12121212000000000000000000000000');
     expect(invited.code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}$/);
     expect(invited.code).not.toMatch(/[01ILO]/);
     const typed = invited.code.toLowerCase().replace('-', '');
-    const response = await redeem(typed, 'd23232323');
+    const response = await redeem(typed, 'd23232323000000000000000000000000');
     expect(response.status).toBe(201);
     const body = (await response.json()) as { token?: string; ticket?: string; matchId?: string; code?: string };
     expect(body.matchId).toBeUndefined();
@@ -420,154 +420,154 @@ describe('short match codes', () => {
     if (!socket) throw new Error('socket missing');
     socket.accept();
     const messages = inbox(socket);
-    socket.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token, device: 'd23232323' }));
+    socket.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token, device: 'd23232323000000000000000000000000' }));
     const snapshot = await messages.waitFor((message) => message.type === 'snapshot');
     expect(snapshot.protocol).toBe(LIVE_PROTOCOL);
 
-    const wrongTicket = await ticketFor(token, 'd34343434');
+    const wrongTicket = await ticketFor(token, 'd34343434000000000000000000000000');
     const wrong = await call(`/ws/${wrongTicket}`, { headers: { upgrade: 'websocket' } });
     const wrongSocket = wrong.webSocket;
     if (!wrongSocket) throw new Error('socket missing');
     wrongSocket.accept();
     const wrongMessages = inbox(wrongSocket);
-    wrongSocket.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token, device: 'd34343434' }));
+    wrongSocket.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token, device: 'd34343434000000000000000000000000' }));
     const refused = await wrongMessages.waitFor((message) => message.type === 'error');
     expect(refused.code).toBe('bad_token');
 
-    await connect(invited.token, 'd45454545');
+    await connect(invited.token, 'd45454545000000000000000000000000');
   });
 
   it('uses one error for an unknown code and an expired code', async () => {
-    const invited = await issuedCode('d56565656');
-    const unknown = await redeem('ZZZZ-ZZZZ', 'd67676767');
+    const invited = await issuedCode('d56565656000000000000000000000000');
+    const unknown = await redeem('ZZZZ-ZZZZ', 'd67676767000000000000000000000000');
     expect(unknown.status).toBe(401);
     expect(await unknown.json()).toEqual(NEUTRAL);
     await env.DB.prepare('UPDATE join_codes SET expires_at = ? WHERE match_id = ?').bind(1, invited.matchId).run();
-    const expired = await redeem(invited.code, 'd78787878');
+    const expired = await redeem(invited.code, 'd78787878000000000000000000000000');
     expect(expired.status).toBe(401);
     expect(await expired.json()).toEqual(NEUTRAL);
-    expect(JSON.stringify(await redeem('nope', 'd89898989').then((item) => item.json()))).not.toContain('nope');
+    expect(JSON.stringify(await redeem('nope', 'd89898989000000000000000000000000').then((item) => item.json()))).not.toContain('nope');
   });
 
   it('revokes the code and the minted token when the host asks for a new code', async () => {
-    const invited = await issuedCode('d9a9a9a9a');
-    const first = await redeem(invited.code, 'dabababa1');
+    const invited = await issuedCode('d9a9a9a9a000000000000000000000000');
+    const first = await redeem(invited.code, 'dabababa1000000000000000000000000');
     const minted = (await first.json()) as { token: string };
     const again = await call(`/matches/${invited.matchId}/invites`, {
       method: 'POST',
       headers: { authorization: `Bearer ${invited.hostToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ role: 'player' }),
+      body: JSON.stringify({ role: 'player', rotate: true }),
     });
     const next = (await again.json()) as { code: string; token: string };
     expect(next.code).not.toBe(invited.code);
-    const oldCode = await redeem(invited.code, 'dcdcdcdc2');
+    const oldCode = await redeem(invited.code, 'dcdcdcdc2000000000000000000000000');
     expect(oldCode.status).toBe(401);
     expect(await oldCode.json()).toEqual(NEUTRAL);
     const oldToken = await call('/join', {
       method: 'POST',
       headers: { authorization: `Bearer ${minted.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ device: 'dabababa1' }),
+      body: JSON.stringify({ device: 'dabababa1000000000000000000000000' }),
     });
     expect(oldToken.status).toBe(401);
-    const fresh = await redeem(next.code, 'dcdcdcdc2');
+    const fresh = await redeem(next.code, 'dcdcdcdc2000000000000000000000000');
     expect(fresh.status).toBe(201);
     const body = (await fresh.json()) as { token: string };
-    await connect(body.token, 'dcdcdcdc2');
+    await connect(body.token, 'dcdcdcdc2000000000000000000000000');
   });
 
   it('checks the address budget before the code, including a valid one, and shares an IPv6 /64', async () => {
-    const invited = await issuedCode('d01010101');
+    const invited = await issuedCode('d01010101000000000000000000000000');
     const prefix = '2001:db8:1:2::1';
     const samePrefix = '2001:db8:1:2::abcd';
     for (let n = 0; n < CODE_ATTEMPTS_PER_PREFIX; n += 1) {
-      const response = await redeem('ZZZZ-ZZZZ', 'd01010101', prefix);
+      const response = await redeem('ZZZZ-ZZZZ', 'd01010101000000000000000000000000', prefix);
       expect(response.status).toBe(401);
     }
-    const blocked = await redeem(invited.code, 'd01010101', samePrefix);
+    const blocked = await redeem(invited.code, 'd01010101000000000000000000000000', samePrefix);
     expect(blocked.status).toBe(429);
     expect(await blocked.json()).toEqual({ error: 'code_limited', message: ROOM_MESSAGES.code_limited });
-    const other = await redeem(invited.code, 'd01010101', '2001:db8:9:9::1');
+    const other = await redeem(invited.code, 'd01010101000000000000000000000000', '2001:db8:9:9::1');
     expect(other.status).toBe(201);
   });
 
   it('does not let the global alarm lock out another address', async () => {
-    const invited = await issuedCode('d02020202');
+    const invited = await issuedCode('d02020202000000000000000000000000');
     for (let n = 0; n < 61; n += 1) {
-      const response = await redeem('YYYY-YYYY', `d${(n + 32).toString(16).padStart(8, '0')}`);
+      const response = await redeem('YYYY-YYYY', `d${(n + 32).toString(16).padStart(8, '0').padEnd(32, '0')}`);
       expect(response.status).toBe(401);
     }
-    const kept = await redeem(invited.code, 'd03030303');
+    const kept = await redeem(invited.code, 'd03030303000000000000000000000000');
     expect(kept.status).toBe(201);
   });
 
-  it('stores an HMAC of the code, reuses one token per device, and stops at eight', async () => {
-    const invited = await issuedCode('d04040404');
+  it('stores an HMAC of the code, reuses one token per device, and ignores scans that never connect', async () => {
+    const invited = await issuedCode('d04040404000000000000000000000000');
     const compact = invited.code.replace('-', '');
     const row = await env.DB.prepare('SELECT code_hash FROM join_codes WHERE match_id = ?').bind(invited.matchId).first();
     const expected = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-code', compact, 'code');
     expect(row?.code_hash).toBe(expected);
     expect(row?.code_hash).not.toBe(await sha256Hex(compact));
-    const first = await redeem(invited.code, 'd05050505');
+    const first = await redeem(invited.code, 'd05050505000000000000000000000000');
     const firstBody = (await first.json()) as { token: string };
-    const second = await redeem(invited.code, 'd05050505');
+    const second = await redeem(invited.code, 'd05050505000000000000000000000000');
     expect(second.status).toBe(201);
     const secondBody = (await second.json()) as { token: string };
     expect(secondBody.token).not.toBe(firstBody.token);
     const active = await env.DB.prepare(
       'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
-    ).bind(invited.matchId, 'd05050505').first();
+    ).bind(invited.matchId, 'd05050505000000000000000000000000').first();
     expect(active?.n).toBe(1);
     const stale = await call('/join', {
       method: 'POST',
       headers: { authorization: `Bearer ${firstBody.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ device: 'd05050505' }),
+      body: JSON.stringify({ device: 'd05050505000000000000000000000000' }),
     });
     expect(stale.status).toBe(401);
-    for (let n = 0; n < MAX_MINTED_TOKENS - 1; n += 1) {
-      const device = `d${(n + 64).toString(16).padStart(8, '0')}`;
+    for (let n = 0; n < MAX_MINTED_TOKENS; n += 1) {
+      const device = `d${(n + 64).toString(16).padStart(8, '0').padEnd(32, '0')}`;
       const response = await redeem(invited.code, device);
       expect(response.status).toBe(201);
     }
-    const extra = await redeem(invited.code, 'd0e0e0e0e');
-    expect(extra.status).toBe(401);
-    expect(await extra.json()).toEqual(NEUTRAL);
-    const minted = await env.DB.prepare(
-      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL',
+    await connect(secondBody.token, 'd05050505000000000000000000000000');
+    const admitted = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND admitted = 1',
     ).bind(invited.matchId).first();
-    expect(minted?.n).toBe(MAX_MINTED_TOKENS);
+    expect(admitted?.n).toBe(1);
+    const extra = await redeem(invited.code, 'd0e0e0e0e000000000000000000000000');
+    expect(extra.status).toBe(201);
   });
 
   it('keeps the token cap when many devices redeem at the same time', async () => {
-    const invited = await issuedCode('dbb000001');
+    const invited = await issuedCode('dbb000001000000000000000000000000');
     const many = await Promise.all(Array.from({ length: 20 }, (_, n) => {
-      const device = `d${(n + 1).toString(16).padStart(8, 'b')}`;
+      const device = `d${(n + 1).toString(16).padStart(8, 'b').padEnd(32, '0')}`;
       return redeem(invited.code, device);
     }));
     const statuses = many.map((response) => response.status);
-    expect(statuses.filter((status) => status === 201)).toHaveLength(MAX_MINTED_TOKENS);
-    const minted = await env.DB.prepare(
-      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL',
+    expect(statuses.filter((status) => status === 201)).toHaveLength(20);
+    const admitted = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id IS NOT NULL AND revoked_at IS NULL AND admitted = 1',
     ).bind(invited.matchId).first();
-    expect(minted?.n).toBe(MAX_MINTED_TOKENS);
+    expect(admitted?.n).toBe(0);
   });
 
   it('keeps one row when one device redeems many times at once', async () => {
-    const invited = await issuedCode('dcc000001');
-    const same = await Promise.all(Array.from({ length: 8 }, () => redeem(invited.code, 'dcccccccc')));
+    const invited = await issuedCode('dcc000001000000000000000000000000');
+    const same = await Promise.all(Array.from({ length: 8 }, () => redeem(invited.code, 'dcccccccc000000000000000000000000')));
     expect(same.filter((response) => response.status === 201).length).toBeGreaterThan(0);
     const one = await env.DB.prepare(
       'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
-    ).bind(invited.matchId, 'dcccccccc').first();
+    ).bind(invited.matchId, 'dcccccccc000000000000000000000000').first();
     expect(one?.n).toBe(1);
   });
 
   it('frees a code token when the court is full', async () => {
-    const invited = await issuedCode('daa000001');
-    await connect(invited.hostToken, 'daa000001');
-    await connect(invited.token, 'daa000002');
-    await connect(invited.token, 'daa000003');
-    await connect(invited.token, 'daa000004');
-    const redeemed = await redeem(invited.code, 'daa000005');
+    const invited = await issuedCode('daa000001000000000000000000000000');
+    await connect(invited.hostToken, 'daa000001000000000000000000000000');
+    await connect(invited.token, 'daa000002000000000000000000000000');
+    await connect(invited.token, 'daa000003000000000000000000000000');
+    await connect(invited.token, 'daa000004000000000000000000000000');
+    const redeemed = await redeem(invited.code, 'daa000005000000000000000000000000');
     expect(redeemed.status).toBe(201);
     const body = (await redeemed.json()) as { token: string; ticket: string };
     const response = await call(`/ws/${body.ticket}`, { headers: { upgrade: 'websocket' } });
@@ -575,31 +575,31 @@ describe('short match codes', () => {
     if (!ws) throw new Error('socket missing');
     ws.accept();
     const messages = inbox(ws);
-    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: body.token, device: 'daa000005' }));
+    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: body.token, device: 'daa000005000000000000000000000000' }));
     const refused = await messages.waitFor((message) => message.type === 'error');
     expect(refused.code).toBe('match_full');
     expect(ROOM_MESSAGES.match_full).toBe('This match is full.');
     const left = await env.DB.prepare(
       'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
-    ).bind(invited.matchId, 'daa000005').first();
+    ).bind(invited.matchId, 'daa000005000000000000000000000000').first();
     expect(left?.n).toBe(0);
-    const again = await redeem(invited.code, 'daa000006');
+    const again = await redeem(invited.code, 'daa000006000000000000000000000000');
     expect(again.status).toBe(201);
   });
 
   it('admits a seated device again when the court is full', async () => {
-    const invited = await issuedCode('dab000001');
-    await connect(invited.hostToken, 'dab000001');
-    const first = await redeem(invited.code, 'dab000002');
+    const invited = await issuedCode('dab000001000000000000000000000000');
+    await connect(invited.hostToken, 'dab000001000000000000000000000000');
+    const first = await redeem(invited.code, 'dab000002000000000000000000000000');
     expect(first.status).toBe(201);
     const body = (await first.json()) as { token: string };
-    const seated = await connect(body.token, 'dab000002');
-    const second = await redeem(invited.code, 'dab000003');
-    const third = await redeem(invited.code, 'dab000004');
+    const seated = await connect(body.token, 'dab000002000000000000000000000000');
+    const second = await redeem(invited.code, 'dab000003000000000000000000000000');
+    const third = await redeem(invited.code, 'dab000004000000000000000000000000');
     expect(second.status).toBe(201);
     expect(third.status).toBe(201);
-    await connect(((await second.json()) as { token: string }).token, 'dab000003');
-    await connect(((await third.json()) as { token: string }).token, 'dab000004');
+    await connect(((await second.json()) as { token: string }).token, 'dab000003000000000000000000000000');
+    await connect(((await third.json()) as { token: string }).token, 'dab000004000000000000000000000000');
     const errors: string[] = [];
     seated.ws.addEventListener('message', (event: MessageEvent) => {
       const parsed = JSON.parse(String(event.data)) as { type?: string; code?: string };
@@ -612,7 +612,7 @@ describe('short match codes', () => {
         resolve(event);
       });
     });
-    const again = await connect(body.token, 'dab000002');
+    const again = await connect(body.token, 'dab000002000000000000000000000000');
     const close = await closed;
     expect(close.code).toBe(4000);
     expect(close.reason).toBe('superseded');
@@ -621,41 +621,40 @@ describe('short match codes', () => {
     const still = await call('/join', {
       method: 'POST',
       headers: { authorization: `Bearer ${body.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ device: 'dab000002' }),
+      body: JSON.stringify({ device: 'dab000002000000000000000000000000' }),
     });
     expect(still.status).toBe(201);
     const live = await env.DB.prepare(
       'SELECT COUNT(*) AS n FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
-    ).bind(invited.matchId, 'dab000002').first();
+    ).bind(invited.matchId, 'dab000002000000000000000000000000').first();
     expect(live?.n).toBe(1);
   });
 
   it('keeps the previous token when the D1 claim does not insert', async () => {
-    const invited = await issuedCode('dcd000001');
-    const first = await redeem(invited.code, 'dcd000002');
+    const invited = await issuedCode('dcd000001000000000000000000000000');
+    const first = await redeem(invited.code, 'dcd000002000000000000000000000000');
     expect(first.status).toBe(201);
     const body = (await first.json()) as { token: string };
-    for (let n = 0; n < MAX_MINTED_TOKENS - 1; n += 1) {
-      const device = `d${(n + 1).toString(16).padStart(8, 'e')}`;
-      expect((await redeem(invited.code, device)).status).toBe(201);
+    for (let n = 0; n < MAX_MINTED_TOKENS; n += 1) {
+      const device = `d${(n + 1).toString(16).padStart(8, 'e').padEnd(32, '0')}`;
+      await env.DB.prepare(
+        'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at, device_id, admitted) VALUES (?, ?, 0, ?, NULL, ?, 1)',
+      ).bind(`${n.toString(16).padStart(2, '0')}${'ab'.repeat(31)}`, invited.matchId, Date.now() + 3_600_000, device).run();
     }
-    await env.DB.prepare(
-      'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at, device_id) VALUES (?, ?, 0, ?, NULL, ?)',
-    ).bind('ab'.repeat(32), invited.matchId, Date.now() + 3_600_000, 'd0f0f0f0f').run();
-    const replaced = await redeem(invited.code, 'dcd000002');
+    const replaced = await redeem(invited.code, 'dcd000002000000000000000000000000');
     expect(replaced.status).toBe(401);
     expect(await replaced.json()).toEqual(NEUTRAL);
-    const kept = await connect(body.token, 'dcd000002');
+    const kept = await connect(body.token, 'dcd000002000000000000000000000000');
     expect(kept.ws.readyState).toBe(WebSocket.OPEN);
     const live = await env.DB.prepare(
       'SELECT token_hash FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL',
-    ).bind(invited.matchId, 'dcd000002').all();
+    ).bind(invited.matchId, 'dcd000002000000000000000000000000').all();
     expect(live.results).toHaveLength(1);
     expect(live.results[0]?.token_hash).toBe(await sha256Hex(body.token));
   });
 
   it('logs one alarm line when the global count becomes 10000', async () => {
-    const invited = await issuedCode('dae000001');
+    const invited = await issuedCode('dae000001000000000000000000000000');
     const window = joinWindow(Date.now());
     const hash = await quotaMac(TEST_QUOTA_HMAC_KEY, 'code-global', 'all', String(window));
     await env.DB.prepare(
@@ -666,9 +665,9 @@ describe('short match codes', () => {
       lines.push(String(line));
     });
     try {
-      const first = await redeem(invited.code, 'dae000002');
+      const first = await redeem(invited.code, 'dae000002000000000000000000000000');
       expect(first.status).toBe(201);
-      const second = await redeem(invited.code, 'dae000003');
+      const second = await redeem(invited.code, 'dae000003000000000000000000000000');
       expect(second.status).toBe(201);
       expect(lines.filter((line) => line === 'short code attempts recorded')).toEqual(['short code attempts recorded']);
     } finally {
@@ -677,8 +676,8 @@ describe('short match codes', () => {
   });
 
   it('revokes the code and the invite when the match ends', async () => {
-    const invited = await issuedCode('d06060606');
-    const host = await connect(invited.hostToken, 'd06060606');
+    const invited = await issuedCode('d06060606000000000000000000000000');
+    const host = await connect(invited.hostToken, 'd06060606000000000000000000000000');
     const endEvent: MatchEvent = { type: 'match/end', at: 1_700_000_000_100 };
     host.ws.send(JSON.stringify({
       type: 'event',
@@ -687,13 +686,13 @@ describe('short match codes', () => {
       claim: scoreClaimFor(createMatch(T0), endEvent),
     }));
     await host.messages.waitFor((message) => message.type === 'event');
-    const code = await redeem(invited.code, 'd07070707');
+    const code = await redeem(invited.code, 'd07070707000000000000000000000000');
     expect(code.status).toBe(401);
     expect(await code.json()).toEqual(NEUTRAL);
     const invite = await call('/join', {
       method: 'POST',
       headers: { authorization: `Bearer ${invited.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ device: 'd07070707' }),
+      body: JSON.stringify({ device: 'd07070707000000000000000000000000' }),
     });
     expect(invite.status).toBe(401);
   });
@@ -705,7 +704,7 @@ describe('short match codes', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        device: 'd08080808',
+        device: 'd08080808000000000000000000000000',
         log: {
           schemaVersion: 2,
           base,
@@ -715,7 +714,7 @@ describe('short match codes', () => {
     });
     expect(created.status).toBe(201);
     const body = (await created.json()) as { hostToken: string };
-    const host = await connect(body.hostToken, 'd08080808');
+    const host = await connect(body.hostToken, 'd08080808000000000000000000000000');
     const snap = await host.messages.waitFor((message) => message.type === 'snapshot');
     const events = (snap.log as { events: { type: string; name?: string }[] }).events;
     const rename = events.find((event) => event.type === 'team/rename');
@@ -725,7 +724,7 @@ describe('short match codes', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        device: 'd09090909',
+        device: 'd09090909000000000000000000000000',
         log: {
           schemaVersion: 2,
           base: createMatch(1_700_000_000_000, undefined, { a: 'भारतीय टीम' }),
@@ -791,8 +790,8 @@ async function storedBoard(token: string, device: string): Promise<ScoreBoard> {
 
 describe('offline score reconcile in the durable object', () => {
   it('stays 4:3 when phone A replays the two points phone B already stored', async () => {
-    const created = await createLive('d0c000001', ['a', 'a', 'a', 'a', 'b']);
-    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000002');
+    const created = await createLive('d0c000001000000000000000000000000', ['a', 'a', 'a', 'a', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000002000000000000000000000000');
     const opening = await phoneB.messages.waitFor((message) => message.type === 'snapshot');
     const opened = opening.log as { base: MatchState; events: MatchEvent[] };
     expect(scoreBoard(replayScore(opened.base, opened.events)).sets[0]).toEqual({ a: 4, b: 1 });
@@ -807,19 +806,19 @@ describe('offline score reconcile in the durable object', () => {
       expect(ack.duplicate).toBe(false);
       parent = id;
     }
-    const phoneA = await connect(created.hostToken, 'd0c000001');
+    const phoneA = await connect(created.hostToken, 'd0c000001000000000000000000000000');
     const queued = offlineFrom(created.state, ['b', 'b']);
     const first = await push(phoneA.ws, phoneA.messages, stepId(110), queued[0]!.event, queued[0]!.claim, 'seed-5');
     expect(first).toMatchObject({ type: 'event', duplicate: true, reconciled: 'already' });
     expect(phoneB.messages.all().some((message) => message.eventId === stepId(110))).toBe(false);
     const second = await push(phoneA.ws, phoneA.messages, stepId(111), queued[1]!.event, queued[1]!.claim, stepId(100));
     expect(second).toMatchObject({ type: 'event', duplicate: true, reconciled: 'already' });
-    expect((await storedBoard(created.hostToken, 'd0c000001')).sets[0]).toEqual({ a: 4, b: 3 });
+    expect((await storedBoard(created.hostToken, 'd0c000001000000000000000000000000')).sets[0]).toEqual({ a: 4, b: 3 });
   });
 
   it('counts the third offline point when the server only has two', async () => {
-    const created = await createLive('d0c000011', ['a', 'a', 'a', 'a', 'b']);
-    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000012');
+    const created = await createLive('d0c000011000000000000000000000000', ['a', 'a', 'a', 'a', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000012000000000000000000000000');
     const online = offlineFrom(created.state, ['b', 'b']);
     let parent = 'seed-5';
     for (let index = 0; index < online.length; index += 1) {
@@ -829,57 +828,57 @@ describe('offline score reconcile in the durable object', () => {
       await push(phoneB.ws, phoneB.messages, id, step.event, step.claim, parent);
       parent = id;
     }
-    const phoneA = await connect(created.hostToken, 'd0c000011');
+    const phoneA = await connect(created.hostToken, 'd0c000011000000000000000000000000');
     const queued = offlineFrom(created.state, ['b', 'b', 'b']);
     expect((await push(phoneA.ws, phoneA.messages, stepId(130), queued[0]!.event, queued[0]!.claim, 'seed-5')).reconciled).toBe('already');
     const extra = await push(phoneA.ws, phoneA.messages, stepId(132), queued[2]!.event, queued[2]!.claim);
     expect(extra).toMatchObject({ type: 'event', duplicate: false });
-    expect((await storedBoard(created.hostToken, 'd0c000011')).sets[0]).toEqual({ a: 4, b: 4 });
+    expect((await storedBoard(created.hostToken, 'd0c000011000000000000000000000000')).sets[0]).toEqual({ a: 4, b: 4 });
   });
 
   it('applies a minus once, and keeps the server score when the phones diverge', async () => {
-    const correction = await createLive('d0c000021', ['a', 'a', 'a', 'a', 'b', 'b', 'b']);
-    const host = await connect(correction.hostToken, 'd0c000021');
+    const correction = await createLive('d0c000021000000000000000000000000', ['a', 'a', 'a', 'a', 'b', 'b', 'b']);
+    const host = await connect(correction.hostToken, 'd0c000021000000000000000000000000');
     const minus = offlineFrom(correction.state, ['a'], 'game/decrement')[0];
     if (!minus) throw new Error('minus');
     const applied = await push(host.ws, host.messages, stepId(140), minus.event, minus.claim, 'seed-7');
     expect(applied.type).toBe('event');
     const twice = await push(host.ws, host.messages, stepId(141), minus.event, minus.claim, 'seed-7');
     expect(twice.reconciled).toBe('already');
-    expect((await storedBoard(correction.hostToken, 'd0c000021')).sets[0]).toEqual({ a: 3, b: 3 });
+    expect((await storedBoard(correction.hostToken, 'd0c000021000000000000000000000000')).sets[0]).toEqual({ a: 3, b: 3 });
 
-    const created = await createLive('d0c000031', ['a', 'a', 'a', 'a', 'b']);
-    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000032');
+    const created = await createLive('d0c000031000000000000000000000000', ['a', 'a', 'a', 'a', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000032000000000000000000000000');
     const theirs = offlineFrom(created.state, ['a'])[0];
     if (!theirs) throw new Error('point');
     await push(phoneB.ws, phoneB.messages, stepId(150), theirs.event, theirs.claim, 'seed-5');
-    const phoneA = await connect(created.hostToken, 'd0c000031');
+    const phoneA = await connect(created.hostToken, 'd0c000031000000000000000000000000');
     const queued = offlineFrom(created.state, ['b', 'b']);
     const added = await push(phoneA.ws, phoneA.messages, stepId(151), queued[0]!.event, queued[0]!.claim, 'seed-5');
     expect(added.type).toBe('event');
     expect(added.duplicate).toBe(false);
-    expect((await storedBoard(created.hostToken, 'd0c000031')).sets[0]).toEqual({ a: 5, b: 2 });
+    expect((await storedBoard(created.hostToken, 'd0c000031000000000000000000000000')).sets[0]).toEqual({ a: 5, b: 2 });
   });
 
   it('keeps the following game when the set was already closed on the server', async () => {
-    const created = await createLive('d0c000041', ['a', 'a', 'a', 'a', 'a', 'b', 'b', 'b', 'b']);
-    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000042');
+    const created = await createLive('d0c000041000000000000000000000000', ['a', 'a', 'a', 'a', 'a', 'b', 'b', 'b', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000042000000000000000000000000');
     const queued = offlineFrom(created.state, ['a', 'a']);
     const closed = await push(phoneB.ws, phoneB.messages, stepId(160), queued[0]!.event, queued[0]!.claim, 'seed-9');
     expect(closed.type).toBe('event');
-    const phoneA = await connect(created.hostToken, 'd0c000041');
+    const phoneA = await connect(created.hostToken, 'd0c000041000000000000000000000000');
     expect((await push(phoneA.ws, phoneA.messages, stepId(161), queued[0]!.event, queued[0]!.claim, 'seed-9')).reconciled).toBe('already');
     const next = await push(phoneA.ws, phoneA.messages, stepId(162), queued[1]!.event, queued[1]!.claim);
     expect(next).toMatchObject({ type: 'event', duplicate: false });
-    const board = await storedBoard(created.hostToken, 'd0c000041');
+    const board = await storedBoard(created.hostToken, 'd0c000041000000000000000000000000');
     expect(board.sets[0]).toEqual({ a: 6, b: 4 });
     expect(board.sets[1]).toEqual({ a: 1, b: 0 });
     expect(board.activeSet).toBe(1);
   });
 
   it('rejects a malformed score claim and still accepts a later valid point', async () => {
-    const created = await createLive('d0c000051');
-    const host = await connect(created.hostToken, 'd0c000051');
+    const created = await createLive('d0c000051000000000000000000000000');
+    const host = await connect(created.hostToken, 'd0c000051000000000000000000000000');
     const event: MatchEvent = { type: 'game/increment', team: 'a', at: T0 + 10 };
     const valid = scoreClaimFor(created.state, event);
     if (!valid) throw new Error('claim');
@@ -899,17 +898,17 @@ describe('offline score reconcile in the durable object', () => {
     }
     const scored = await push(host.ws, host.messages, stepId(180), event, valid);
     expect(scored).toMatchObject({ type: 'event', duplicate: false });
-    const again = await connect(created.hostToken, 'd0c000051');
+    const again = await connect(created.hostToken, 'd0c000051000000000000000000000000');
     const snap = await again.messages.waitFor((message) => message.type === 'snapshot');
     const stored = (snap.log as { events: { capturedAt?: number }[] }).events.at(-1);
     expect(stored?.capturedAt).toBeGreaterThan(T0 + 10);
-    expect((await storedBoard(created.hostToken, 'd0c000051')).sets[0]).toEqual({ a: 1, b: 0 });
+    expect((await storedBoard(created.hostToken, 'd0c000051000000000000000000000000')).sets[0]).toEqual({ a: 1, b: 0 });
   });
 
   it('stays 2:2 when two phones alternate points', async () => {
-    const created = await createLive('d0c000071');
-    const host = await connect(created.hostToken, 'd0c000071');
-    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000072');
+    const created = await createLive('d0c000071000000000000000000000000');
+    const host = await connect(created.hostToken, 'd0c000071000000000000000000000000');
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000072000000000000000000000000');
     await phoneB.messages.waitFor((message) => message.type === 'snapshot');
     let parent: string | null = null;
     let state = created.state;
@@ -926,17 +925,17 @@ describe('offline score reconcile in the durable object', () => {
       parent = id;
       state = matchReducer(state, event);
     }
-    expect((await storedBoard(created.hostToken, 'd0c000073')).sets[0]).toEqual({ a: 2, b: 2 });
+    expect((await storedBoard(created.hostToken, 'd0c000073000000000000000000000000')).sets[0]).toEqual({ a: 2, b: 2 });
   });
 
   it('refuses a stale claim on the new head and keeps the point when the claim is recomputed', async () => {
-    const created = await createLive('d0c000081', ['a', 'a', 'a', 'a', 'b']);
-    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000082');
+    const created = await createLive('d0c000081000000000000000000000000', ['a', 'a', 'a', 'a', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000082000000000000000000000000');
     const online = offlineFrom(created.state, ['a'])[0];
     if (!online) throw new Error('point');
     const head = stepId(210);
     await push(phoneB.ws, phoneB.messages, head, online.event, online.claim, 'seed-5');
-    const phoneA = await connect(created.hostToken, 'd0c000081');
+    const phoneA = await connect(created.hostToken, 'd0c000081000000000000000000000000');
     const stale = offlineFrom(created.state, ['b'])[0];
     if (!stale) throw new Error('stale');
     const refused = await push(phoneA.ws, phoneA.messages, stepId(211), stale.event, stale.claim, head);
@@ -945,37 +944,37 @@ describe('offline score reconcile in the durable object', () => {
     if (!fresh) throw new Error('fresh');
     const added = await push(phoneA.ws, phoneA.messages, stepId(212), fresh.event, fresh.claim, head);
     expect(added).toMatchObject({ type: 'event', duplicate: false });
-    expect((await storedBoard(created.hostToken, 'd0c000083')).sets[0]).toEqual({ a: 5, b: 2 });
+    expect((await storedBoard(created.hostToken, 'd0c000083000000000000000000000000')).sets[0]).toEqual({ a: 5, b: 2 });
   });
 
   it('does not count a point again when a rename sits between the fork and that point', async () => {
-    const created = await createLive('d0c000091', ['a', 'a', 'a', 'a', 'b']);
-    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000092');
+    const created = await createLive('d0c000091000000000000000000000000', ['a', 'a', 'a', 'a', 'b']);
+    const phoneB = await invitePlayer(created.matchId, created.hostToken, 'd0c000092000000000000000000000000');
     phoneB.ws.send(JSON.stringify({ type: 'team_renamed', eventId: stepId(220), team: 'A', name: 'Home' }));
     expect(await phoneB.messages.waitFor((message) => message.eventId === stepId(220))).toMatchObject({ type: 'team_renamed' });
     const point = offlineFrom(created.state, ['b'])[0];
     if (!point) throw new Error('point');
     await push(phoneB.ws, phoneB.messages, stepId(221), point.event, point.claim, stepId(220));
-    const phoneA = await connect(created.hostToken, 'd0c000091');
+    const phoneA = await connect(created.hostToken, 'd0c000091000000000000000000000000');
     const again = await push(phoneA.ws, phoneA.messages, stepId(222), point.event, point.claim, 'seed-5');
     expect(again.reconciled).toBe('already');
-    expect((await storedBoard(created.hostToken, 'd0c000093')).sets[0]).toEqual({ a: 4, b: 2 });
+    expect((await storedBoard(created.hostToken, 'd0c000093000000000000000000000000')).sets[0]).toEqual({ a: 4, b: 2 });
   });
 
   it('ends the match when the claim board is not the server board', async () => {
-    const created = await createLive('d0c0000a1', ['a']);
-    const host = await connect(created.hostToken, 'd0c0000a1');
+    const created = await createLive('d0c0000a1000000000000000000000000', ['a']);
+    const host = await connect(created.hostToken, 'd0c0000a1000000000000000000000000');
     const endEvent: MatchEvent = { type: 'match/end', at: T0 + 50 };
     const claim = scoreClaimFor(createMatch(T0), endEvent);
     const ack = await push(host.ws, host.messages, stepId(230), endEvent, claim, 'seed-1');
     expect(ack).toMatchObject({ type: 'event', duplicate: false });
-    expect((await storedBoard(created.hostToken, 'd0c0000a2')).ended).toBe(true);
+    expect((await storedBoard(created.hostToken, 'd0c0000a2000000000000000000000000')).ended).toBe(true);
   });
 
   it('counts one point when two phones tap the same team together', async () => {
-    const created = await createLive('d0e000001');
-    const host = await connect(created.hostToken, 'd0e000001');
-    const phone = await invitePlayer(created.matchId, created.hostToken, 'd0e000002');
+    const created = await createLive('d0e000001000000000000000000000000');
+    const host = await connect(created.hostToken, 'd0e000001000000000000000000000000');
+    const phone = await invitePlayer(created.matchId, created.hostToken, 'd0e000002000000000000000000000000');
     const event: MatchEvent = { type: 'game/increment', team: 'a', at: T0 + 20 };
     const claim = scoreClaimFor(created.state, event);
     const hostId = stepId(240);
@@ -990,11 +989,11 @@ describe('offline score reconcile in the durable object', () => {
     const loser = hostAck.reconciled === 'already' ? host : phone;
     const tail = await loser.messages.waitFor((message) => message.type === 'tail');
     expect((tail.events as unknown[]).length).toBe(1);
-    expect((await storedBoard(created.hostToken, 'd0e000003')).sets[0]).toEqual({ a: 1, b: 0 });
+    expect((await storedBoard(created.hostToken, 'd0e000003000000000000000000000000')).sets[0]).toEqual({ a: 1, b: 0 });
   });
 
   it('keeps 3:2 when three phones score A and B from the same 2:1', async () => {
-    const created = await createLive('d0e000011', ['a', 'a', 'b']);
+    const created = await createLive('d0e000011000000000000000000000000', ['a', 'a', 'b']);
     const pointA = offlineFrom(created.state, ['a'])[0];
     const pointB = offlineFrom(created.state, ['b'])[0];
     const both = offlineFrom(created.state, ['b', 'a']);
@@ -1006,18 +1005,18 @@ describe('offline score reconcile in the durable object', () => {
     });
     expect(invite.status).toBe(201);
     const shared = (await invite.json()) as { token: string };
-    const phoneK = await connect(shared.token, 'd0e000012');
+    const phoneK = await connect(shared.token, 'd0e000012000000000000000000000000');
     await push(phoneK.ws, phoneK.messages, stepId(250), pointA.event, pointA.claim, 'seed-3');
-    const phoneH = await connect(shared.token, 'd0e000013');
+    const phoneH = await connect(shared.token, 'd0e000013000000000000000000000000');
     await push(phoneH.ws, phoneH.messages, stepId(251), pointB.event, pointB.claim, 'seed-3');
-    const phoneJ = await connect(shared.token, 'd0e000014');
+    const phoneJ = await connect(shared.token, 'd0e000014000000000000000000000000');
     expect((await push(phoneJ.ws, phoneJ.messages, stepId(252), both[0].event, both[0].claim, 'seed-3')).reconciled).toBe('already');
     expect((await push(phoneJ.ws, phoneJ.messages, stepId(253), both[1].event, both[1].claim, stepId(252))).code).toBe('score_kept');
-    expect((await storedBoard(created.hostToken, 'd0e000015')).sets[0]).toEqual({ a: 3, b: 2 });
+    expect((await storedBoard(created.hostToken, 'd0e000015000000000000000000000000')).sets[0]).toEqual({ a: 3, b: 2 });
   });
 
   it('shows the ended server score to a phone that had already joined', async () => {
-    const created = await createLive('d0e000021', ['a', 'a', 'a', 'a', 'b']);
+    const created = await createLive('d0e000021000000000000000000000000', ['a', 'a', 'a', 'a', 'b']);
     const invite = await call(`/matches/${created.matchId}/invites`, {
       method: 'POST',
       headers: { authorization: `Bearer ${created.hostToken}` },
@@ -1025,41 +1024,41 @@ describe('offline score reconcile in the durable object', () => {
     });
     expect(invite.status).toBe(201);
     const invited = (await invite.json()) as { token: string };
-    const phone = await connect(invited.token, 'd0e000022');
+    const phone = await connect(invited.token, 'd0e000022000000000000000000000000');
     phone.ws.close();
-    const host = await connect(created.hostToken, 'd0e000021');
+    const host = await connect(created.hostToken, 'd0e000021000000000000000000000000');
     const endEvent: MatchEvent = { type: 'match/end', at: T0 + 30 };
     await push(host.ws, host.messages, stepId(260), endEvent, scoreClaimFor(created.state, endEvent), 'seed-5');
-    const again = await connect(invited.token, 'd0e000022');
+    const again = await connect(invited.token, 'd0e000022000000000000000000000000');
     const snap = await again.messages.waitFor((message) => message.type === 'snapshot');
     const events = (snap.log as { events: { type?: string }[] }).events;
     expect(events.at(-1)?.type).toBe('match/end');
     const extra = offlineFrom(created.state, ['a'])[0];
     if (!extra) throw new Error('point');
     expect((await push(again.ws, again.messages, stepId(261), extra.event, extra.claim, 'seed-5')).reconciled).toBe('already');
-    const board = await storedBoard(created.hostToken, 'd0e000023');
+    const board = await storedBoard(created.hostToken, 'd0e000023000000000000000000000000');
     expect(board.sets[0]).toEqual({ a: 4, b: 1 });
     expect(board.ended).toBe(true);
   });
 
   it('disconnects a joined phone when the host makes a new code', async () => {
-    const created = await createLive('d0e000031');
-    const phone = await invitePlayer(created.matchId, created.hostToken, 'd0e000032');
+    const created = await createLive('d0e000031000000000000000000000000');
+    const phone = await invitePlayer(created.matchId, created.hostToken, 'd0e000032000000000000000000000000');
     const rotated = await call(`/matches/${created.matchId}/invites`, {
       method: 'POST',
       headers: { authorization: `Bearer ${created.hostToken}` },
-      body: JSON.stringify({ role: 'player' }),
+      body: JSON.stringify({ role: 'player', rotate: true }),
     });
     expect(rotated.status).toBe(201);
     const notice = await phone.messages.waitFor((message) => message.type === 'error');
     expect(notice.code).toBe('revoked');
-    const host = await connect(created.hostToken, 'd0e000031');
+    const host = await connect(created.hostToken, 'd0e000031000000000000000000000000');
     expect((await host.messages.waitFor((message) => message.type === 'snapshot')).host).toBe(true);
   });
 
   it('sends the sender a short tail when a point is merged across a set win', async () => {
-    const created = await createLive('d0f000001', ['a', 'a', 'a', 'a', 'a']);
-    const host = await connect(created.hostToken, 'd0f000001');
+    const created = await createLive('d0f000001000000000000000000000000', ['a', 'a', 'a', 'a', 'a']);
+    const host = await connect(created.hostToken, 'd0f000001000000000000000000000000');
     const win = offlineFrom(created.state, ['a'])[0];
     const other = offlineFrom(created.state, ['b'])[0];
     if (!win || !other) throw new Error('point');
@@ -1071,20 +1070,20 @@ describe('offline score reconcile in the durable object', () => {
     });
     expect(invite.status).toBe(201);
     const shared = (await invite.json()) as { token: string };
-    const phone = await connect(shared.token, 'd0f000002');
+    const phone = await connect(shared.token, 'd0f000002000000000000000000000000');
     const ack = await push(phone.ws, phone.messages, stepId(271), other.event, other.claim, 'seed-5');
     expect(ack).toMatchObject({ type: 'event', duplicate: false, reconciled: 'merged' });
     const tail = await phone.messages.waitFor((message) => message.type === 'tail');
     expect(tail.since).toBe('seed-5');
     expect((tail.events as unknown[]).length).toBe(2);
-    const board = await storedBoard(created.hostToken, 'd0f000003');
+    const board = await storedBoard(created.hostToken, 'd0f000003000000000000000000000000');
     expect(board.sets[0]).toEqual({ a: 6, b: 0 });
     expect(board.sets[1]).toEqual({ a: 0, b: 1 });
     expect(board.activeSet).toBe(1);
   });
 
   it('refuses a new device after the match has ended and still admits the phone that joined', async () => {
-    const created = await createLive('d0f000011', ['a']);
+    const created = await createLive('d0f000011000000000000000000000000', ['a']);
     const invite = await call(`/matches/${created.matchId}/invites`, {
       method: 'POST',
       headers: { authorization: `Bearer ${created.hostToken}` },
@@ -1092,33 +1091,33 @@ describe('offline score reconcile in the durable object', () => {
     });
     expect(invite.status).toBe(201);
     const shared = (await invite.json()) as { token: string };
-    const known = await connect(shared.token, 'd0f000012');
+    const known = await connect(shared.token, 'd0f000012000000000000000000000000');
     known.ws.close();
-    const host = await connect(created.hostToken, 'd0f000011');
+    const host = await connect(created.hostToken, 'd0f000011000000000000000000000000');
     const endEvent: MatchEvent = { type: 'match/end', at: T0 + 40 };
     await push(host.ws, host.messages, stepId(280), endEvent, scoreClaimFor(created.state, endEvent), 'seed-1');
-    const response = await call(`/ws/${await ticketFor(shared.token, 'd0f000013')}`, { headers: { upgrade: 'websocket' } });
+    const response = await call(`/ws/${await ticketFor(shared.token, 'd0f000013000000000000000000000000')}`, { headers: { upgrade: 'websocket' } });
     const ws = response.webSocket;
     if (!ws) throw new Error('socket');
     ws.accept();
     const messages = inbox(ws);
-    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: shared.token, device: 'd0f000013' }));
+    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: shared.token, device: 'd0f000013000000000000000000000000' }));
     const error = await messages.waitFor((message) => message.type === 'error');
     expect(error.code).toBe('revoked');
     expect(messages.all().some((message) => message.type === 'snapshot')).toBe(false);
-    const again = await connect(shared.token, 'd0f000012');
+    const again = await connect(shared.token, 'd0f000012000000000000000000000000');
     const snap = await again.messages.waitFor((message) => message.type === 'snapshot');
     expect((snap.log as { events: { type?: string }[] }).events.at(-1)?.type).toBe('match/end');
   });
 
   it('closes a protocol 1 hello and asks for an update', async () => {
-    const created = await createLive('d0c000061');
-    const response = await call(`/ws/${await ticketFor(created.hostToken, 'd0c000061')}`, { headers: { upgrade: 'websocket' } });
+    const created = await createLive('d0c000061000000000000000000000000');
+    const response = await call(`/ws/${await ticketFor(created.hostToken, 'd0c000061000000000000000000000000')}`, { headers: { upgrade: 'websocket' } });
     const ws = response.webSocket;
     if (!ws) throw new Error('socket');
     ws.accept();
     const messages = inbox(ws);
-    ws.send(JSON.stringify({ type: 'hello', protocol: 1, token: created.hostToken, device: 'd0c000061' }));
+    ws.send(JSON.stringify({ type: 'hello', protocol: 1, token: created.hostToken, device: 'd0c000061000000000000000000000000' }));
     const error = await messages.waitFor((message) => message.type === 'error');
     expect(error.code).toBe('upgrade_required');
   });

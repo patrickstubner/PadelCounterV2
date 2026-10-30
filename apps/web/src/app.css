@@ -100,6 +100,41 @@ button:disabled { cursor: not-allowed; }
 
 .top-end { position: relative; }
 
+.phone-count {
+  min-width: 2.25rem;
+  min-height: 2.25rem;
+  padding: 0 0.4rem;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 0.95rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.phone-rows {
+  list-style: none;
+  margin: 0.8rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.phone-row {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.7rem 0.8rem;
+  border: 2px solid currentColor;
+  border-radius: 0.8rem;
+}
+
+.phone-kind { font-weight: 800; }
+
+.phone-self {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
 .set-heading {
   margin: 0;
   justify-self: center;
@@ -1302,10 +1337,36 @@ button:disabled { cursor: not-allowed; }
   text-transform: uppercase;
 }
 
+.connect-choices {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+}
+
+.connect-choice {
+  min-height: 4.75rem;
+  padding: 0.85rem 1rem;
+  border: 2px solid #ffffff;
+  border-radius: 0.95rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+}
+
+.connect-choice small {
+  display: block;
+  margin-top: 0.25rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
 .connect-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.6rem;
+  margin-top: 0.85rem;
 }
 
 .connect-overlay {
