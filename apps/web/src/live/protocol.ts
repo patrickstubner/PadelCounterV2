@@ -209,6 +209,45 @@ export function matchCodeShareText(pageHref: string, code: string): string {
   return joinCodeLink(pageHref, code) ?? '';
 }
 
+/** Copy the canonical code and nothing else. A value outside the alphabet is not written. */
+export async function copyPlainCode(
+  code: string,
+  write: (value: string) => Promise<void>,
+): Promise<'copied' | 'visible'> {
+  const normalized = normalizeJoinCode(code);
+  if (!normalized) return 'visible';
+  try {
+    await write(normalized);
+    return 'copied';
+  } catch {
+    return 'visible';
+  }
+}
+
+/** Last resort when the clipboard API is missing or refuses. The field is not left in the page. */
+export function copyTextFallback(value: string): boolean {
+  if (typeof document === 'undefined') return false;
+  const field = document.createElement('textarea');
+  field.value = value;
+  field.setAttribute('readonly', '');
+  field.setAttribute('aria-hidden', 'true');
+  field.style.position = 'fixed';
+  field.style.top = '0';
+  field.style.left = '0';
+  field.style.opacity = '0';
+  document.body.appendChild(field);
+  field.focus();
+  field.select();
+  let ok: boolean;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  field.remove();
+  return ok;
+}
+
 export async function sendMatchCode(
   code: string,
   pageHref: string,

@@ -4,7 +4,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
-import { ARCHIVE_KEY } from './domain/archive';
+import { ARCHIVE_KEY, saveArchive, type ArchivedMatch } from './domain/archive';
+import { appendEvent, createLog, replay } from './domain/log';
 import { JOIN_KEY } from './live/protocol';
 
 const TOKEN = 'abcdefghijklmnopqrstuv';
@@ -564,6 +565,100 @@ describe('connect overlay and scanned join', () => {
     expect(String(joins.at(-1)?.init?.headers && new Headers(joins.at(-1)?.init?.headers).get('authorization'))).toContain(moved);
   });
 
+  it('follows a join offer the same way as a move', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('scan-qr');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => sockets.length > 0);
+    const joinsBefore = fetchCalls.filter((call) => call.url.endsWith('/join')).length;
+    await act(async () => {
+      sockets[0]?.onmessage?.({ data: JSON.stringify({ type: 'join_offer', token: 'bbbbbbbbbbbbbbbbbbbbbb' }) });
+    });
+    await waitFor(() => fetchCalls.filter((call) => call.url.endsWith('/join')).length === joinsBefore + 1);
+    expect(document.querySelector('[data-testid="new-match-notice"]')?.textContent).toBe('New match');
+  });
+
+  it('clears the new-match note after a few seconds', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('scan-qr');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => sockets.length > 0);
+    await act(async () => {
+      sockets[0]?.onmessage?.({ data: JSON.stringify({ type: 'match_moved', token: 'bbbbbbbbbbbbbbbbbbbbbb', seat: 'p2' }) });
+    });
+    expect(document.querySelector('[data-testid="new-match-notice"]')).not.toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 4_100));
+    });
+    expect(document.querySelector('[data-testid="new-match-notice"]')).toBeNull();
+  }, 8_000);
+
+  it('leaves the live match when history continues on this phone', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    snapshotHost = true;
+    let past = createLog(1_700_000_000_000, '00000000-0000-4000-8000-0000000000c2');
+    past = appendEvent(past, { type: 'game/increment', team: 'a', at: 1_700_000_000_010 });
+    past = appendEvent(past, { type: 'match/end', at: 1_700_000_000_020, by: 'host' });
+    const state = replay(past);
+    const archived: ArchivedMatch = {
+      id: state.matchId,
+      at: state.updatedAt,
+      teams: { a: state.teams.a.name, b: state.teams.b.name },
+      sets: [state.sets[0], state.sets[1], state.sets[2]],
+      status: 'ended-early',
+      events: past.events,
+    };
+    saveArchive([archived], localStorage);
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('scan-qr');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => document.querySelector('[data-testid="court-connection"]')?.textContent?.includes('connected') === true);
+    const liveSocket = sockets.at(-1);
+    await press('history-open');
+    await press('match-row');
+    await press('continue-match');
+    await press('confirm-continue');
+    expect(liveSocket?.readyState).toBe(FakeSocket.CLOSED);
+  });
+
   it('joins a fragment code the same way as a typed code, then strips it', async () => {
     (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
     globalThis.fetch = fakeFetch as typeof fetch;
@@ -690,6 +785,27 @@ describe('connect overlay and scanned join', () => {
     await waitFor(() => copied.length === 1);
     expect(copied[0]).toBe(text);
     expect(document.querySelector('[data-testid="code-copied"]')?.textContent).toBe('Copied.');
+    copied.length = 0;
+    await press('copy-code');
+    await waitFor(() => copied.length === 1);
+    expect(copied[0]).toBe('K7M4-2QAB');
+    expect(copied[0]).not.toContain('http');
+    expect(copied[0]).not.toContain('#');
+    expect(document.querySelector('[data-testid="code-only-copied"]')?.textContent).toBe('Copied.');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: () => Promise.reject(new Error('denied')) },
+    });
+    const fallback: string[] = [];
+    document.execCommand = ((command: string) => {
+      if (command !== 'copy') return false;
+      const field = document.activeElement;
+      if (field instanceof HTMLTextAreaElement) fallback.push(field.value);
+      return true;
+    }) as typeof document.execCommand;
+    await press('copy-code');
+    await waitFor(() => fallback.length === 1);
+    expect(fallback[0]).toBe('K7M4-2QAB');
     Reflect.deleteProperty(navigator, 'clipboard');
   });
 

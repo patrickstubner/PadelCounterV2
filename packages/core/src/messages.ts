@@ -27,6 +27,8 @@ export const ROOM_MESSAGES = {
   reconnect_unavailable: 'The previous players can no longer be reconnected. Share a new code.',
   invite_limited: 'This match has had too many new codes. Wait a while.',
   carry_limited: 'These phones were already moved. Start again with a new code.',
+  kick_refused: 'That phone cannot be removed.',
+  kick_limited: 'Too many phones removed. Wait a while.',
 } as const;
 
 export type RoomCode = keyof typeof ROOM_MESSAGES;

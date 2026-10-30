@@ -14,9 +14,13 @@ export function classifyPath(method: string, pathname: string): RouteKind {
   return 'none';
 }
 
-/** Create, invite, carry, the join ticket, and the websocket upgrade. Health and auth are not included. */
+/**
+ * Create, invite, the join ticket, and the websocket upgrade share the per-address cap.
+ * Carry does not: phones on one court network must still be able to move together.
+ * The durable object keeps its own per-phone carry cap. Health and auth are not included.
+ */
 export function limitsMatchRoute(kind: RouteKind): boolean {
-  return kind === 'create' || kind === 'invite' || kind === 'carry' || kind === 'ticket' || kind === 'socket';
+  return kind === 'create' || kind === 'invite' || kind === 'ticket' || kind === 'socket';
 }
 
 export function ticketFrom(pathname: string): string | null {

@@ -164,7 +164,7 @@ describe('haptic taps on the court', () => {
       }));
       plus.click();
     });
-    expect(vibrateCalls).toEqual([]);
+    expect(vibrateCalls).toEqual([15]);
     expect(scoreA()).toContain('1');
   });
 

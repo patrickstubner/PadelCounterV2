@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { isAllowedOrigin } from './cors';
 import { JOIN_FAILURE_LIMIT, allowRate, takeJoinFailure, takeLiveMessage, takeMatchRoute } from './rate';
@@ -34,7 +37,7 @@ describe('public routes', () => {
     expect(limitsMatchRoute('invite')).toBe(true);
     expect(limitsMatchRoute('socket')).toBe(true);
     expect(limitsMatchRoute('ticket')).toBe(true);
-    expect(limitsMatchRoute('carry')).toBe(true);
+    expect(limitsMatchRoute('carry')).toBe(false);
     expect(limitsMatchRoute('health')).toBe(false);
     expect(limitsMatchRoute('auth')).toBe(false);
     expect(limitsMatchRoute('none')).toBe(false);
@@ -98,5 +101,15 @@ describe('rate limit', () => {
     expect(takeJoinFailure(buckets, '198.51.100.80', 10_010)).toBe(false);
     expect(takeJoinFailure(buckets, '198.51.100.81', 10_010)).toBe(true);
     expect(takeMatchRoute(new Map(), '198.51.100.80', 10_010)).toBe(true);
+  });
+
+  it('revokes a kicked phone with the durable object match id', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'match-room.ts'), 'utf8');
+    const kick = source.slice(source.indexOf('private async kick'), source.indexOf('private closeDevice'));
+    expect(kick).toContain('durableMatchId');
+    expect(kick).toContain('revokeCredentialInMatch');
+    expect(kick).not.toContain('base.matchId');
+    const index = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'match-index.ts'), 'utf8');
+    expect(index).toContain('token_hash = ? AND match_id = ?');
   });
 });

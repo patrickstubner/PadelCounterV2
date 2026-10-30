@@ -137,8 +137,28 @@ export function fitArchive(matches: readonly ArchivedMatch[], maxRaw = MAX_ARCHI
   return list;
 }
 
+function gamesOf(match: ArchivedMatch): number {
+  return match.sets.reduce((sum, set) => sum + set.a + set.b, 0);
+}
+
+/**
+ * The same id is replaced, except a later copy with fewer games does not erase
+ * a richer one. Offline points archived before a server snapshot stay in History.
+ */
 export function rememberMatch(archive: readonly ArchivedMatch[], match: ArchivedMatch): ArchivedMatch[] {
-  return fitArchive([...archive.filter((item) => item.id !== match.id), match]);
+  const existing = archive.find((item) => item.id === match.id);
+  const kept = existing && gamesOf(existing) > gamesOf(match) ? existing : match;
+  return fitArchive([...archive.filter((item) => item.id !== match.id), kept]);
+}
+
+/** Same match, and this phone has scored games the incoming log does not have. */
+export function localScoreAhead(local: MatchLog, incoming: MatchLog): boolean {
+  const left = replay(local);
+  const right = replay(incoming);
+  if (left.matchId !== right.matchId) return false;
+  const games = (state: { sets: readonly { a: number; b: number }[] }) =>
+    state.sets.reduce((sum, set) => sum + set.a + set.b, 0);
+  return games(left) > games(right);
 }
 
 function parseScore(value: unknown): SetScore | null {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMatch, matchReducer } from './reducer';
 import {
+  FIP_SERVE_SOURCE,
   RULES_SUMMARY,
+  courtCue,
   servePickPrompt,
   canDecrement,
   canIncrement,
@@ -259,8 +261,42 @@ describe('serve rotation', () => {
       serve: { team: 'b' as const, player: 2 as const },
     };
     expect(isTiebreak(tied)).toBe(true);
-    expect(tiebreakHint(tied)).toBe('Tiebreak · B2 serves this game');
-    expect(tiebreakHint({ ...tied, serve: null })).toBe('Tiebreak');
+    expect(tiebreakHint(tied)).toContain('Team B player 2 serves first');
+    expect(tiebreakHint(tied)).toContain('1 point from the right');
+    expect(tiebreakHint(tied)).toContain('2 points, from the left');
+    expect(tiebreakHint(tied)).toContain('2 points each');
+    expect(tiebreakHint(tied)).toContain('every 6 points');
+    expect(tiebreakHint({ ...tied, serve: null })).toContain('The player whose turn it is');
+    expect(courtCue(state)).toEqual({ kind: 'choose-serve', text: 'Please choose the serving team' });
+    expect(courtCue({ ...state, serve: { team: 'a', player: 1 } })).toBeNull();
+    const after = {
+      ...state,
+      activeSet: 1 as const,
+      sets: [
+        { a: 7, b: 6 },
+        { a: 0, b: 0 },
+        { a: 0, b: 0 },
+      ] as const,
+      serve: null,
+      serveAsk: 'a' as const,
+    };
+    expect(courtCue(after)?.text).toContain('Team A serves first');
+    expect(courtCue(after)?.text).toContain('did not start the tie-break');
+    expect(courtCue(after)?.text).toContain('choose which player');
+    expect(courtCue({ ...after, serve: { team: 'a', player: 2 } })).toBeNull();
+    const plain = {
+      ...after,
+      sets: [
+        { a: 6, b: 4 },
+        { a: 0, b: 0 },
+        { a: 0, b: 0 },
+      ] as const,
+      serveAsk: null,
+    };
+    expect(courtCue(plain)).toBeNull();
+    expect(FIP_SERVE_SOURCE).toContain('https://padelfip.com/wp-content/uploads/2025/12/FIP_Rules-of-Padel.pdf');
+    expect(FIP_SERVE_SOURCE).toContain('2026-10-30');
+    expect(FIP_SERVE_SOURCE).toContain('1 January 2026');
     expect(servePickPrompt(state)).toBeNull();
     expect(servePickPrompt({ ...tied, serve: null, servePrompt: true })).toBe('Choose the server');
     expect(servePickPrompt({ ...tied, serve: null, serveAsk: 'b', servePrompt: false })).toBe('Choose the player');

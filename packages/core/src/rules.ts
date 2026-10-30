@@ -3,6 +3,24 @@ import type { MatchState, PlayerSlot, Server, SetIndex, SetScore, TeamId } from 
 export const RULES_SUMMARY =
   'This counter ends a set at 6 games with a lead of 2, at 7–5, or at 7–6 after 6–6. A match is best of 3. Serve is optional and rotates between teams and partners. Tap a set to select it.';
 
+/**
+ * Serve cues follow the International Padel Federation Rules of Padel,
+ * review of application 1 January 2026. The PDF is the December 2025 file
+ * (site title “Rules of Padel - 18 Dec_REV”):
+ * https://padelfip.com/wp-content/uploads/2025/12/FIP_Rules-of-Padel.pdf
+ * Checked 2026-10-30.
+ * Rule 4 (toss: serve or side), tie-break points 3 and 5, Rule 5.2 (ends every 6 points),
+ * Rule 6.5 (sides alternate), Rule 6.8 (each set, the pair chooses who serves first).
+ * The older case “the player who began the set serves the tie-break” is in the
+ * November 2024 PDF and is not in this December 2025 text. This counter names
+ * the server already shown for the 6–6 game, which is whose turn it is when
+ * the rotation has been followed. It does not score tie-break points.
+ */
+export const FIP_SERVE_SOURCE =
+  'International Padel Federation, Rules of Padel, review of application 1 January 2026, PDF December 2025 (checked 2026-10-30). https://padelfip.com/wp-content/uploads/2025/12/FIP_Rules-of-Padel.pdf';
+
+export const CHOOSE_SERVE_TEXT = 'Please choose the serving team';
+
 function otherTeam(team: TeamId): TeamId {
   return team === 'a' ? 'b' : 'a';
 }
@@ -205,14 +223,52 @@ export function isTiebreak(state: MatchState): boolean {
 }
 
 /**
- * At 6:6 the hint names who serves that one game. It does not describe a
- * two-point rotation, because this counter does not score tiebreak points.
+ * At 6:6 the hint follows the FIP tie-break (one serve from the right, then two
+ * each, the next two from the left, ends every 6 points). This counter still
+ * scores that game as one game. It does not step the server every two points.
+ * The English rule says those next two points are “serving from the left” and
+ * does not name a side for each later point. Rule 6.5 still alternates sides.
  */
+export function tiebreakCueText(state: MatchState): string {
+  const who = state.serve
+    ? `${state.teams[state.serve.team].name} player ${state.serve.player}`
+    : 'The player whose turn it is';
+  return `${who} serves first: 1 point from the right. Then the other team serves 2 points, from the left. After that, 2 points each. Change ends every 6 points.`;
+}
+
+/**
+ * After 7–6 the next set is opened by the pair that did not start the tie-break
+ * (tie-break point 5). Rule 6.8: before the set, that pair chooses which player serves.
+ * The court already preselects that pair. A 6–4 or 7–5 finish has no such sentence.
+ */
+export function nextSetCueText(state: MatchState, team: TeamId): string {
+  const name = state.teams[team].name;
+  return `${name} serves first in this set, because they did not start the tie-break. They choose which player serves.`;
+}
+
+export type CourtCue =
+  | { readonly kind: 'choose-serve'; readonly text: string }
+  | { readonly kind: 'tiebreak'; readonly text: string }
+  | { readonly kind: 'next-set'; readonly text: string };
+
+/** A hint only while the court still needs it. A chosen server clears it. */
+export function courtCue(state: MatchState): CourtCue | null {
+  if (state.ended || matchWinner(state.sets)) return null;
+  const active = state.sets[state.activeSet];
+  if (active.a === 6 && active.b === 6) return { kind: 'tiebreak', text: tiebreakCueText(state) };
+  if (active.a !== 0 || active.b !== 0 || state.serve !== null) return null;
+  const previous = state.activeSet > 0 ? state.sets[state.activeSet - 1] : undefined;
+  const afterTiebreak = previous !== undefined
+    && ((previous.a === 7 && previous.b === 6) || (previous.a === 6 && previous.b === 7));
+  if (afterTiebreak && state.serveAsk) return { kind: 'next-set', text: nextSetCueText(state, state.serveAsk) };
+  const untouched = state.sets.every((set) => set.a === 0 && set.b === 0);
+  if (untouched && state.serveAsk === null) return { kind: 'choose-serve', text: CHOOSE_SERVE_TEXT };
+  return null;
+}
+
 export function tiebreakHint(state: MatchState): string | null {
-  if (!isTiebreak(state)) return null;
-  if (!state.serve) return 'Tiebreak';
-  const who = `${state.serve.team.toUpperCase()}${state.serve.player}`;
-  return `Tiebreak · ${who} serves this game`;
+  const cue = courtCue(state);
+  return cue?.kind === 'tiebreak' ? cue.text : null;
 }
 
 /**

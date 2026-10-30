@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { sendMatchCode } from '../live/protocol';
+import { copyPlainCode, copyTextFallback, sendMatchCode } from '../live/protocol';
 import { QrCode } from './QrCode';
 
 interface ConnectPageProps {
@@ -40,7 +40,7 @@ export function ConnectPage({
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const [sent, setSent] = useState<'copied' | null>(null);
+  const [sent, setSent] = useState<'copied' | 'code' | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -138,23 +138,49 @@ export function ConnectPage({
             {code ? (
               <>
                 <p className="match-code" data-testid="match-code">{code}</p>
-                <button
-                  type="button"
-                  className="text-btn"
-                  data-testid="share-code"
-                  onClick={() => {
-                    const pageHref = typeof location === 'undefined' ? '' : location.href;
-                    void sendMatchCode(code, pageHref, {
-                      share: typeof navigator.share === 'function' ? (data) => navigator.share(data) : undefined,
-                      clipboard: typeof navigator.clipboard?.writeText === 'function' ? navigator.clipboard : undefined,
-                    }).then((result) => {
-                      setSent(result === 'copied' ? 'copied' : null);
-                    });
-                  }}
-                >
-                  Send code
-                </button>
+                <div className="code-actions">
+                  <button
+                    type="button"
+                    className="text-btn"
+                    data-testid="share-code"
+                    onClick={() => {
+                      const pageHref = typeof location === 'undefined' ? '' : location.href;
+                      void sendMatchCode(code, pageHref, {
+                        share: typeof navigator.share === 'function' ? (data) => navigator.share(data) : undefined,
+                        clipboard: typeof navigator.clipboard?.writeText === 'function' ? navigator.clipboard : undefined,
+                      }).then((result) => {
+                        setSent(result === 'copied' ? 'copied' : null);
+                      });
+                    }}
+                  >
+                    Share link
+                  </button>
+                  <button
+                    type="button"
+                    className="text-btn"
+                    data-testid="copy-code"
+                    onClick={() => {
+                      void copyPlainCode(code, async (value) => {
+                        const clip = navigator.clipboard;
+                        if (clip && typeof clip.writeText === 'function') {
+                          try {
+                            await clip.writeText(value);
+                            return;
+                          } catch {
+                            // A blocked clipboard still has the temporary-field fallback.
+                          }
+                        }
+                        if (!copyTextFallback(value)) throw new Error('copy');
+                      }).then((result) => {
+                        setSent(result === 'copied' ? 'code' : null);
+                      });
+                    }}
+                  >
+                    Copy code
+                  </button>
+                </div>
                 {sent === 'copied' ? <p data-testid="code-copied">Copied.</p> : null}
+                {sent === 'code' ? <p data-testid="code-only-copied">Copied.</p> : null}
               </>
             ) : null}
           </div>

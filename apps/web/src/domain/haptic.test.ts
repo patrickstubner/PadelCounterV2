@@ -7,6 +7,7 @@ import {
   HAPTIC_MS,
   bindCourtTaps,
   createPressHaptic,
+  releaseInside,
   hapticEnabled,
   pulseHaptic,
   setHapticEnabled,
@@ -147,6 +148,13 @@ describe('court taps', () => {
     };
   }
 
+  it('counts a mouse release only inside the control', () => {
+    const box = { left: 0, top: 0, right: 40, bottom: 40 };
+    expect(releaseInside(box, 10, 10)).toBe(true);
+    expect(releaseInside(box, 300, 10)).toBe(false);
+    expect(releaseInside({ left: 0, top: 0, right: 0, bottom: 0 }, 300, 10)).toBe(true);
+  });
+
   it('ticks after plus, minus, and the serve ball', () => {
     const court = target();
     const ticks: string[] = [];
@@ -180,23 +188,44 @@ describe('court taps', () => {
       expect(ticks).toEqual([1]);
 
       const scrolled = createPressHaptic(() => ticks.push(2));
-      scrolled.down(point, true);
-      scrolled.move({ ...point, x: 40 });
+      const mouse = { ...point, pointerType: 'mouse' };
+      scrolled.down(mouse, true);
+      scrolled.move({ ...mouse, x: 40 });
       queued.splice(0).forEach((fn) => fn());
-      scrolled.up({ ...point, x: 40 }, true);
+      scrolled.up({ ...mouse, x: 40 }, false);
       scrolled.click();
       expect(ticks).toEqual([1]);
+
+      const dragged = createPressHaptic(() => ticks.push(5));
+      dragged.down(point, true);
+      dragged.move({ ...point, x: 40 });
+      queued.splice(0).forEach((fn) => fn());
+      dragged.up({ ...point, x: 40 }, false);
+      dragged.click();
+      expect(ticks).toEqual([1, 5]);
 
       const cancelled = createPressHaptic(() => ticks.push(3));
       cancelled.down({ ...point, pointerId: 2 }, true);
       cancelled.cancel(2);
       queued.splice(0).forEach((fn) => fn());
+      expect(ticks).toEqual([1, 5]);
       cancelled.click();
-      expect(ticks).toEqual([1]);
+      expect(ticks).toEqual([1, 5, 3]);
+
+      const right = createPressHaptic(() => ticks.push(6));
+      right.down({ ...mouse, button: 2 }, true);
+      queued.splice(0).forEach((fn) => fn());
+      expect(ticks).toEqual([1, 5, 3]);
+
+      const disabled = createPressHaptic(() => ticks.push(7));
+      disabled.down(point, false);
+      queued.splice(0).forEach((fn) => fn());
+      disabled.up(point, false);
+      expect(ticks).toEqual([1, 5, 3]);
 
       const keyboard = createPressHaptic(() => ticks.push(4));
       keyboard.click();
-      expect(ticks).toEqual([1, 4]);
+      expect(ticks).toEqual([1, 5, 3, 4]);
     } finally {
       globalThis.requestAnimationFrame = request;
       globalThis.cancelAnimationFrame = cancel;

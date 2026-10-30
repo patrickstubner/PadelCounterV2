@@ -1,5 +1,5 @@
 import { useRef, useState, type PointerEvent } from 'react';
-import { createPressHaptic, type HapticPoint, type PressHaptic } from '../domain/haptic';
+import { createPressHaptic, releaseInside, type HapticPoint, type PressHaptic } from '../domain/haptic';
 import { canIncrement, canTakeGame, displayGames, isUpcomingSet, serveChoice, setWinner } from '../domain/rules';
 import type { MatchState, SetIndex, TeamId } from '../domain/types';
 import { BallIcon, MinusIcon, PlusIcon } from './icons';
@@ -18,6 +18,8 @@ interface TeamPanelProps {
   /** vibrate ticks on pointer down. ios ticks on click. off is quiet. */
   hapticMode?: 'vibrate' | 'ios' | 'off';
   onHaptic?: () => void;
+  /** Pulse the serve ball until a serving team is chosen. */
+  serveCue?: boolean;
 }
 
 const SETS: readonly SetIndex[] = [0, 1, 2];
@@ -49,6 +51,7 @@ export function TeamPanel({
   onServe,
   hapticMode = 'off',
   onHaptic = () => undefined,
+  serveCue = false,
 }: TeamPanelProps) {
   const name = state.teams[team].name;
   const active = state.sets[state.activeSet];
@@ -65,12 +68,14 @@ export function TeamPanel({
       ? `Serve ${nextServe.team.toUpperCase()}${nextServe.player} for ${name}`
       : `Leave the serve open, ${name}`;
   const press = useVibratePress(hapticMode, onHaptic);
+  const skipClick = useRef(false);
   const afterClick = () => {
     if (hapticMode === 'ios') onHaptic();
     else if (hapticMode === 'vibrate') press?.click();
   };
   const bind = (disabled: boolean) => press ? {
     onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
+      skipClick.current = false;
       try {
         event.currentTarget.setPointerCapture(event.pointerId);
       } catch {
@@ -79,8 +84,20 @@ export function TeamPanel({
       press.down(pointOf(event), !disabled && !event.currentTarget.disabled);
     },
     onPointerMove: (event: PointerEvent<HTMLButtonElement>) => press.move(pointOf(event)),
-    onPointerUp: (event: PointerEvent<HTMLButtonElement>) => press.up(pointOf(event), !disabled && !event.currentTarget.disabled),
+    onPointerUp: (event: PointerEvent<HTMLButtonElement>) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const inside = releaseInside(rect, event.clientX, event.clientY);
+      if (event.pointerType === 'mouse') skipClick.current = !inside;
+      press.up(pointOf(event), !disabled && !event.currentTarget.disabled && inside);
+    },
     onPointerCancel: (event: PointerEvent<HTMLButtonElement>) => press.cancel(event.pointerId),
+    onLostPointerCapture: (event: PointerEvent<HTMLButtonElement>) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      if (event.pointerType === 'mouse' && !releaseInside(rect, event.clientX, event.clientY)) {
+        skipClick.current = true;
+      }
+      press.cancel(event.pointerId);
+    },
   } : {};
 
   return (
@@ -92,6 +109,11 @@ export function TeamPanel({
         disabled={minusDisabled}
         aria-label={`${name}: remove one game`}
         onClick={() => {
+          if (skipClick.current) {
+            skipClick.current = false;
+            press?.forget();
+            return;
+          }
           onDecrement(team);
           if (!minusDisabled) afterClick();
         }}
@@ -104,12 +126,17 @@ export function TeamPanel({
           <TeamName name={name} locked={locked} onCommit={(next) => onRename(team, next)} />
           <button
             type="button"
-            className={serving ? 'ball is-on' : 'ball'}
+            className={['ball', serving ? 'is-on' : '', serveCue ? 'is-cue' : ''].filter(Boolean).join(' ')}
             data-testid={`serve-${team}`}
             aria-pressed={serving}
             aria-label={serveLabel}
             disabled={locked}
             onClick={() => {
+              if (skipClick.current) {
+                skipClick.current = false;
+                press?.forget();
+                return;
+              }
               onServe(team);
               if (!locked) afterClick();
             }}
@@ -159,6 +186,11 @@ export function TeamPanel({
         disabled={plusDisabled}
         aria-label={`${name}: add one game`}
         onClick={() => {
+          if (skipClick.current) {
+            skipClick.current = false;
+            press?.forget();
+            return;
+          }
           onIncrement(team);
           if (!plusDisabled) afterClick();
         }}

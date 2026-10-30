@@ -38,6 +38,25 @@ export function deviceKindLabel(kind: DeviceKind): string {
 /** Seat ids already appear on score events. They are not device secrets. */
 const SEAT = /^(?:host|p(?:[2-9]|[1-2]\d|3[0-2]))$/;
 
+export function isPublicSeat(value: unknown): value is string {
+  return typeof value === 'string' && SEAT.test(value);
+}
+
+/**
+ * Who may remove a phone.
+ * Any admitted seat may remove any other seat except `host`.
+ * The starter (`host`) may remove every other seat.
+ * No seat may remove itself, and nothing in this check can mark a seat immune.
+ */
+export type KickVerdict = 'ok' | 'self' | 'starter' | 'bad';
+
+export function decideKick(actorSeat: string, targetSeat: string): KickVerdict {
+  if (!isPublicSeat(actorSeat) || !isPublicSeat(targetSeat)) return 'bad';
+  if (actorSeat === targetSeat) return 'self';
+  if (targetSeat === 'host' && actorSeat !== 'host') return 'starter';
+  return 'ok';
+}
+
 export interface PublicPhone {
   readonly seat: string;
   readonly since: number;

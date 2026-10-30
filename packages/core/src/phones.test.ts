@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  decideKick,
   deviceKindFromAgent,
   parsePublicPhones,
   publicPhoneList,
@@ -92,5 +93,19 @@ describe('public phone list', () => {
     expect(JSON.stringify(parsed)).not.toContain('Mozilla');
     expect(parsePublicPhones([{ seat: 'p2', since: 10, seen: 20, online: true, kind: 'phone', self: false }])).toBeNull();
     expect(parsePublicPhones('phones')).toBeNull();
+  });
+});
+
+describe('decideKick', () => {
+  it('lets every seat remove another seat, except itself and except the starter', () => {
+    expect(decideKick('p2', 'p3')).toBe('ok');
+    expect(decideKick('p3', 'p2')).toBe('ok');
+    expect(decideKick('host', 'p2')).toBe('ok');
+    expect(decideKick('host', 'p4')).toBe('ok');
+    expect(decideKick('p2', 'host')).toBe('starter');
+    expect(decideKick('p2', 'p2')).toBe('self');
+    expect(decideKick('host', 'host')).toBe('self');
+    expect(decideKick('p2', 'd11111111000000000000000000000000')).toBe('bad');
+    expect(decideKick('device', 'p2')).toBe('bad');
   });
 });

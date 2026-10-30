@@ -1,12 +1,12 @@
 import { DurableObject } from 'cloudflare:workers';
-import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, UNUSED_MINT_MS, actorId, canonicalCausalId, clampClockOffset, connectionCloses, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isLegacyDeviceId, isRole, isRoomCode, isUuid, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
+import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, JOIN_TOKEN_TTL_MS, KICK_PER_ACTOR, KICK_PER_MATCH, KICK_WINDOW_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, UNUSED_MINT_MS, actorId, canonicalCausalId, clampClockOffset, connectionCloses, decideKick, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isLegacyDeviceId, isRole, isRoomCode, isUuid, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
 import { applyLiveEvent, chooseActor, createRoom, currentSharedInvite, eventDelta, helloPayload, issueInvite, serverLastChange, type RoomRecord } from './room';
 import { openText, sealText } from './seal';
 import { randomToken } from './tokens';
-import { deleteSeal, dropMemberHashes, ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, markRosterOffline, matchBudgetOpen, openRoomForCreate, pendingMintStale, readActivityTouch, readEventSeq, readJoined, readRoom, readRoster, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, revokeSharedInvites, saveRosterPhone, takeMatchBudget, writeSeal, type RoomSql } from './store';
+import { blockKickedDevice, clearKickedDevices, deleteSeal, dropJoinedDevice, dropMemberHashes, dropRosterDevice, ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, isKickedDevice, latestEventSeq, markActivityTouch, markRosterOffline, matchBudgetOpen, openRoomForCreate, pendingMintStale, readActivityTouch, readEventSeq, readJoined, readRoom, readRoster, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, revokeSharedInvites, saveRosterPhone, takeMatchBudget, writeSeal, type RoomSql } from './store';
 import { quotaMac, quotaSecret, safeEqualHex, sha256Hex } from './tokens';
 
 function publicSeat(value: unknown): string | null {
@@ -45,6 +45,7 @@ interface AdmittedState {
   readonly credential: Credential;
   readonly stamps: readonly number[];
   readonly renameStamps?: readonly number[];
+  readonly kickStamps?: readonly number[];
   /** HMAC of the client address. Never the address itself. */
   readonly ip: string;
   readonly actor: string;
@@ -83,6 +84,15 @@ interface RoomEnv {
 export class MatchRoom extends DurableObject<RoomEnv> {
   private sql(): RoomSql {
     return this.ctx.storage.sql as unknown as RoomSql;
+  }
+
+  /**
+   * The id this object was created with (`idFromName`). It is not `base.matchId`:
+   * a later `match/new` in the log must not retarget D1.
+   */
+  private durableMatchId(): string | null {
+    const name = this.ctx.id.name;
+    return isUuid(name) ? name.toLowerCase() : null;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -167,6 +177,10 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       if (state.deviceId) deleteSeal(this.sql(), `move:${state.deviceId}`);
       return;
     }
+    if (record.type === 'kick') {
+      await this.kick(ws, state, record);
+      return;
+    }
     if (record.type === 'team_renamed') {
       const renameBudget = allowRate(state.renameStamps ?? [], Date.now(), RENAME_PER_SECOND, 1_000);
       ws.serializeAttachment({ ...state, renameStamps: renameBudget.stamps });
@@ -240,6 +254,10 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
     const seated = this.seatedSockets(ws, deviceId);
     const result = helloPayload(room, tokenHash, seated.others, Date.now(), deviceId);
+    if (result.ok && deviceId && isKickedDevice(this.sql(), deviceId)) {
+      this.reject(ws, 'revoked');
+      return;
+    }
     if (!result.ok) {
       if (result.code === 'match_full' && seated.same.length === 0) {
         const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, tokenHash));
@@ -652,8 +670,10 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     ensureSealedTable(this.sql());
     this.ctx.storage.transactionSync(() => {
       const sql = this.sql();
-      if (rotate) revokePlayerInvites(sql, now, keepHash);
-      else revokeSharedInvites(sql, now);
+      if (rotate) {
+        revokePlayerInvites(sql, now, keepHash);
+        clearKickedDevices(sql);
+      } else revokeSharedInvites(sql, now);
       insertInvite(sql, created);
       if (sessionHash && sessionDevice) {
         insertInvite(sql, {
@@ -740,6 +760,87 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   }
 
   /** A new code revokes the old one. Phones that joined with it leave the live match now. */
+  /**
+   * Remove one other phone. The target is a public seat, never a device id.
+   * The device credential is revoked. The current shared code will not seat that device again.
+   */
+  private async kick(ws: WebSocket, state: AdmittedState, record: Record<string, unknown>): Promise<void> {
+    const attempt = allowRate(state.kickStamps ?? [], Date.now(), 5, 10_000);
+    const nextState: AdmittedState = { ...state, kickStamps: attempt.stamps };
+    ws.serializeAttachment(nextState);
+    if (!attempt.ok) {
+      this.reject(ws, 'slow_down');
+      return;
+    }
+    const targetSeat = publicSeat(record.seat);
+    if (!targetSeat || !state.deviceId) {
+      this.reject(ws, 'not_applied');
+      return;
+    }
+    const verdict = decideKick(state.actor, targetSeat);
+    if (verdict !== 'ok') {
+      this.reject(ws, verdict === 'bad' ? 'not_applied' : 'kick_refused');
+      return;
+    }
+    const target = readRoster(this.sql()).find((row) => row.seat === targetSeat);
+    if (!target || !isDeviceId(target.deviceId) || target.deviceId === state.deviceId) {
+      this.reject(ws, 'not_applied');
+      return;
+    }
+    const now = Date.now();
+    const actorKey = `kick:${state.tokenHash}`;
+    const roomKey = 'kick:room';
+    if (
+      !matchBudgetOpen(this.sql(), actorKey, now, KICK_PER_ACTOR, KICK_WINDOW_MS)
+      || !matchBudgetOpen(this.sql(), roomKey, now, KICK_PER_MATCH, KICK_WINDOW_MS)
+    ) {
+      this.reject(ws, 'kick_limited');
+      return;
+    }
+    if (
+      !takeMatchBudget(this.sql(), actorKey, now, KICK_PER_ACTOR, KICK_WINDOW_MS)
+      || !takeMatchBudget(this.sql(), roomKey, now, KICK_PER_MATCH, KICK_WINDOW_MS)
+    ) {
+      this.reject(ws, 'kick_limited');
+      return;
+    }
+    const room = readRoom(this.sql());
+    const hashes = room
+      ? room.invites
+        .filter((row) => !row.host && row.deviceId === target.deviceId && row.revokedAt === null)
+        .map((row) => row.tokenHash)
+      : [];
+    const deviceId = target.deviceId;
+    this.ctx.storage.transactionSync(() => {
+      const sql = this.sql();
+      for (const hash of hashes) revokeInviteHash(sql, hash, now);
+      dropJoinedDevice(sql, deviceId);
+      dropRosterDevice(sql, deviceId);
+      deleteSeal(sql, `move:${deviceId}`);
+      blockKickedDevice(sql, deviceId, now);
+    });
+    const matchId = this.durableMatchId();
+    if (matchId) {
+      for (const hash of hashes) {
+        try {
+          await d1MatchIndex(this.env.DB).revokeCredentialInMatch(hash, matchId, now);
+        } catch {
+          // The room invite is already revoked, so the old token cannot hello.
+        }
+      }
+    }
+    this.closeDevice(deviceId);
+    this.broadcastPresence();
+    this.sendRoster();
+  }
+
+  private closeDevice(deviceId: string): void {
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      const peer = this.readState(socket);
+      if (peer?.admitted === true && peer.deviceId === deviceId) this.reject(socket, 'revoked');
+    }
+  }
+
   private closeRevokedPlayers(): void {
     const room = readRoom(this.sql());
     if (!room) return;
@@ -808,17 +909,6 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const host = room.invites.find((row) => row.host && safeEqualHex(row.tokenHash, hostHash));
     if (!host || host.revokedAt !== null || now >= host.expiresAt) return null;
     return room;
-  }
-
-  /**
-   * The name passed to idFromName. Credentials and join codes are stored under that id.
-   * base.matchId stays the first match in a chain, because assignMatchId rewrites an id
-   * only when replay currently shows that same id.
-   */
-  private durableMatchId(): string | null {
-    const name = this.ctx.id.name;
-    if (!isUuid(name)) return null;
-    return name.toLowerCase();
   }
 
   /** Any unexpired player credential for this room. The check is the row in this object, not the caller's claim. */
@@ -924,6 +1014,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
     if (!isDeviceId(fields.deviceId)) return json(400, { error: 'invalid_match' });
     if (!readRoom(this.sql())) return json(404, { error: 'unavailable' });
+    if (isKickedDevice(this.sql(), fields.deviceId)) return json(409, { error: 'join_code' });
     const expiresAt = fields.expiresAt;
     const deviceId = fields.deviceId;
     const tokenHash = await sha256Hex(fields.token);

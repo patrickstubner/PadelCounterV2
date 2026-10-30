@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { HOST_TOKEN_TTL_MS, isJoinToken, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, sameBoard, scoreBoard, type CausalEvent, type MatchEvent, type MatchLog, type PublicPhone, type ScoreClaim } from '@padel/core';
+import { HOST_TOKEN_TTL_MS, isJoinToken, isPublicSeat, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, sameBoard, scoreBoard, type CausalEvent, type MatchEvent, type MatchLog, type PublicPhone, type ScoreClaim } from '@padel/core';
+import { localScoreAhead } from '../domain/archive';
 import { DEVICE_KEY, clearLegacyDeviceId, deviceId, legacyDeviceId, rememberedDeviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
@@ -43,6 +44,8 @@ export interface LiveController {
   readonly joining: boolean;
   /** This phone is following the starter into the new match. */
   readonly movedNote: boolean;
+  /** Offline points were copied to History before a server snapshot replaced them. */
+  readonly keptNote: boolean;
   /** The old match ended and this phone was not moved into the new one. */
   readonly continued: boolean;
   readonly dismissContinued: () => void;
@@ -51,6 +54,7 @@ export interface LiveController {
   readonly commitRestore: () => MatchEvent[];
   readonly share: (log: MatchLog, options?: ShareOptions) => void;
   readonly rotate: () => void;
+  readonly kick: (seat: string) => void;
   readonly connect: (token: string) => void;
   readonly joinByCode: (code: string) => Promise<boolean>;
   readonly rejectToken: () => void;
@@ -115,6 +119,7 @@ export function useLive(
   applyLive: (event: MatchEvent) => void,
   revertLive: (event: MatchEvent) => void,
   readLog: () => MatchLog,
+  archiveLocal: (log: MatchLog) => void = () => undefined,
 ): LiveController {
   const api = apiBase();
   const [status, setStatus] = useState<'off' | 'connecting' | 'live' | 'disconnected'>('off');
@@ -128,6 +133,7 @@ export function useLive(
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [movedNote, setMovedNote] = useState(false);
+  const [keptNote, setKeptNote] = useState(false);
   const [continued, setContinued] = useState(false);
   const [pendingRestore, setPendingRestore] = useState<readonly { id: string; event: MatchEvent; claim: ScoreClaim | null }[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
@@ -807,6 +813,11 @@ export function useLive(
           return;
         }
         if (notice.kind === 'log') {
+          const local = readLogRef.current();
+          if (localScoreAhead(local, notice.log)) {
+            archiveLocal(local);
+            setKeptNote(true);
+          }
           // base.matchId is the first match in a chain. The room is the id replay shows.
           const matchId = replayScore(notice.log.base, notice.log.events).matchId.toLowerCase();
           matchRef.current = matchId;
@@ -1020,6 +1031,12 @@ export function useLive(
   }, [movedNote]);
 
   useEffect(() => {
+    if (!keptNote || typeof window === 'undefined') return;
+    const timer = window.setTimeout(() => setKeptNote(false), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [keptNote]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     const timer = window.setInterval(() => {
       const ws = socketRef.current;
@@ -1095,6 +1112,7 @@ export function useLive(
     joinError,
     joining,
     movedNote,
+    keptNote,
     continued,
     dismissContinued: () => setContinued(false),
     pendingRestore,
@@ -1269,6 +1287,17 @@ export function useLive(
       const current = hostRef.current;
       if (!current) return;
       void publishQr(current.matchId, current.token, true);
+    },
+    kick: (seat: string) => {
+      const ws = socketRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN || !isPublicSeat(seat)) return;
+      const mine = phones.find((phone) => phone.self);
+      if (mine?.seat === seat) return;
+      try {
+        ws.send(JSON.stringify({ type: 'kick', seat }));
+      } catch {
+        // The socket is already gone.
+      }
     },
   };
 }

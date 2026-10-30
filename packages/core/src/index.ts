@@ -35,8 +35,11 @@ export {
   storedTeamName,
 } from './names';
 export {
+  CHOOSE_SERVE_TEXT,
+  FIP_SERVE_SOURCE,
   RULES_SUMMARY,
   canDecrement,
+  courtCue,
   canIncrement,
   canTakeGame,
   celebrationWinner,
@@ -59,16 +62,18 @@ export {
   setWinner,
   tiebreakHint,
 } from './rules';
-export type { MatchResult } from './rules';
+export type { CourtCue, MatchResult } from './rules';
 export {
   DEVICE_KINDS,
   deviceKindFromAgent,
   deviceKindLabel,
   isDeviceKind,
+  decideKick,
+  isPublicSeat,
   parsePublicPhones,
   publicPhoneList,
 } from './phones';
-export type { DeviceKind, PublicPhone, RosterSource } from './phones';
+export type { DeviceKind, KickVerdict, PublicPhone, RosterSource } from './phones';
 export { assignMatchId, createMatch, matchReducer, prepareLiveLog, replayScore } from './reducer';
 export {
   FUTURE_SLACK_MS,
@@ -128,6 +133,9 @@ export {
   ROOM_CLOSE_MS,
   CARRY_PER_DEVICE,
   CARRY_PER_MATCH,
+  KICK_PER_ACTOR,
+  KICK_PER_MATCH,
+  KICK_WINDOW_MS,
   DEVICE_ID_PATTERN,
   GUEST_ROTATE_PER_DEVICE,
   isDeviceId,
@@ -149,6 +157,7 @@ export {
   joinWindow,
   lastChangeAt,
   offerReconnect,
+  otherPhones,
   planNewMatch,
   quotaDay,
   roomAcceptsScore,

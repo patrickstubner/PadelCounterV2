@@ -9,6 +9,7 @@ import {
   listMatches,
   loadArchive,
   parseArchive,
+  localScoreAhead,
   rememberMatch,
   saveArchive,
   setScoreLine,
@@ -133,6 +134,23 @@ describe('match archive', () => {
     const replaced = rememberMatch(archive, archived(archive[0]!.id, T0 + 500));
     expect(replaced.filter((match) => match.id === archive[0]?.id)).toHaveLength(1);
     expect(replaced.at(-1)?.at).toBe(T0 + 500);
+    const richer = archived(archive[0]!.id, T0 + 1);
+    const ahead = { ...richer, sets: [{ a: 2, b: 2 }, { a: 0, b: 0 }, { a: 0, b: 0 }] as const };
+    const kept = rememberMatch(rememberMatch([], ahead), { ...ahead, sets: [{ a: 2, b: 0 }, { a: 0, b: 0 }, { a: 0, b: 0 }] });
+    expect(kept[0]?.sets[0]).toEqual({ a: 2, b: 2 });
+  });
+
+  it('archives offline points that the server snapshot does not have', () => {
+    let local = createLog(T0, ID);
+    local = appendEvent(local, { type: 'game/increment', team: 'b', at: T0 + 1 });
+    local = appendEvent(local, { type: 'game/increment', team: 'b', at: T0 + 2 });
+    const server = createLog(T0, ID);
+    expect(localScoreAhead(local, server)).toBe(true);
+    expect(localScoreAhead(server, local)).toBe(false);
+    const saved = sessionReducer({ log: local, archive: [] }, { type: 'archive-log', log: local });
+    const snap = snapshotMatch(server);
+    const merged = snap ? rememberMatch(saved.archive, snap) : saved.archive;
+    expect(merged[0]?.sets[0]).toEqual({ a: 0, b: 2 });
   });
 
   it('shrinks the saved list when the payload is over the byte cap', () => {

@@ -468,6 +468,56 @@ export function markRosterOffline(sql: RoomSql, deviceId: string, seen: number):
   sql.exec('UPDATE roster SET online = 0, seen = ? WHERE device_id = ?', seen, deviceId);
 }
 
+export function dropJoinedDevice(sql: RoomSql, deviceId: string): void {
+  sql.exec('DELETE FROM joined WHERE device_id = ?', deviceId);
+}
+
+export function dropRosterDevice(sql: RoomSql, deviceId: string): void {
+  try {
+    sql.exec('DELETE FROM roster WHERE device_id = ?', deviceId);
+  } catch {
+    // No roster yet.
+  }
+}
+
+const CREATE_KICKED = `CREATE TABLE IF NOT EXISTS kicked (
+  device_id TEXT PRIMARY KEY,
+  at INTEGER NOT NULL
+)`;
+
+export function ensureKickedTable(sql: RoomSql): void {
+  sql.exec(CREATE_KICKED);
+}
+
+/** This device cannot use the current invitation. A new code clears the row. */
+export function blockKickedDevice(sql: RoomSql, deviceId: string, now: number): void {
+  ensureKickedTable(sql);
+  sql.exec(
+    `INSERT INTO kicked (device_id, at) VALUES (?, ?)
+     ON CONFLICT(device_id) DO UPDATE SET at = excluded.at`,
+    deviceId,
+    now,
+  );
+}
+
+export function isKickedDevice(sql: RoomSql, deviceId: string): boolean {
+  try {
+    ensureKickedTable(sql);
+    return sql.exec('SELECT device_id FROM kicked WHERE device_id = ?', deviceId).toArray().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function clearKickedDevices(sql: RoomSql): void {
+  try {
+    ensureKickedTable(sql);
+    sql.exec('DELETE FROM kicked');
+  } catch {
+    // No table yet.
+  }
+}
+
 export function readRoster(sql: RoomSql): RosterRecord[] {
   try {
     return sql.exec('SELECT device_id, seat, kind, since, seen, online FROM roster ORDER BY since, device_id').toArray().flatMap((row) => {
