@@ -591,6 +591,7 @@ describe('connect overlay and scanned join', () => {
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
     await press('confirm-join-link');
+    expect(document.querySelectorAll('[data-testid="confirm-join-link"]')).toHaveLength(0);
     await waitFor(() => scoreA().includes('4'));
     expect(window.location.hash).toBe('');
     expect(window.location.href).not.toContain('K7M4-2QAB');
@@ -645,6 +646,7 @@ describe('connect overlay and scanned join', () => {
     mounted.push(view);
     expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(0);
     await press('confirm-join-link');
+    expect(document.querySelectorAll('[data-testid="confirm-join-link"]')).toHaveLength(0);
     await waitFor(() => (document.querySelector('[data-testid="join-error"]')?.textContent ?? '').includes('Too many tries from this network.'));
     expect(document.body.textContent).not.toContain('evil.example');
     expect(document.body.textContent).not.toContain('k7m42qab');
@@ -743,6 +745,7 @@ describe('connect overlay and scanned join', () => {
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
     await press('confirm-join-link');
+    expect(document.querySelectorAll('[data-testid="confirm-join-link"]')).toHaveLength(0);
     expect(localStorage.getItem(ARCHIVE_KEY) ?? '').toContain('game/increment');
     await waitFor(() => scoreA().includes('4'));
     expect(window.location.href).not.toContain('K7M4');

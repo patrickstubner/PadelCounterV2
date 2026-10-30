@@ -5,6 +5,7 @@ import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
 import { JoinMatchPage } from './components/JoinMatchPage';
 import { CourtHeader, type CourtAction } from './components/CourtHeader';
+import { HapticSwitch } from './components/HapticSwitch';
 import { PhoneList } from './components/PhoneList';
 import { HistoryPage } from './components/HistoryPage';
 import { PrivacyPage } from './components/PrivacyPage';
@@ -14,6 +15,7 @@ import { Victory } from './components/Victory';
 import { listMatches } from './domain/archive';
 import { deviceId } from './domain/device';
 import { fanfareEnabled, playFanfare, setFanfareEnabled, shouldPlayFanfare, stopFanfare } from './domain/fanfare';
+import { bindCourtTaps, hapticEnabled, needsIosHapticSwitch, pulseHaptic, setHapticEnabled } from './domain/haptic';
 import { appendEvent, describeEvent, replay } from './domain/log';
 import { commitNewMatch, newMatchCopy } from './domain/newMatch';
 import {
@@ -79,6 +81,13 @@ export function App() {
   const [fanfareOn, setFanfareOn] = useState(() => {
     try {
       return typeof localStorage === 'undefined' ? true : fanfareEnabled(localStorage);
+    } catch {
+      return true;
+    }
+  });
+  const [hapticOn, setHapticOn] = useState(() => {
+    try {
+      return typeof localStorage === 'undefined' ? true : hapticEnabled(localStorage);
     } catch {
       return true;
     }
@@ -380,6 +389,20 @@ export function App() {
         }
       },
     },
+    {
+      id: 'haptic',
+      label: hapticOn ? 'Haptic feedback: On' : 'Haptic feedback: Off',
+      testId: 'haptic-toggle',
+      onSelect: () => {
+        const next = !hapticOn;
+        setHapticOn(next);
+        try {
+          setHapticEnabled(localStorage, next);
+        } catch {
+          // Storage may be blocked. This visit still uses the choice.
+        }
+      },
+    },
     { id: 'privacy', label: 'Privacy', testId: 'privacy-open', onSelect: openPrivacy },
     ...(install.kind === 'prompt'
       ? [{
@@ -422,6 +445,8 @@ export function App() {
     }
   };
 
+  const taps = bindCourtTaps(state.activeSet, match, () => pulseHaptic(hapticOn));
+
   return (
     <div className={room.courtTone === 'local' ? 'app' : `app is-${room.courtTone}`}>
       <CourtHeader
@@ -446,11 +471,11 @@ export function App() {
         <TeamPanel
           team="a"
           state={state}
-          onIncrement={match.increment}
-          onDecrement={match.decrement}
+          onIncrement={taps.onIncrement}
+          onDecrement={taps.onDecrement}
           onRename={match.rename}
-          onSelectSet={match.selectSet}
-          onServe={match.chooseServe}
+          onSelectSet={taps.onSelectSet}
+          onServe={taps.onServe}
         />
         <div className="mid">
           {result.kind === 'leading' ? (
@@ -534,11 +559,11 @@ export function App() {
         <TeamPanel
           team="b"
           state={state}
-          onIncrement={match.increment}
-          onDecrement={match.decrement}
+          onIncrement={taps.onIncrement}
+          onDecrement={taps.onDecrement}
           onRename={match.rename}
-          onSelectSet={match.selectSet}
-          onServe={match.chooseServe}
+          onSelectSet={taps.onSelectSet}
+          onServe={taps.onServe}
         />
       </main>
       <footer className="foot">
@@ -664,7 +689,6 @@ export function App() {
           onConfirm={() => {
             const code = pendingCode;
             setPendingCode(null);
-            match.archiveCurrent();
             void room.joinByCode(code);
           }}
         />
@@ -683,6 +707,7 @@ export function App() {
           }}
         />
       ) : null}
+      {needsIosHapticSwitch() ? <HapticSwitch /> : null}
     </div>
   );
 }

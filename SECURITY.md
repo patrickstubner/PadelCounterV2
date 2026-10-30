@@ -38,7 +38,7 @@ At most 4 admitted player sockets are allowed, including the creator. The Durabl
 - Create, invite, carry, `POST /join`, and `GET /ws/*` hit a Workers Rate Limiting binding before anything else. The binding is `REQUEST_LIMIT` (`[[ratelimits]]` in `wrangler.toml`): 30 requests per 60 seconds per HMAC of `CF-Connecting-IP`. The HMAC uses `QUOTA_HMAC_KEY` and a fixed scope, so the binding’s own window can accumulate. The raw address is not the key. Over the limit the worker returns `429 slow_down` and does not write D1. The count is per Cloudflare location and approximate. Staging and dev use different namespace ids (`1002` and `1003`) from production (`1001`). After that, the same routes share a limit of 20 per minute per address inside one isolate. The check runs before any Durable Object is named. Each admitted socket is limited to 10 messages per second, and a ping uses that same budget. A websocket is forwarded only when D1 already has the match id, so an unknown id does not create SQLite storage. Tables are created in the create handler, not when the object wakes. Create writes that id to D1 before it writes the Durable Object. If the object write fails, the worker deletes the D1 row and calls `storage.deleteAll()` on the object. `/discard` is not a public route.
 - Un-helloed sockets are closed after 5 seconds. One room accepts at most 16 of them, and one client address accepts at most 8. Admitted sockets count toward neither cap. Eight is enough for four phones on one court Wi-Fi to each hold a handshake and one reconnect. A seventeenth silent socket is refused even when it comes from a new address.
 - Body size is capped (about 96 KB for a match log, 8 KB for a socket message). SQL uses bound parameters. Parsed objects are copied onto a null-prototype object before fields are read. Team names are length-limited and rendered as React text.
-- Storage keys use the prefix `pcv2:` (`pcv2:log`, `pcv2:matches`, `pcv2:celebrated`, `pcv2:join`, `pcv2:device`, `pcv2:fanfare`). The app does not read or write v1 keys (`padel-counter.v1`, `padel-counter.matches`, `padel-counter.celebrated`). The service worker cache id is `padel-counter-v2-2`. `cleanupOutdatedCaches`, `skipWaiting`, and `clientsClaim` are on, so a phone that still has `padel-counter-v2` drops that cache and loads this client. The pages base is `/PadelCounterV2/`. The installed name is Padel Counter V2.
+- Storage keys use the prefix `pcv2:` (`pcv2:log`, `pcv2:matches`, `pcv2:celebrated`, `pcv2:join`, `pcv2:device`, `pcv2:fanfare`, `pcv2:haptic`). The app does not read or write v1 keys (`padel-counter.v1`, `padel-counter.matches`, `padel-counter.celebrated`). The service worker cache id is `padel-counter-v2-2`. `cleanupOutdatedCaches`, `skipWaiting`, and `clientsClaim` are on, so a phone that still has `padel-counter-v2` drops that cache and loads this client. The pages base is `/PadelCounterV2/`. The installed name is Padel Counter V2.
 - A win plays `06_crowd-in-hardrock.mp3` from this origin. The service worker precaches that file. It is not loaded from a third-party host. `media-src` stays `'self'`. The menu toggle defaults to on and is stored at `pcv2:fanfare`. An early end does not play it. If the browser refuses playback, the app stays silent. The CC0 sources are in `CREDITS.md`.
 - While a match is running, the court asks the Screen Wake Lock API to keep the display on. The request is repeated when the page becomes visible again, and on the next pointer gesture if the lock is missing. iOS Safari needs that gesture. The sentinel's `release` event clears the held lock. Ending the match, or hiding the page, releases it. When the API is missing or refuses (older iOS, and the home-screen app before 18.4), a same-origin silent MP4 (`stay-awake.mp4`) loops instead. Playback starts from a pointer press, a pointer release, or a click, the element stays in the layout at one pixel (hiding it by taking it out of the layout stops iOS), and it is paused when the match ends or the page is hidden. `media-src` is `'self'` for that file only. The clip was encoded for this repository. It is not loaded from a CDN, and the file contains no URL. The element is muted. The file includes a silent audio track because older iOS only keeps the backlight on for a video that has audio.
 - `POST /matches` allows 10 creates per UTC day for one device id, and 100 for one network address, counted in D1 (`create_quota`). The stored key is an HMAC of the worker secret `QUOTA_HMAC_KEY` with the UTC day, not a plain hash of the address. The 11th create on that device is `429 device_daily_limit`. The 101st create from that network is `429 network_daily_limit`. A failed create releases both counts. The two increments run in one D1 batch and roll back together. A unique match-id collision is retried up to three times. The response is not 201 when every attempt fails.
@@ -430,6 +430,37 @@ Follow-up on pull request 24 before it is merged. The checks below are in the tr
 - P24-07. A host who already has the match is told “You are already the host. This link was not used.”
 - P24-08. One connected phone is “1 phone connected”. Any other count stays plural.
 - P24-10. The fragment is not a Referer, a query, or an app store. It can remain in a chat, a share target, and the browser history of the open. The code lasts two hours, or until New code.
+
+## Review 29, 2026-10-30
+
+Version 2.2.8. Pull request 24 is on `main`. This review is the short tap on plus, minus, the serve ball, and a set change. No new dependency, no new host, and no change to the content security policy.
+
+Threats considered:
+
+- A duration or a pattern taken from the URL, the match, or another phone makes the device vibrate for a long time.
+- The hidden switch takes focus from the score control, scrolls the court, or shifts the layout.
+- The switch is announced by assistive technology, or it can be reached with the keyboard.
+- The on/off choice is stored outside `pcv2:` or next to the join token.
+- A phone with no Vibration API and no switch throws, and the point is not counted.
+- The tick is loaded from a third-party script.
+
+Decisions:
+
+- One pulse of 15 ms, and only after a local tap on plus, minus, a serve ball, or a set that is not already selected. The duration is the constant `HAPTIC_MS` in `apps/web/src/domain/haptic.ts`. It is not read from storage, the network, or the URL. The score is applied before the tick. A tick that throws does not undo the point.
+- The menu stores `on` or `off` at `pcv2:haptic`. A missing value means on. The join token stays in `sessionStorage` under `pcv2:join` and is not this key. Turning the tick off on one phone does not change the others.
+- When `navigator.vibrate` is a function, that is the only call. The switch is not mounted.
+- When it is not a function and `switch` is on `HTMLInputElement.prototype`, the app clicks the label of a checkbox that has the `switch` attribute. That is the iOS 18 tick. The checkbox is not in a form and has no name. The input is a sibling of the label, so the click is the label click.
+- The host is `position: fixed`, 1×1 px, opacity 0, and `pointer-events: none`. It is not `display: none`, because that suppresses the iOS tick, and it is not in the score grid. The host, the input, and the label are `aria-hidden`. The input and the label use `tabIndex={-1}`. After the click, focus returns to the control that had it, with `preventScroll`, and the scroll position is put back if the browser moved it.
+- Both paths are in try/catch. An older phone with neither API scores as before.
+- Nothing is sent to the worker. CSP is unchanged.
+
+## Review 30, 2026-10-30
+
+Version 2.2.8, after pull request 24 is on `main`. This note is the leftover from that review. No new package is shipped, and the content security policy is unchanged.
+
+- P24r-01. The `archive-current` action is removed. It copied the open match into History and left the same match on the court. `replace` already copies the previous log when a join switches to another match id. Confirming a link still keeps a started match in History. A join that never switches matches does not write a second copy first.
+- P24r-02. Confirming Join removes the dialog before the request returns. `joinByCode` normalizes the code and does not call the network for a string outside the short-code alphabet, including `ungueltig`. A second play of the win clip pauses the first element.
+- P24r-03. The layout test is part of `pnpm test`. CI installs Chrome with `playwright install --with-deps chrome` and then runs `apps/web/e2e/connect-layout.spec.ts`. That browser is a CI tool. The court bundle does not include it, and the test talks only to the local dev server.
 
 ## Out of scope
 
