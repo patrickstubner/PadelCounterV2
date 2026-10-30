@@ -511,6 +511,29 @@ iPhone stays on the click. The tick is a label click on a checkbox with the `swi
 - P25-02. CI no longer runs `playwright install --with-deps chrome`. That step installed an unpinned Chrome package as root. The layout test uses the Chrome already on the runner. A machine without Chrome can still install the pinned Playwright browser locally.
 - P25-06. `initialSession` catches a throwing `localStorage` and starts from an empty court. The save effect catches the same failure and shows the existing “Saving on this device failed.” note. The join token is not written there.
 
+## Review 32, 2026-10-30
+
+Version 2.2.10. This note is P26-09. No new dependency, no new host, and no change to the content security policy.
+
+A match created from an earlier one posts the whole log, ending in `match/new`, and may send `previousHostToken`. `assignMatchId` rewrites an id only when replay currently shows that same id. The new event's id becomes the Durable Object name. `base.matchId` stays the previous match. End match called `revokeSharedAccess` and `touchMatchActivity` with `base.matchId`, so the previous match was revoked again and the new match's code still redeemed (`201`). The previous match's code was already `401` from its own End match.
+
+The room now uses `ctx.id.name`, the name passed to `idFromName`. That is the id written on the credential and the join code.
+
+Places that read `base.matchId`, and what this version does with each:
+
+| Place | Decision |
+| --- | --- |
+| `match-room.ts` End match, `revokeSharedAccess` | Fixed. Revokes the object name. |
+| `match-room.ts` `touchMatchActivity` | Fixed. The chained match's `last_activity` moves. The previous row does not. |
+| `server.ts` create, invite, New code, carry, join | Already the object name: the route id, or `credential.matchId` stored at create. Unchanged. |
+| `assignMatchId` | Unchanged. Rewriting `base.matchId` on a chain would drop the earlier match from the log. Replay of the stored log is the object name. |
+| `useLive.ts` snapshot session id | Fixed. The phone was storing `base.matchId`, so a later New code was sent to the previous match and rejected. The session id is now the replayed id, which is the object name. |
+| `apps/web` `log.ts` `matchSegments` | Unchanged. `base.matchId` is the first segment. Later segments follow `match/new`. That is history, not the room key. |
+| Leave live match | This phone drops its token. There is no server revoke, so the shared code stays valid for the other phones. `POST /matches/:id/leave` is not a route. |
+| Kick | There is no kick route. `POST /matches/:id/kick` is `404`. New code is what disconnects phones that joined with the old code. |
+
+A workerd test builds that chain with `previousHostToken`, carries a guest, and then `POST /join` with the code. After End match the code is `401`. After New code the previous code is `401`. After the socket closes, and after the missing leave and kick routes, the code is still `201`.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.

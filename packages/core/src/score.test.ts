@@ -122,6 +122,29 @@ describe('server match id', () => {
     expect(played.sets[0]).toEqual(base.sets[0]);
     expect(JSON.stringify(assigned)).not.toContain(clientId);
   });
+
+  it('rewrites only the id replay currently shows, so a chain keeps the earlier id on base', () => {
+    const earlier = '00000000-0000-4000-8000-0000000000aa';
+    const clientNext = '00000000-0000-4000-8000-0000000000cc';
+    const serverId = '00000000-0000-4000-8000-0000000000bb';
+    const log = {
+      schemaVersion: 2 as const,
+      base: createMatch(T0, earlier),
+      events: [
+        { type: 'game/increment' as const, team: 'a' as const, at: T0 + 1 },
+        { type: 'match/end' as const, at: T0 + 2 },
+        { type: 'match/new' as const, matchId: clientNext, at: T0 + 3 },
+      ],
+    };
+    const assigned = assignMatchId(log, serverId);
+    expect(assigned).not.toBeNull();
+    if (!assigned) return;
+    expect(assigned.base.matchId).toBe(earlier);
+    const created = assigned.events[assigned.events.length - 1];
+    expect(created).toMatchObject({ type: 'match/new', matchId: serverId });
+    expect(replayScore(assigned.base, assigned.events).matchId).toBe(serverId);
+    expect(JSON.stringify(assigned)).not.toContain(clientNext);
+  });
 });
 
 describe('socket close policy', () => {

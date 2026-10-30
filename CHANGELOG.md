@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.10
+
+- Ending a match invalidates its join code, including a match that was started by taking the other phones along. Asking for a new code does the same. Leaving the match on this phone does not.
+
 ## 2.2.9
 
 - Take phones follows every phone that is still in the match. The other phones are not asked. They show “New match” and join on their own. A phone that is offline follows when it reconnects, while its code is still valid. Only the phone that started the match can do this.

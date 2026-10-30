@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, UNUSED_MINT_MS, actorId, canonicalCausalId, clampClockOffset, connectionCloses, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isLegacyDeviceId, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
+import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, UNUSED_MINT_MS, actorId, canonicalCausalId, clampClockOffset, connectionCloses, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isLegacyDeviceId, isRole, isRoomCode, isUuid, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
@@ -459,7 +459,9 @@ export class MatchRoom extends DurableObject<RoomEnv> {
               }
             }
           }
-          await d1MatchIndex(this.env.DB).revokeSharedAccess(room.base.matchId, endedAt, keep);
+          const matchId = this.durableMatchId();
+          if (!matchId) throw new Error('room');
+          await d1MatchIndex(this.env.DB).revokeSharedAccess(matchId, endedAt, keep);
         }
       } catch {
         this.reject(ws, 'unavailable', record.eventId);
@@ -505,10 +507,15 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       const last = readActivityTouch(sql);
       if (last !== null && shouldTouchActivity(last, at)) {
         markActivityTouch(sql, at);
-        try {
-          await touchMatchActivity(this.env.DB, room.base.matchId, at);
-        } catch {
+        const matchId = this.durableMatchId();
+        if (!matchId) {
           markActivityTouch(sql, last);
+        } else {
+          try {
+            await touchMatchActivity(this.env.DB, matchId, at);
+          } catch {
+            markActivityTouch(sql, last);
+          }
         }
       }
     }
@@ -801,6 +808,17 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const host = room.invites.find((row) => row.host && safeEqualHex(row.tokenHash, hostHash));
     if (!host || host.revokedAt !== null || now >= host.expiresAt) return null;
     return room;
+  }
+
+  /**
+   * The name passed to idFromName. Credentials and join codes are stored under that id.
+   * base.matchId stays the first match in a chain, because assignMatchId rewrites an id
+   * only when replay currently shows that same id.
+   */
+  private durableMatchId(): string | null {
+    const name = this.ctx.id.name;
+    if (!isUuid(name)) return null;
+    return name.toLowerCase();
   }
 
   /** Any unexpired player credential for this room. The check is the row in this object, not the caller's claim. */
