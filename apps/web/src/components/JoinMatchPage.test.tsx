@@ -320,7 +320,7 @@ describe('join match in the app', () => {
     act(() => {
       document.querySelector<HTMLButtonElement>('[data-testid="join-by-code"]')?.click();
     });
-    expect(codes).toEqual(['K7M4-2QAB']);
+    expect(codes).toEqual(['k7m42qab']);
   });
 
   it('stops the tracks when the scanner unmounts', async () => {

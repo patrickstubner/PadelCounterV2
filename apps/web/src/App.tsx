@@ -13,7 +13,7 @@ import { UpdateReady } from './components/UpdateReady';
 import { Victory } from './components/Victory';
 import { listMatches } from './domain/archive';
 import { deviceId } from './domain/device';
-import { fanfareEnabled, playFanfare, setFanfareEnabled, shouldPlayFanfare } from './domain/fanfare';
+import { fanfareEnabled, playFanfare, setFanfareEnabled, shouldPlayFanfare, stopFanfare } from './domain/fanfare';
 import { appendEvent, describeEvent, replay } from './domain/log';
 import { commitNewMatch, newMatchCopy } from './domain/newMatch';
 import {
@@ -28,7 +28,7 @@ import { colonSetScore, currentHistory } from './domain/history';
 import { RULES_SUMMARY, celebrationWinner, matchResult, serveCourtLabel, servePickPrompt, tiebreakHint } from './domain/rules';
 import { useInstallOffer } from './hooks/useInstallOffer';
 import { useMatch } from './hooks/useMatch';
-import { forgetJoinToken, heldJoin, readJoinToken, releaseHeldJoin, type JoinAttempt } from './live/protocol';
+import { forgetJoinToken, heldJoin, isJoinCodeFragment, readJoinToken, releaseHeldJoin, type JoinAttempt } from './live/protocol';
 import { useLive } from './live/useLive';
 import { INSTALL_LABEL, IOS_INSTALL_HINT } from './installOffer';
 import { watchControllerChange } from './registerServiceWorker';
@@ -93,13 +93,17 @@ export function App() {
   const [connectMode, setConnectMode] = useState<'choose' | 'show'>('choose');
   const [phonesOpen, setPhonesOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
+  const [pendingCode, setPendingCode] = useState<string | null>(null);
+  const [hostLinkNote, setHostLinkNote] = useState(false);
   const joinStarted = useRef(false);
   const applyJoin = useCallback((attempt: JoinAttempt) => {
     if (attempt.ok && 'code' in attempt) {
-      void room.joinByCode(attempt.code);
+      setHostLinkNote(false);
+      setPendingCode(attempt.code);
       return;
     }
     if (attempt.ok) {
+      if (attempt.keptHost) setHostLinkNote(true);
       room.connect(attempt.token);
       return;
     }
@@ -129,11 +133,13 @@ export function App() {
     if (typeof window === 'undefined') return;
     const onHash = () => {
       const hash = window.location.hash;
-      const joinHash = /^#\/join\b/i.test(hash) || hash.startsWith('#join=');
+      const codeLink = isJoinCodeFragment(hash);
+      const joinHash = /^#\/join\b/i.test(hash) || codeLink;
       if (room.host && room.status === 'live') {
         if (joinHash) {
           window.history.replaceState({ padelArchive: 'court' }, '', `${window.location.pathname}${window.location.search}`);
         }
+        if (codeLink) setHostLinkNote(true);
         return;
       }
       applyJoin(readJoinToken(window.location, window.history, readSession()));
@@ -430,7 +436,10 @@ export function App() {
           name={state.teams[celebrated].name}
           team={celebrated}
           reducedMotion={reducedMotion}
-          onClose={() => setDismissed(victoryKey)}
+          onClose={() => {
+            stopFanfare();
+            setDismissed(victoryKey);
+          }}
         />
       ) : null}
       <main className="board">
@@ -480,6 +489,11 @@ export function App() {
           ) : null}
           {room.joining && room.status === 'connecting' ? (
             <p className="join-status" data-testid="join-status">Connecting to the match…</p>
+          ) : null}
+          {hostLinkNote ? (
+            <p className="live-error" role="status" data-testid="host-link-ignored">
+              You are already the host. This link was not used.
+            </p>
           ) : null}
           {room.joinError ? (
             <div className="join-error" role="alert" data-testid="join-error">
@@ -636,6 +650,23 @@ export function App() {
             room.connect(token);
           }}
           onClose={closeJoin}
+        />
+      ) : null}
+      {pendingCode ? (
+        <ConfirmDialog
+          titleId="join-link-title"
+          title="Join this match?"
+          body="The score on this phone will be replaced. A match you already started is kept in History."
+          confirmLabel="Join"
+          confirmTestId="confirm-join-link"
+          cancelTestId="cancel-join-link"
+          onCancel={() => setPendingCode(null)}
+          onConfirm={() => {
+            const code = pendingCode;
+            setPendingCode(null);
+            match.archiveCurrent();
+            void room.joinByCode(code);
+          }}
         />
       ) : null}
       {confirming === 'end' ? (

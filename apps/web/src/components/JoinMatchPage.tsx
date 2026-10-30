@@ -333,14 +333,13 @@ export function JoinMatchPage({
   }, [camera, pageHref, scanFrame]);
 
   const submitCode = () => {
-    const code = normalizeJoinCode(draft);
-    if (!code) {
+    if (!normalizeJoinCode(draft)) {
       setLocalError(ROOM_MESSAGES.join_code);
       return;
     }
     setLocalError(null);
     setCamera(false);
-    onCode(code);
+    onCode(draft);
   };
 
   const shown = localError ?? error;

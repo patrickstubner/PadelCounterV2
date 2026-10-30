@@ -37,13 +37,17 @@ interface CourtHeaderProps {
 
 const WIDE_BAR = '(orientation: landscape) and (min-width: 900px)';
 
+export function phonesConnectedLabel(count: number): string {
+  return count === 1 ? '1 phone connected' : `${count} phones connected`;
+}
+
 function PhoneCount({ count, onPhones }: { readonly count: number; readonly onPhones: () => void }) {
   return (
     <button
       type="button"
       className="phone-count"
       data-testid="phone-count"
-      aria-label={`${count} phones connected`}
+      aria-label={phonesConnectedLabel(count)}
       onClick={onPhones}
     >
       <PhoneIcon />

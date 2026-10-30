@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { FANFARE_FILE, fanfareEnabled, fanfareSrc, playFanfare, setFanfareEnabled, shouldPlayFanfare } from './fanfare';
+import { FANFARE_FILE, FANFARE_VOLUME, fanfareEnabled, fanfareSrc, playFanfare, setFanfareEnabled, shouldPlayFanfare, stopFanfare } from './fanfare';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -36,20 +36,28 @@ describe('victory fanfare', () => {
     expect(src.endsWith(`/${FANFARE_FILE}`)).toBe(true);
     expect(src.includes('://')).toBe(false);
     const played: string[] = [];
+    const paused: string[] = [];
     const previous = globalThis.Audio;
     globalThis.Audio = class {
       src: string;
       preload = '';
+      volume = 1;
       constructor(value?: string) {
         this.src = value ?? '';
       }
       play(): Promise<void> {
-        played.push(this.src);
+        played.push(`${this.volume}|${this.src}`);
         return Promise.reject(new Error('denied'));
       }
+      pause(): void {
+        paused.push(this.src);
+      }
     } as unknown as typeof Audio;
+    expect(FANFARE_VOLUME).toBe(0.5);
     expect(() => playFanfare()).not.toThrow();
-    expect(played).toEqual([src]);
+    expect(played).toEqual([`0.5|${src}`]);
+    stopFanfare();
+    expect(paused).toEqual([src]);
     globalThis.Audio = class {
       constructor() {
         throw new Error('missing');

@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
+import { ARCHIVE_KEY } from './domain/archive';
 import { JOIN_KEY } from './live/protocol';
 
 const TOKEN = 'abcdefghijklmnopqrstuv';
@@ -20,7 +21,7 @@ interface FetchCall {
 
 const fetchCalls: FetchCall[] = [];
 const sockets: FakeSocket[] = [];
-let joinMode: 'ok' | 'expired' | 'bad' | 'limited' = 'ok';
+let joinMode: 'ok' | 'expired' | 'bad' | 'limited' | 'shaped' = 'ok';
 let createMode: 'ok' | 'down' = 'ok';
 let snapshot: unknown = null;
 let snapshotHost = false;
@@ -91,6 +92,7 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     if (joinMode === 'expired') return Response.json({ error: 'expired', message: '<b>expired</b>' }, { status: 401 });
     if (joinMode === 'bad') return Response.json({ error: 'bad_token', message: '<img src=x onerror=alert(1)>' }, { status: 401 });
     if (joinMode === 'limited') return Response.json({ error: 'code_limited', message: '<a href="https://evil.example">go</a>' }, { status: 429 });
+    if (joinMode === 'shaped') return Response.json({ token: '<b>nope</b>', ticket: 1, message: '<img src=x onerror=alert(1)>' }, { status: 201 });
     const parsed = init?.body ? JSON.parse(String(init.body)) as { code?: unknown } : {};
     if (typeof parsed.code === 'string') {
       return Response.json({ token: INVITE, ticket: TICKET, expiresAt: Date.now() + 3_600_000 }, { status: 201 });
@@ -577,6 +579,18 @@ describe('connect overlay and scanned join', () => {
     window.history.replaceState(null, '', '/PadelCounterV2/#join=K7M4-2QAB');
     const view = await mount();
     mounted.push(view);
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(0);
+    expect(document.querySelector('[data-testid="confirm-join-link"]')).not.toBeNull();
+    expect(document.body.textContent).toContain('The score on this phone will be replaced.');
+    await press('cancel-join-link');
+    expect(document.querySelector('[data-testid="confirm-join-link"]')).toBeNull();
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(0);
+    expect(scoreA()).toContain('0');
+    await act(async () => {
+      window.location.hash = '#join=k7m42qab';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await press('confirm-join-link');
     await waitFor(() => scoreA().includes('4'));
     expect(window.location.hash).toBe('');
     expect(window.location.href).not.toContain('K7M4-2QAB');
@@ -629,6 +643,8 @@ describe('connect overlay and scanned join', () => {
     window.history.replaceState(null, '', '/PadelCounterV2/#join=k7m42qab');
     const view = await mount();
     mounted.push(view);
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(0);
+    await press('confirm-join-link');
     await waitFor(() => (document.querySelector('[data-testid="join-error"]')?.textContent ?? '').includes('Too many tries from this network.'));
     expect(document.body.textContent).not.toContain('evil.example');
     expect(document.body.textContent).not.toContain('k7m42qab');
@@ -641,12 +657,12 @@ describe('connect overlay and scanned join', () => {
     (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
     globalThis.fetch = fakeFetch as typeof fetch;
     globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
-    const shared: string[] = [];
+    const shared: Array<{ text?: string; url?: string; title?: string }> = [];
     const copied: string[] = [];
     Object.defineProperty(navigator, 'share', {
       configurable: true,
-      value: (data: { text?: string; url?: string }) => {
-        shared.push(`${data.text ?? ''}|${data.url ?? ''}`);
+      value: (data: { text?: string; url?: string; title?: string }) => {
+        shared.push(data);
         return Promise.resolve();
       },
     });
@@ -657,13 +673,14 @@ describe('connect overlay and scanned join', () => {
     await waitFor(() => document.querySelector('[data-testid="share-code"]') !== null);
     await press('share-code');
     await waitFor(() => shared.length === 1);
-    const link = shared[0] ?? '';
-    const [text, url] = link.split('|');
-    expect(text).toBe(url);
-    expect(text?.endsWith('#join=K7M4-2QAB')).toBe(true);
-    expect(text?.split('#')[0]).not.toContain('K7M4');
-    expect(new URL(text ?? 'http://invalid').search).toBe('');
-    expect(new URL(text ?? 'http://invalid').origin).toBe(window.location.origin);
+    const sent = shared[0];
+    const text = sent?.text ?? '';
+    expect(sent?.url).toBeUndefined();
+    expect(sent?.title).toBeUndefined();
+    expect(text.endsWith('#join=K7M4-2QAB')).toBe(true);
+    expect(text.split('#')[0]).not.toContain('K7M4');
+    expect(new URL(text).search).toBe('');
+    expect(new URL(text).origin).toBe(window.location.origin);
 
     Reflect.deleteProperty(navigator, 'share');
     Object.defineProperty(navigator, 'clipboard', {
@@ -699,5 +716,106 @@ describe('connect overlay and scanned join', () => {
     await press('scan-qr');
     await press('join-match-close');
     expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
+  });
+
+  it('asks before a link replaces a started match and keeps that match in History', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    const view = await mount();
+    mounted.push(view);
+    await press('increment-a');
+    expect(scoreA()).toContain('1');
+    await act(async () => {
+      window.location.hash = '#join=K7M4-2QAB';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(document.querySelector('[data-testid="confirm-join-link"]')).not.toBeNull();
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(0);
+    expect(scoreA()).toContain('1');
+    expect(localStorage.getItem(ARCHIVE_KEY) ?? '').not.toContain('game/increment');
+    await press('cancel-join-link');
+    expect(scoreA()).toContain('1');
+    expect(window.location.hash).toBe('');
+    await act(async () => {
+      window.location.hash = '#JOIN=K7M4-2QAB';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await press('confirm-join-link');
+    expect(localStorage.getItem(ARCHIVE_KEY) ?? '').toContain('game/increment');
+    await waitFor(() => scoreA().includes('4'));
+    expect(window.location.href).not.toContain('K7M4');
+    expect(localStorage.getItem(ARCHIVE_KEY) ?? '').toContain('game/increment');
+  });
+
+  it('removes a code fragment from a live host and says the link was not used', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    snapshotHost = true;
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('show-qr');
+    await waitFor(() => document.querySelector('.app.is-online') !== null);
+    const joinsBefore = fetchCalls.filter((call) => call.url.endsWith('/join')).length;
+    await act(async () => {
+      window.location.hash = '#JOIN=K7M4-2QAB';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(window.location.hash).toBe('');
+    expect(window.location.href).not.toContain('K7M4');
+    expect(document.querySelector('[data-testid="host-link-ignored"]')?.textContent).toContain('You are already the host');
+    expect(document.querySelector('[data-testid="confirm-join-link"]')).toBeNull();
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(joinsBefore);
+  });
+
+  it('keeps Join match open when the code is refused or the response is not a token', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    joinMode = 'bad';
+    const refused = await mount();
+    mounted.push(refused);
+    await press('connect-open');
+    await press('scan-qr');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => (document.querySelector('[data-testid="join-match-error"]')?.textContent ?? '').includes('This code is not valid.'));
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).not.toBeNull();
+    expect(sockets).toHaveLength(0);
+    const body = JSON.parse(String(fetchCalls.find((call) => call.url.endsWith('/join'))?.init?.body)) as { code?: string };
+    expect(body.code).toBe('K7M4-2QAB');
+
+    await unmount(refused.root, refused.container);
+    mounted.splice(0);
+    fetchCalls.splice(0);
+    sockets.splice(0);
+    joinMode = 'shaped';
+    const shaped = await mount();
+    mounted.push(shaped);
+    await press('connect-open');
+    await press('scan-qr');
+    const again = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!again) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(again, 'K7M4-2QAB');
+      again.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => (document.querySelector('[data-testid="join-match-error"]')?.textContent ?? '').includes('That code did not work.'));
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).not.toBeNull();
+    expect(sockets).toHaveLength(0);
+    expect(document.body.textContent).not.toContain('onerror');
+    expect(document.body.textContent).not.toContain('<b>');
   });
 });

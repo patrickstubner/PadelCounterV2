@@ -69,6 +69,9 @@ describe('connect dialog layout', () => {
     expect(landscape).toContain('transform: none');
     expect(landscape).toContain('writing-mode: horizontal-tb');
     expect(landscape).toContain('.join-scan-bottom');
+    expect(landscape).toContain('1.25rem');
+    expect(css).toContain('position: sticky');
+    expect(css.slice(css.indexOf('.connect-overlay:has(.connect-bright)'))).toContain('padding: 1.25rem');
     expect(landscape).toContain('justify-content: flex-end');
     expect(landscape).toContain('align-items: center');
     expect(landscape).toContain('.join-scanning .join-scan-bottom .text-btn');

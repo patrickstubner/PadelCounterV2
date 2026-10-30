@@ -176,7 +176,13 @@ export function tokenFromJoinQr(text: string, pageHref: string): string | null {
  * Short-code alphabet, four symbols, an optional hyphen, and four more.
  * I, L, O, 0, and 1 are excluded. The fragment is not decoded before this check.
  */
-const JOIN_CODE_FRAGMENT = /^join=([A-HJ-KMNP-Za-hj-kmnp-z2-9]{4}-?[A-HJ-KMNP-Za-hj-kmnp-z2-9]{4})$/;
+const JOIN_CODE_FRAGMENT = /^join=([A-HJ-KMNP-Za-hj-kmnp-z2-9]{4}-?[A-HJ-KMNP-Za-hj-kmnp-z2-9]{4})$/i;
+
+/** `#join=` and `#JOIN=` are the same fragment. The check does not decode the text. */
+export function isJoinCodeFragment(hash: string): boolean {
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
+  return /^join=/i.test(raw);
+}
 
 /**
  * A shared short code is only the fragment `#join=CODE` on this app.
@@ -207,7 +213,7 @@ export async function sendMatchCode(
   code: string,
   pageHref: string,
   nav: {
-    share?: (data: { text: string; url?: string }) => Promise<void>;
+    share?: (data: { text: string }) => Promise<void>;
     clipboard?: { writeText: (value: string) => Promise<void> };
   },
 ): Promise<'shared' | 'copied' | 'visible'> {
@@ -217,7 +223,7 @@ export async function sendMatchCode(
   if (query.includes('join=') || query.includes(normalizeJoinCode(code) ?? '\u0000')) return 'visible';
   if (nav.share) {
     try {
-      await nav.share({ text, url: text });
+      await nav.share({ text });
       return 'shared';
     } catch (error) {
       const name = error instanceof Error ? error.name : '';
@@ -274,7 +280,7 @@ export interface JoinHistory {
 }
 
 export type JoinAttempt =
-  | { readonly ok: true; readonly token: string }
+  | { readonly ok: true; readonly token: string; readonly keptHost?: boolean }
   | { readonly ok: true; readonly code: string }
   | { readonly ok: false; readonly invalid: boolean };
 
@@ -326,14 +332,14 @@ function readJoinCodeFragment(
   storage: Storage | null,
 ): JoinAttempt | null {
   const raw = locationLike.hash.startsWith('#') ? locationLike.hash.slice(1) : locationLike.hash;
-  if (!raw.startsWith('join=')) return null;
+  if (!isJoinCodeFragment(raw)) return null;
   try {
     replaceCourt(locationLike, historyLike);
   } catch {
     // The fragment is still refused. Nothing from it is opened.
   }
   const hostToken = storage ? storedHostToken(storage, Date.now()) : null;
-  if (hostToken) return { ok: true, token: hostToken };
+  if (hostToken) return { ok: true, token: hostToken, keptHost: true };
   const parsed = parseJoinCodeHash(raw);
   if (!parsed) return { ok: false, invalid: true };
   return { ok: true, code: parsed.code };

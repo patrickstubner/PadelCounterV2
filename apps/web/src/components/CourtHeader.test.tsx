@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { App } from '../App';
-import { CourtHeader, type CourtAction } from './CourtHeader';
+import { CourtHeader, phonesConnectedLabel, type CourtAction } from './CourtHeader';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -75,6 +75,9 @@ describe('court header', () => {
       <CourtHeader setLabel="Set 1" onBrand={() => undefined} actions={actions} layout="menu" phoneCount={3} onPhones={() => undefined} />,
     );
     const button = menu.slice(menu.indexOf('data-testid="phone-count"'), menu.indexOf('data-testid="menu-toggle"'));
+    expect(phonesConnectedLabel(0)).toBe('0 phones connected');
+    expect(phonesConnectedLabel(1)).toBe('1 phone connected');
+    expect(phonesConnectedLabel(3)).toBe('3 phones connected');
     expect(button).toContain('aria-label="3 phones connected"');
     expect(button.indexOf('<svg')).toBeLessThan(button.indexOf('phone-count-num'));
     expect(button).toContain('>3<');
@@ -85,7 +88,7 @@ describe('court header', () => {
     const bar = renderToStaticMarkup(
       <CourtHeader setLabel="Set 1" onBrand={() => undefined} actions={actions} layout="bar" phoneCount={1} onPhones={() => undefined} />,
     );
-    expect(bar).toContain('aria-label="1 phones connected"');
+    expect(bar).toContain('aria-label="1 phone connected"');
     expect(bar).toContain('class="phone-icon"');
     expect(bar).toContain('>1<');
   });

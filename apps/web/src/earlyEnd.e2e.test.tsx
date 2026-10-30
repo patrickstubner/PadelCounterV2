@@ -6,17 +6,22 @@ import { App } from './App';
 import { FANFARE_FILE, FANFARE_KEY } from './domain/fanfare';
 
 const played: string[] = [];
+const paused: string[] = [];
 const OriginalAudio = globalThis.Audio;
 
 class Clip {
   src: string;
   preload = '';
+  volume = 1;
   constructor(src?: string) {
     this.src = src ?? '';
   }
   play(): Promise<void> {
-    played.push(this.src);
+    played.push(`${this.volume}|${this.src}`);
     return Promise.resolve();
+  }
+  pause(): void {
+    paused.push(this.src);
   }
 }
 
@@ -47,6 +52,7 @@ describe('early end is not a win', () => {
 
   beforeEach(() => {
     played.splice(0);
+    paused.splice(0);
     globalThis.Audio = Clip as unknown as typeof Audio;
   });
 
@@ -70,8 +76,12 @@ describe('early end is not a win', () => {
     expect(document.body.textContent).toContain('Team A wins');
     expect(document.querySelector('[data-testid="match-result"]')).toBeNull();
     expect(played).toHaveLength(1);
+    expect(played[0]?.startsWith('0.5|')).toBe(true);
     expect(played[0]?.endsWith(`/${FANFARE_FILE}`)).toBe(true);
     expect(played[0]?.includes('://')).toBe(false);
+    await press('victory');
+    expect(paused).toEqual([played[0]?.slice(played[0].indexOf('|') + 1)]);
+    expect(document.querySelector('[data-testid="victory"]')).toBeNull();
   });
 
   it('stays quiet when the victory sound is off', async () => {

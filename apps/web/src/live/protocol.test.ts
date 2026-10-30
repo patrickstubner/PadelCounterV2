@@ -19,13 +19,14 @@ describe('sending a short code', () => {
     expect(joinCodeLink(`${'java' + 'script:'}alert(1)`, CODE)).toBeNull();
     expect(matchCodeShareText(PAGE, '<script>alert(1)</script>')).toBe('');
     expect(matchCodeShareText(PAGE, 'K7M-42Q')).toBe('');
-    let shared = '';
+    let shared: { text: string } | null = null;
     expect(await sendMatchCode(CODE, PAGE, {
       share: async (data) => {
-        shared = `${data.text}|${data.url ?? ''}`;
+        shared = data;
       },
     })).toBe('shared');
-    expect(shared).toBe(`${text}|${text}`);
+    expect(shared).toEqual({ text });
+    expect(shared !== null && 'url' in shared).toBe(false);
     let copied = '';
     expect(await sendMatchCode(CODE, PAGE, {
       clipboard: { writeText: async (value) => {
@@ -282,6 +283,7 @@ describe('short code fragment', () => {
     const { calls, history } = historyOf();
     const location = { hash: `#join=${CODE}`, pathname: '/PadelCounterV2/', search: '?source=pwa' };
     expect(parseJoinCodeHash(`#join=${CODE}`)).toEqual({ code: CODE });
+    expect(parseJoinCodeHash(`#JOIN=${CODE}`)).toEqual({ code: CODE });
     expect(parseJoinCodeHash(`#join=${CODE.toLowerCase()}`)).toEqual({ code: CODE });
     expect(parseJoinCodeHash('#join=k7m42qab')).toEqual({ code: CODE });
     expect(readJoinToken(location, history, storage)).toEqual({ ok: true, code: CODE });
@@ -308,7 +310,6 @@ describe('short code fragment', () => {
       `#join=${CODE}%00`,
       '#join=%3Cscript%3Ealert(1)%3C/script%3E',
       `#join=${CODE}#/join?t=${TOKEN}`,
-      `#JOIN=${CODE}`,
       'join=https://evil.example/steal',
       `#/join?t=${TOKEN}&next=https://evil.example`,
     ];
@@ -336,11 +337,19 @@ describe('short code fragment', () => {
     const host = 'hhhhhhhhhhhhhhhhhhhhhh';
     storage.setItem(JOIN_KEY, JSON.stringify({ token: host, expiresAt: Date.now() + 60_000, host: true, matchId: ID }));
     const { calls, history } = historyOf();
-    const location = { hash: `#join=${CODE}`, pathname: '/PadelCounterV2/', search: '' };
-    expect(readJoinToken(location, history, storage)).toEqual({ ok: true, token: host });
+    const location = { hash: `#JOIN=${CODE}`, pathname: '/PadelCounterV2/', search: '' };
+    expect(readJoinToken(location, history, storage)).toEqual({ ok: true, token: host, keptHost: true });
     expect(calls[0]?.[2]).toBe('/PadelCounterV2/');
     expect(JSON.stringify(calls)).not.toContain(CODE);
     expect(JSON.parse(storage.getItem(JOIN_KEY) ?? '{}').token).toBe(host);
+  });
+
+  it('removes an uppercase fragment even when the code is not allowlisted', () => {
+    const { calls, history } = historyOf();
+    const location = { hash: '#JOIN=<not-a-code>', pathname: '/PadelCounterV2/', search: '' };
+    expect(readJoinToken(location, history, null)).toEqual({ ok: false, invalid: true });
+    expect(calls).toEqual([[{ padelArchive: 'court' }, '', '/PadelCounterV2/']]);
+    expect(JSON.stringify(calls)).not.toContain('not-a-code');
   });
 });
 
