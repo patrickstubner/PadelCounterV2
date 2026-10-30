@@ -807,7 +807,8 @@ export function useLive(
           return;
         }
         if (notice.kind === 'log') {
-          const matchId = notice.log.base.matchId.toLowerCase();
+          // base.matchId is the first match in a chain. The room is the id replay shows.
+          const matchId = replayScore(notice.log.base, notice.log.events).matchId.toLowerCase();
           matchRef.current = matchId;
           seenRef.current = new Set(notice.eventIds.map((id) => id.toLowerCase()));
           logIdsRef.current = [...notice.eventIds];
