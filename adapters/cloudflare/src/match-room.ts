@@ -485,7 +485,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
         this.reject(ws, 'unavailable', record.eventId);
         return;
       }
-    } else if (result.event.event.type === 'match/end') {
+    } else if (result.event.event.type === 'match/end' && this.roomIsEnded()) {
       try {
         await this.revokeSharedRoom(this.sql());
       } catch {
@@ -768,8 +768,16 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
   }
 
+  /** True after match/end until a later match/resume. A duplicate end must not revoke a match that is open again. */
+  private roomIsEnded(): boolean {
+    const room = readRoom(this.sql());
+    if (!room) return false;
+    return replayScore(room.base, room.events.map((item) => item.event)).ended;
+  }
+
   /**
-   * Shared invites and the join code for this room. Safe to repeat: a duplicate end still finishes D1.
+   * Shared invites and the join code for this room.
+   * A duplicate end calls this only while the match is still ended.
    */
   private async revokeSharedRoom(sql: RoomSql): Promise<void> {
     const matchId = this.durableMatchId();

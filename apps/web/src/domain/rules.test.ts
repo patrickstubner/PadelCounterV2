@@ -294,6 +294,44 @@ describe('serve rotation', () => {
       serveAsk: null,
     };
     expect(courtCue(plain)).toBeNull();
+    const sixFour = {
+      ...state,
+      sets: [
+        { a: 6, b: 4 },
+        { a: 0, b: 0 },
+        { a: 0, b: 0 },
+      ] as const,
+      serve: { team: 'a' as const, player: 1 as const },
+    };
+    const sixFive = { ...sixFour, sets: [{ a: 6, b: 5 }, { a: 0, b: 0 }, { a: 0, b: 0 }] as const };
+    const fiveSix = { ...sixFour, sets: [{ a: 5, b: 6 }, { a: 0, b: 0 }, { a: 0, b: 0 }] as const };
+    expect(courtCue(sixFour)).toBeNull();
+    expect(tiebreakHint(sixFour)).toBeNull();
+    expect(courtCue(sixFive)).toBeNull();
+    expect(courtCue(fiveSix)).toBeNull();
+    expect(courtCue({ ...sixFour, sets: [{ a: 7, b: 5 }, { a: 0, b: 0 }, { a: 0, b: 0 }] as const })).toBeNull();
+    const afterSixSeven = {
+      ...state,
+      activeSet: 1 as const,
+      sets: [
+        { a: 6, b: 7 },
+        { a: 0, b: 0 },
+        { a: 0, b: 0 },
+      ] as const,
+      serve: null,
+      serveAsk: 'b' as const,
+    };
+    expect(courtCue(afterSixSeven)?.kind).toBe('next-set');
+    expect(courtCue(afterSixSeven)?.text).toContain('Team B serves first');
+    expect(courtCue(afterSixSeven)?.text).toContain('did not start the tie-break');
+    expect(courtCue({
+      ...afterSixSeven,
+      sets: [
+        { a: 7, b: 5 },
+        { a: 0, b: 0 },
+        { a: 0, b: 0 },
+      ] as const,
+    })).toBeNull();
     expect(FIP_SERVE_SOURCE).toContain('https://padelfip.com/wp-content/uploads/2025/12/FIP_Rules-of-Padel.pdf');
     expect(FIP_SERVE_SOURCE).toContain('2026-10-30');
     expect(FIP_SERVE_SOURCE).toContain('1 January 2026');

@@ -48,9 +48,11 @@ export function PhoneList({ phones, onClose, onKick }: PhoneListProps) {
         </div>
         <h2 id={titleId}>Connected phones</h2>
         <ul className="phone-rows">
-          {phones.map((phone) => {
+          {phones.map((phone, index) => {
             const kind = deviceKindLabel(phone.kind);
             const status = phone.online ? 'Connected' : 'Not connected';
+            const viewerIsStarter = phones.some((row) => row.self && row.seat === 'host');
+            const showRemove = !phone.self && (viewerIsStarter || phone.seat !== 'host');
             return (
               <li
                 key={`${phone.seat}-${phone.since}`}
@@ -71,17 +73,17 @@ export function PhoneList({ phones, onClose, onKick }: PhoneListProps) {
                   </span>
                   <span className="sr-only">{status}</span>
                 </span>
-                {phone.self ? null : (
+                {showRemove ? (
                   <button
                     type="button"
                     className="phone-kick"
                     data-testid={`kick-${phone.seat}`}
-                    aria-label={`Remove ${kind}`}
+                    aria-label={`Remove ${kind} ${index + 1}`}
                     onClick={() => setPending(phone.seat)}
                   >
                     Remove
                   </button>
-                )}
+                ) : null}
               </li>
             );
           })}
@@ -91,7 +93,7 @@ export function PhoneList({ phones, onClose, onKick }: PhoneListProps) {
         <ConfirmDialog
           titleId="kick-title"
           title="Remove this phone?"
-          body="They can only come back with a new code."
+          body="This phone is removed. Others can still join with this code until you tap New code."
           confirmLabel="Remove"
           confirmTestId="kick-confirm"
           cancelTestId="kick-cancel"

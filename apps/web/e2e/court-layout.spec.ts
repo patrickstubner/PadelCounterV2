@@ -13,6 +13,16 @@ test('portrait uses the full height and keeps the version in the menu', async ({
   expect(board).not.toBeNull();
   if (!board) return;
   expect(board.y + board.height).toBeGreaterThan(770);
+  for (const size of [
+    { width: 390, height: 780 },
+    { width: 390, height: 844 },
+    { width: 412, height: 915 },
+    { width: 360, height: 640 },
+  ]) {
+    await page.setViewportSize(size);
+    const fits = await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight);
+    expect(fits).toBe(true);
+  }
   await expect(page.getByTestId('serve-cue')).toHaveText('Please choose the serving team');
   await expect(page.getByTestId('serve-a')).toHaveClass(/is-cue/);
   await expect(page.getByTestId('serve-b')).toHaveClass(/is-cue/);

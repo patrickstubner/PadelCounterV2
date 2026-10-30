@@ -159,6 +159,10 @@ describe('leave revokes only the caller', () => {
     const missing = await call(`/matches/${created.matchId}/leave`, { method: 'POST' });
     expect(missing.status).toBe(401);
 
+    const closed = new Promise<number>((resolve) => {
+      leavingWs.addEventListener('close', (event) => resolve(event.code));
+      setTimeout(() => resolve(-1), 1_000);
+    });
     const left = await call(`/matches/${created.matchId}/leave`, {
       method: 'POST',
       headers: { authorization: `Bearer ${leavingBody.token}`, 'content-type': 'application/json' },
@@ -166,6 +170,8 @@ describe('leave revokes only the caller', () => {
     });
     expect(left.status).toBe(200);
     expect(await left.json()).toEqual({ revoked: true });
+    expect(await closed).toBe(1008);
+    expect(leavingWs.readyState).toBe(3);
 
     const reconnect = await call('/join', {
       method: 'POST',

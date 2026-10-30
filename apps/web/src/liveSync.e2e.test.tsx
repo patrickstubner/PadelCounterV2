@@ -358,7 +358,9 @@ describe('live socket reconnect', () => {
   }, 8_000);
 
   it('returns to black when a joined player leaves', async () => {
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(`${init?.method ?? 'GET'} ${String(input)}`);
       if (String(input).endsWith('/join')) {
         joins += 1;
         return Response.json({ ticket: TICKET }, { status: 201 });
@@ -378,6 +380,7 @@ describe('live socket reconnect', () => {
       leave?.click();
     });
     expect(court()?.className).toBe('app');
+    expect(calls).toContain(`POST ${API}/matches/${MATCH}/leave`);
     expect(sessionStorage.getItem(JOIN_KEY)).toBeNull();
     expect(document.querySelector('[data-testid="court-offline"]')).toBeNull();
     await wait(1_700);

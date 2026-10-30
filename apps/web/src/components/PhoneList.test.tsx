@@ -44,7 +44,7 @@ describe('phone list', () => {
       (document.querySelector('[data-testid="kick-p2"]') as HTMLButtonElement).click();
     });
     expect(document.body.textContent).toContain('Remove this phone?');
-    expect(document.body.textContent).toContain('new code');
+    expect(document.body.textContent).toContain('Others can still join with this code until you tap New code.');
     expect(kicked).toEqual([]);
     await act(async () => {
       (document.querySelector('[data-testid="kick-cancel"]') as HTMLButtonElement).click();
@@ -57,5 +57,40 @@ describe('phone list', () => {
       (document.querySelector('[data-testid="kick-confirm"]') as HTMLButtonElement).click();
     });
     expect(kicked).toEqual(['p2']);
+  });
+
+  it('hides Remove on the starter for a guest and gives each button its own label', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const view = createRoot(host);
+    mounted.push(view);
+    const rows: readonly PublicPhone[] = [
+      { seat: 'host', since: 1_700_000_000_000, seen: 1_700_000_000_000, online: true, kind: 'android', self: false },
+      { seat: 'p2', since: 1_700_000_100_000, seen: 1_700_000_100_000, online: true, kind: 'android', self: true },
+      { seat: 'p3', since: 1_700_000_200_000, seen: 1_700_000_200_000, online: false, kind: 'android', self: false },
+    ];
+    await act(async () => {
+      view.render(<PhoneList phones={rows} onClose={() => undefined} onKick={() => undefined} />);
+    });
+    expect(document.querySelector('[data-testid="kick-host"]')).toBeNull();
+    expect(document.querySelector('[data-testid="kick-p2"]')).toBeNull();
+    expect(document.querySelector('[data-testid="kick-p3"]')).not.toBeNull();
+    const guestLabels = [...document.querySelectorAll('.phone-kick')].map((button) => button.getAttribute('aria-label'));
+    expect(guestLabels).toEqual(['Remove Android 3']);
+
+    const asStarter: readonly PublicPhone[] = [
+      { seat: 'host', since: 1_700_000_000_000, seen: 1_700_000_000_000, online: true, kind: 'desktop', self: true },
+      { seat: 'p2', since: 1_700_000_100_000, seen: 1_700_000_100_000, online: true, kind: 'desktop', self: false },
+      { seat: 'p3', since: 1_700_000_200_000, seen: 1_700_000_200_000, online: true, kind: 'desktop', self: false },
+    ];
+    await act(async () => {
+      view.render(<PhoneList phones={asStarter} onClose={() => undefined} onKick={() => undefined} />);
+    });
+    expect(document.querySelector('[data-testid="kick-host"]')).toBeNull();
+    expect(document.querySelector('[data-testid="kick-p2"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="kick-p3"]')).not.toBeNull();
+    const starterLabels = [...document.querySelectorAll('.phone-kick')].map((button) => button.getAttribute('aria-label'));
+    expect(starterLabels).toEqual(['Remove Desktop 2', 'Remove Desktop 3']);
+    expect(new Set(starterLabels).size).toBe(starterLabels.length);
   });
 });

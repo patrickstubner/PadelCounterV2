@@ -3,7 +3,7 @@
 ## 2.3.0
 
 - The phone button in the top bar is a rounded rectangle, the same shape as the menu button.
-- Connected phones are two lines. A green dot means connected and a red-orange dot means not. Remove asks first, then that phone’s code is turned off. It can come back only with a new code. You cannot remove this phone. A guest cannot remove the phone that started the match. The starter can remove the others. Too many removals wait.
+- Connected phones are two lines. A green dot means connected and a red-orange dot means not. Remove asks first. That phone is removed. Others can still join with this code until you tap New code. You cannot remove this phone. A guest cannot remove the phone that started the match, and does not see that button. The starter can remove the others. Too many removals wait.
 - In portrait the rules and the version leave the bottom of the court, so the score uses the height. The version is at the bottom of the menu, larger.
 - Share link still sends the link. Copy code copies only the code, then says Copied.
 - At 0–0 the court asks you to choose the serving team, and the two balls pulse. At 6–6 it explains the tie-break. After 7–6 it says who serves the next set. The note goes away once that choice is made. The wording follows the FIP Rules of Padel, review of application 1 January 2026 (`docs/fip-serve.md`).

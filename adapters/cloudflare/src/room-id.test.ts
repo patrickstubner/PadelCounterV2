@@ -34,11 +34,11 @@ describe('room id fallback in the durable object', () => {
   it('checks the room id before End match is stored and retries a revoke', () => {
     const guard = source.indexOf("result.event.event.type === 'match/end' && this.durableMatchId() === null");
     const insertAt = source.indexOf('insertEvent(sql, result.event)');
-    const retry = source.indexOf("} else if (result.event.event.type === 'match/end')");
+    const retry = source.indexOf("} else if (result.event.event.type === 'match/end' && this.roomIsEnded())");
     expect(guard).toBeGreaterThan(0);
     expect(insertAt).toBeGreaterThan(guard);
     expect(retry).toBeGreaterThan(insertAt);
-    expect(source.slice(retry, retry + 300)).toContain('revokeSharedRoom');
+    expect(source.slice(retry, retry + 400)).toContain('revokeSharedRoom');
     expect(source).not.toContain("throw new Error('room')");
     const method = source.slice(source.indexOf('private durableMatchId'), source.indexOf('async fetch'));
     expect(method).toContain('resolveRoomMatchId');

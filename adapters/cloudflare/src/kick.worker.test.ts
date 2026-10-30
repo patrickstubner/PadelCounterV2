@@ -1,6 +1,8 @@
-import { KICK_PER_ACTOR, LIVE_PROTOCOL, createMatch, isJoinToken } from '@padel/core';
-import { exports } from 'cloudflare:workers';
+import { KICK_PER_ACTOR, KICK_PER_MATCH, LIVE_PROTOCOL, createMatch, isJoinToken } from '@padel/core';
+import { runInDurableObject } from 'cloudflare:test';
+import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
+import { sha256Hex } from './tokens';
 
 const ORIGIN = 'https://patrickstubner.github.io';
 const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15';
@@ -177,6 +179,15 @@ describe('removing a phone', () => {
     expect(phonesOf(dropped).some((phone) => phone.self === true)).toBe(true);
     const revoked = await other.messages.waitFor((message) => message.type === 'error');
     expect(revoked.code).toBe('revoked');
+    const otherHash = await sha256Hex(other.session);
+    const roomRevoked = await runInDurableObject(
+      env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(created.matchId)),
+      (_instance, state) => state.storage.sql.exec(
+        'SELECT revoked_at FROM invites WHERE token_hash = ?',
+        otherHash,
+      ).toArray()[0]?.revoked_at,
+    );
+    expect(roomRevoked).toEqual(expect.any(Number));
 
     const oldToken = await call('/join', {
       method: 'POST',
@@ -251,4 +262,55 @@ describe('removing a phone', () => {
     assertAllowlist(still);
     expect(staying.messages.all().some((message) => message.type === 'error' && message.code === 'revoked')).toBe(false);
   });
+
+  it('stops the ninth removal in one match', async () => {
+    expect(KICK_PER_MATCH).toBe(8);
+    const hostDevice = 'd42000021000000000000000000000000';
+    const created = await createLive(hostDevice);
+    const invite = await call(`/matches/${created.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${created.hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'player' }),
+    });
+    const shared = (await invite.json()) as { token: string };
+    const host = await openSocket(created.hostToken, hostDevice, IPHONE);
+    const actorA = await openSocket(shared.token, 'd42000022000000000000000000000000', ANDROID);
+    const actorB = await openSocket(shared.token, 'd42000023000000000000000000000000', IPHONE);
+    const actors = [
+      { ws: actorA.ws, messages: actorA.messages, count: 3 },
+      { ws: actorB.ws, messages: actorB.messages, count: 3 },
+      { ws: host.ws, messages: host.messages, count: 2 },
+    ];
+    let deviceN = 0x42000024;
+    const kickOne = async (from: WebSocket, inboxFor: ReturnType<typeof inbox>): Promise<void> => {
+      deviceN += 1;
+      const device = `d${deviceN.toString(16).padStart(8, '0')}${'0'.repeat(24)}`;
+      const phone = await openSocket(shared.token, device, ANDROID);
+      const seat = await seatOf(phone.messages, true);
+      expect(seat).not.toBe('host');
+      const mark = inboxFor.all().length;
+      from.send(JSON.stringify({ type: 'kick', seat }));
+      await inboxFor.waitFor((message, index) => {
+        if (index < mark || message.type !== 'roster') return false;
+        return !phonesOf(message).some((row) => row.seat === seat);
+      });
+      const dropped = await phone.messages.waitFor((message) => message.type === 'error' && message.code === 'revoked');
+      expect(dropped.code).toBe('revoked');
+      if (phone.ws.readyState !== 3) {
+        await new Promise<void>((resolve) => phone.ws.addEventListener('close', () => resolve()));
+      }
+    };
+    for (const actor of actors) {
+      for (let index = 0; index < actor.count; index += 1) await kickOne(actor.ws, actor.messages);
+    }
+    const last = await openSocket(shared.token, 'd4200002f000000000000000000000000', ANDROID);
+    const seat = await seatOf(last.messages, true);
+    host.ws.send(JSON.stringify({ type: 'kick', seat }));
+    const limited = await host.messages.waitFor((message) => message.type === 'error' && message.code === 'kick_limited');
+    expect(limited.code).toBe('kick_limited');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const still = host.messages.all().filter((message) => message.type === 'roster').at(-1);
+    if (!still) throw new Error('roster');
+    expect(phonesOf(still).some((row) => row.seat === seat && row.online === true)).toBe(true);
+  }, 20_000);
 });

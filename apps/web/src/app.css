@@ -1085,6 +1085,11 @@ button:disabled { cursor: not-allowed; }
 .btn-solid { background: #ffffff; color: #000000; border: 2px solid #ffffff; }
 
 @media (orientation: portrait) {
+  .board,
+  .team {
+    overflow: hidden;
+  }
+
   .team {
     /* The extra 0.7rem is the old side padding plus the column gap, so the number column stays put.
        The 3px edge and the side safe area come out of the button columns. */
@@ -1146,6 +1151,11 @@ button:disabled { cursor: not-allowed; }
       padding-inline: 0;
       font-size: min(calc(100cqh / 0.8), calc(100cqw / 0.66));
     }
+    .current-set .num,
+    .current-set .flap {
+      /* The font is 100cqh / 0.8. A line box of 1 would stick out under the board. */
+      line-height: 0.8;
+    }
     .current-set .flap-current,
     .current-set .flap-leave,
     .current-set .flap-enter {
@@ -1172,7 +1182,7 @@ button:disabled { cursor: not-allowed; }
   .current-set,
   .current-set .num,
   .current-set .flap { pointer-events: none; }
-  .current-set .flap { overflow: visible; }
+  .current-set .flap { overflow: hidden; }
 
   .team-head { height: 2.75rem; }
 
