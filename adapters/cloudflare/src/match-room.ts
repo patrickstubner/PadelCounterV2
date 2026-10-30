@@ -6,7 +6,7 @@ import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
 import { applyLiveEvent, chooseActor, createRoom, currentSharedInvite, eventDelta, helloPayload, issueInvite, serverLastChange, type RoomRecord } from './room';
 import { openText, sealText } from './seal';
 import { randomToken } from './tokens';
-import { deleteSeal, dropMemberHashes, ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, markRosterOffline, matchBudgetOpen, openRoomForCreate, pendingMintStale, readActivityTouch, readEventSeq, readJoined, readRoom, readRoster, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, saveRosterPhone, takeMatchBudget, writeSeal, type RoomSql } from './store';
+import { deleteSeal, dropMemberHashes, ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, latestEventSeq, markActivityTouch, markRosterOffline, matchBudgetOpen, openRoomForCreate, pendingMintStale, readActivityTouch, readEventSeq, readJoined, readRoom, readRoster, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, revokeSharedInvites, saveRosterPhone, takeMatchBudget, writeSeal, type RoomSql } from './store';
 import { quotaMac, quotaSecret, safeEqualHex, sha256Hex } from './tokens';
 
 function publicSeat(value: unknown): string | null {
@@ -639,13 +639,14 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       sessionDevice = callerDevice;
     }
     const revokedHashes = room.invites
-      .filter((row) => !row.host && row.revokedAt === null && row.tokenHash !== keepHash)
+      .filter((row) => !row.host && row.revokedAt === null && row.tokenHash !== keepHash && (rotate || !row.deviceId))
       .map((row) => row.tokenHash);
     const sessionHash = sessionToken ? await sha256Hex(sessionToken) : null;
     ensureSealedTable(this.sql());
     this.ctx.storage.transactionSync(() => {
       const sql = this.sql();
-      revokePlayerInvites(sql, now, keepHash);
+      if (rotate) revokePlayerInvites(sql, now, keepHash);
+      else revokeSharedInvites(sql, now);
       insertInvite(sql, created);
       if (sessionHash && sessionDevice) {
         insertInvite(sql, {
@@ -882,7 +883,10 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const token = body && typeof body === 'object' ? (body as { hostToken?: unknown }).hostToken : undefined;
     const room = await this.requireMember(token);
     if (!room || !isJoinToken(token)) return json(401, { error: 'bad_token' });
-    const starter = this.starterDevice(room, await sha256Hex(token));
+    const tokenHash = await sha256Hex(token);
+    const caller = room.invites.find((invite) => safeEqualHex(invite.tokenHash, tokenHash));
+    if (!caller?.host) return json(401, { error: 'bad_token' });
+    const starter = this.starterDevice(room, tokenHash);
     if (!starter) return json(401, { error: 'bad_token' });
     const members = this.memberList(room).filter((member) => member.deviceId !== starter);
     const now = Date.now();

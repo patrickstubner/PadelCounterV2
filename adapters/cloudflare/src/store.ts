@@ -333,6 +333,14 @@ export function revokePlayerInvites(sql: RoomSql, now: number, keepHash?: string
   sql.exec('UPDATE invites SET revoked_at = ? WHERE host = 0 AND revoked_at IS NULL', now);
 }
 
+/** A first code for a new match. Device-bound carry credentials stay valid. */
+export function revokeSharedInvites(sql: RoomSql, now: number): void {
+  sql.exec(
+    'UPDATE invites SET revoked_at = ? WHERE host = 0 AND device_id IS NULL AND revoked_at IS NULL',
+    now,
+  );
+}
+
 const CREATE_BUDGET = `CREATE TABLE IF NOT EXISTS budget (
   kind TEXT PRIMARY KEY,
   window_start INTEGER NOT NULL,

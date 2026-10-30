@@ -241,7 +241,10 @@ export interface NewMatchPlan {
   readonly kind: 'finish' | 'leave' | 'reset';
   readonly showReconnect: boolean;
   readonly reconnectSelected: boolean;
-  /** A live match with other phones asks whether to take them along. */
+  /**
+   * The phone that started the live match can take the other phones along.
+   * A guest leaves on this phone only. They cannot move the court.
+   */
   readonly askCarry: boolean;
 }
 
@@ -252,8 +255,8 @@ export function planNewMatch(input: {
   readonly now: number;
   readonly coPlayers: number;
 }): NewMatchPlan {
-  const askCarry = input.open && input.coPlayers > 0;
-  if (!input.host) return { kind: 'leave', showReconnect: false, reconnectSelected: false, askCarry };
+  const askCarry = input.host && input.open && input.coPlayers > 0;
+  if (!input.host) return { kind: 'leave', showReconnect: false, reconnectSelected: false, askCarry: false };
   if (!input.open) return { kind: 'reset', showReconnect: false, reconnectSelected: false, askCarry: false };
   const recent = offerReconnect(input.lastEventAt, input.now);
   const coPlayers = input.coPlayers > 0;

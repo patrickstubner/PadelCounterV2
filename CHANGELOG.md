@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.9
+
+- Take phones follows every phone that is still in the match. The other phones are not asked. They show “New match” and join on their own. A phone that is offline follows when it reconnects, while its code is still valid. Only the phone that started the match can do this.
+- History can continue a match that ended before a winner, and a won match that still has a set left (2–0 in a best of 3). A match with all three sets played stays finished. The app asks first and keeps the match on the court in History. This phone plays on alone. Phones still in a live match stay there.
+- On Android, the tap happens as the finger goes down. Scrolling or letting go does not tap twice. iPhone still uses the system switch tick on the click that counts the point.
+- The court still opens when this phone blocks storage.
+
 ## 2.2.8
 
 - Plus, minus, the serve ball, and changing the set give a short tap. Android vibrates for a moment. iPhone uses the system switch tick. Older phones stay quiet. Haptic feedback in the menu turns it off, and that choice stays on this phone.

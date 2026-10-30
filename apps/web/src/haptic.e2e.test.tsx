@@ -48,6 +48,22 @@ async function press(testId: string): Promise<void> {
   const node = document.querySelector(`[data-testid="${testId}"]`);
   if (!(node instanceof HTMLButtonElement)) throw new Error(`missing button ${testId}`);
   await act(async () => {
+    node.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      button: 0,
+      pointerId: 1,
+      clientX: 20,
+      clientY: 20,
+      pointerType: 'touch',
+    }));
+    node.dispatchEvent(new PointerEvent('pointerup', {
+      bubbles: true,
+      button: 0,
+      pointerId: 1,
+      clientX: 20,
+      clientY: 20,
+      pointerType: 'touch',
+    }));
     node.click();
   });
 }
@@ -112,6 +128,42 @@ describe('haptic taps on the court', () => {
     await press('increment-a');
     await press('serve-b');
     await press('set-b-3');
+    expect(vibrateCalls).toEqual([]);
+    expect(scoreA()).toContain('1');
+  });
+
+  it('does not vibrate when the finger scrolls or the pointer is cancelled', async () => {
+    labelClick = HTMLLabelElement.prototype.click;
+    setVibrate((pattern) => {
+      vibrateCalls.push(typeof pattern === 'number' ? pattern : pattern[0] ?? -1);
+      return true;
+    });
+    const view = await mountApp();
+    mounted.push(view);
+    const plus = document.querySelector('[data-testid="increment-a"]');
+    if (!(plus instanceof HTMLButtonElement)) throw new Error('missing plus');
+    await act(async () => {
+      plus.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, button: 0, pointerId: 7, clientX: 4, clientY: 4, pointerType: 'touch',
+      }));
+      plus.dispatchEvent(new PointerEvent('pointermove', {
+        bubbles: true, button: 0, pointerId: 7, clientX: 40, clientY: 4, pointerType: 'touch',
+      }));
+      plus.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true, button: 0, pointerId: 7, clientX: 40, clientY: 4, pointerType: 'touch',
+      }));
+    });
+    expect(vibrateCalls).toEqual([]);
+    expect(scoreA()).toContain('0');
+    await act(async () => {
+      plus.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, button: 0, pointerId: 8, clientX: 4, clientY: 4, pointerType: 'touch',
+      }));
+      plus.dispatchEvent(new PointerEvent('pointercancel', {
+        bubbles: true, pointerId: 8, pointerType: 'touch',
+      }));
+      plus.click();
+    });
     expect(vibrateCalls).toEqual([]);
     expect(scoreA()).toContain('1');
   });

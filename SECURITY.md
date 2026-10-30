@@ -364,7 +364,7 @@ Decisions:
 - There is one shared invite. Show QR returns that same token and the same short code. It does not revoke, and it does not move the expiry. New code is the explicit rotate. Rotate still revokes every non-host credential, closes the phones that joined with the old code, and mints one replacement. Entropy, the two-hour life, and the invite rate limits are unchanged. A connected player can turn the code off. That is the same effect the creating phone already had, and every player can already score and end the match.
 - The raw token and the short code are sealed with AES-GCM in the Durable Object. The key is a SHA-256 of the worker secret and a fixed label, not the secret used as the key itself. D1 still stores only the token hash and the short-code HMAC. The seal is not a log line. The token still leaves the server only in the invite response (`cache-control: no-store`) and in the QR fragment, which is the existing design. It is not placed in a query string.
 - The cap of 4 admitted sockets is unchanged. Showing or rotating a code does not add a seat. The fifth hello is still `match_full`.
-- Take phones is allowed only for a member of the previous match, and only into a match that member just created. The object builds the device list from phones that have already joined. The client cannot add a device. Connected phones are listed first, then offline phones, and at most three besides the phone that starts the new match. Each of those devices gets its own new token. Connected phones receive `match_moved` on the existing socket and switch. The token is not put in a URL. An offline phone receives the same message when it says hello with its still-valid old code. An expired or revoked code is not moved. A phone that was not carried is told, with a fixed sentence and no token, that the other phones continued. The one-hour reconnect checkbox is not this path. Take phones is an explicit choice about the phones that joined, including when the last point is older than an hour. Just this phone does not move anyone.
+- Take phones is allowed only for the host credential of the previous match, and only into a match that host just created. A guest credential and a shared QR cannot start it. The object builds the device list from phones that have already joined. The client cannot add a device. Connected phones are listed first, then offline phones, and at most three besides the host. Each of those devices gets its own new token and follows without a second question. The token is not put in a URL. An offline phone receives the same message when it says hello with its still-valid old code, until the move seal expires. An expired or revoked code is not moved. A phone that was not carried is told, with a fixed sentence and no token, that the other phones continued. Showing the new match’s code does not revoke those device-bound tokens. New code still does. The one-hour reconnect checkbox is not this path. Take phones is an explicit choice about the phones that joined, including when the last point is older than an hour. Just this phone does not move anyone. Review 31 records why a published code used to drop the carried phones, and the reopen rule for History.
 - A winner is two sets. `match/end` stores no winner field. D1 has no winner column. The result is derived from the score. An early end is `leading` or `draw`. The celebration, the fanfare, and the history winner flag stay off.
 - The connected-phone list is sent only on a socket that has already said hello with a valid player credential for this room. A socket that has not said hello does not receive it. There is no public HTTP route for it. A failed hello gets an error and no list. The Durable Object classifies `User-Agent` at the upgrade and stores only `iphone`, `android`, `desktop`, or `other`. The agent string, the address, and the token are not in the roster table and not in the `roster` message. The message is built by copying an allowlist (`seat`, `since`, `online`, `seen`, `kind`, `self`) onto a fresh object. `self` is true only on the socket whose device id matches that row. Other phones do not receive the device id. `seat` is the same actor id already stored on score events.
 
@@ -461,6 +461,55 @@ Version 2.2.8, after pull request 24 is on `main`. This note is the leftover fro
 - P24r-01. The `archive-current` action is removed. It copied the open match into History and left the same match on the court. `replace` already copies the previous log when a join switches to another match id. Confirming a link still keeps a started match in History. A join that never switches matches does not write a second copy first.
 - P24r-02. Confirming Join removes the dialog before the request returns. `joinByCode` normalizes the code and does not call the network for a string outside the short-code alphabet, including `ungueltig`. A second play of the win clip pauses the first element.
 - P24r-03. The layout test is part of `pnpm test`. CI installs Chrome with `playwright install --with-deps chrome` and then runs `apps/web/e2e/connect-layout.spec.ts`. That browser is a CI tool. The court bundle does not include it, and the test talks only to the local dev server.
+
+## Review 31, 2026-10-30
+
+Version 2.2.9. Pull request 25 is on `main`. This review is carry after a finished match, carry without a second question, continuing a match from History, an earlier tap on Android, and two leftovers from the 2.2.8 review. No new dependency, no new host, and no change to the content security policy.
+
+### Why a guest who tapped Accept stayed on the old match
+
+The host’s New match did three things in order: create the next match, `POST /carry`, then `POST /invites` to show the new code. Carry issued a device-bound credential and sent `match_moved` on the old socket, so the guest saw the question. The invite that followed revoked every non-host credential on the new match, including those carry credentials, in the Durable Object and in D1. Accept then called `POST /join` with a revoked token.
+
+That showed up after a finished match because the guest was on the win screen and tapped Accept only after the invite had completed. It is the same revoke on an early end. It is not the three-minute unused-scan expiry: a carry row is not a pending mint (`minted_at` stays 0) and its lifetime is the normal join lifetime. It is not the rotate budget, and it is not the hello rule that refuses a new device on an ended match. The uploaded log ends with `match/new`, so the new room is not ended. iOS going to the background is not required.
+
+The first code on a match now revokes only shared codes (`device_id` is null). Device-bound carry credentials stay valid, so a phone that follows immediately and a phone that follows after the code is shown both enter. **New code** still revokes device-bound credentials and disconnects phones that joined with the old code.
+
+### Carry without a question
+
+Threats considered:
+
+- A shared QR, or a guest’s own credential, moves every phone with no question.
+- A device id in the body adds a phone that never joined.
+- A carry token is replayed from another phone, or kept forever for an offline phone.
+- Publishing the new code, or rotating it, is confused with the fix above.
+- The three-carry limit is dropped.
+
+Decisions:
+
+- `POST /carry` accepts the previous credential only when that credential is the host of the old match and that host phone has already joined. A shared QR and a guest credential are rejected. The device id in the body is still ignored. The starter phone is taken from the credential, as in review 23.
+- Each carried phone gets its own device-bound token. Hello rejects a different device. The token is not put in a URL. Connected phones receive `match_moved` and follow at once. There is no Accept control. The court says “New match”.
+- An offline member receives the same message on hello with its old credential, until that move seal expires (two hours, the join lifetime). The phone had to be connected, or seen within the last hour, when the host asked. A phone that was not carried gets a fixed sentence and no token.
+- At most three carries per starter phone, and at most three other phones. Connected phones are listed first.
+- A guest cannot start this. New match on a guest phone only leaves the shared match on that phone.
+
+### Continue from History
+
+Continuing is local. This phone leaves a live match first. It does not create a room and it does not carry anyone. The phones that are still in the live match stay there. A new live room would be a different match and would skip the reopen check on the original room.
+
+The creator can continue. If someone else ended the match, only that phone can continue, unless the creator ended it: the creator still can. That is the same rule as Resume on a live match. The seat is known while this phone is still a guest of a live match. After it has left, History is this phone’s copy and this phone is treated as the local owner.
+
+A match with three decided sets cannot be continued. An early end with no winner can, until a team wins two sets. A win with a set still open (2–0) can, and the open set is selected. The app asks first. The match on the court is archived before the old one is restored. A blank court is not archived.
+
+### Haptic timing
+
+Android vibration runs from pointer down, before the click that changes the score. The call is still `navigator.vibrate` for 15 ms and is still try/caught, so a throw does not drop the point. A move of more than 12 pixels, or a cancelled pointer, does not vibrate, and the click does not vibrate again. A click with no pointer (a keyboard) still vibrates once.
+
+iPhone stays on the click. The tick is a label click on a checkbox with the `switch` attribute. That tick needs the user activation of the click that counts the point. A pointer-down handler is not that activation, and calling the label from pointer down does not replace it. The switch is still not mounted when `navigator.vibrate` exists, so the two paths cannot both tick.
+
+### Review leftovers
+
+- P25-02. CI no longer runs `playwright install --with-deps chrome`. That step installed an unpinned Chrome package as root. The layout test uses the Chrome already on the runner. A machine without Chrome can still install the pinned Playwright browser locally.
+- P25-06. `initialSession` catches a throwing `localStorage` and starts from an empty court. The save effect catches the same failure and shows the existing “Saving on this device failed.” note. The join token is not written there.
 
 ## Out of scope
 

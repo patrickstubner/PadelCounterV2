@@ -11,6 +11,7 @@ export type SessionAction =
   | LogAction
   | { readonly type: 'delete-match'; readonly id: string }
   | { readonly type: 'replace'; readonly log: MatchLog }
+  | { readonly type: 'continue-match'; readonly log: MatchLog }
   | { readonly type: 'record-all'; readonly events: readonly MatchEvent[] }
   | { readonly type: 'revert'; readonly event: MatchEvent };
 
@@ -21,6 +22,18 @@ export function sessionReducer(session: Session, action: SessionAction): Session
     return {
       log: action.log,
       archive: snap ? rememberMatch(session.archive, snap) : session.archive,
+    };
+  }
+
+  if (action.type === 'continue-match') {
+    const currentId = replay(session.log).matchId;
+    const nextId = replay(action.log).matchId;
+    if (currentId === nextId) return session;
+    const snap = snapshotMatch(session.log);
+    const archive = snap ? rememberMatch(session.archive, snap) : session.archive;
+    return {
+      log: action.log,
+      archive: archive.filter((match) => match.id !== nextId),
     };
   }
 

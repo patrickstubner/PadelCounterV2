@@ -6,6 +6,7 @@ import {
   HAPTIC_KEY,
   HAPTIC_MS,
   bindCourtTaps,
+  createPressHaptic,
   hapticEnabled,
   pulseHaptic,
   setHapticEnabled,
@@ -124,6 +125,7 @@ describe('pulseHaptic', () => {
   it('keeps the duration in this file and does not call a remote host', () => {
     const source = readFileSync(join(root, 'haptic.ts'), 'utf8');
     expect(source).toContain('HAPTIC_MS = 15');
+    expect(source).toContain('HAPTIC_SLOP_PX = 12');
     expect(source).toContain(HAPTIC_KEY);
     expect(source).not.toContain('http://');
     expect(source).not.toContain('https://');
@@ -154,6 +156,51 @@ describe('court taps', () => {
     taps.onServe('a');
     expect(court.calls).toEqual(['increment', 'decrement', 'serve']);
     expect(ticks).toEqual(['tick', 'tick', 'tick']);
+  });
+
+  it('vibrates once before the click, and not when the pointer scrolls or is cancelled', () => {
+    const queued: Array<() => void> = [];
+    const request = globalThis.requestAnimationFrame;
+    const cancel = globalThis.cancelAnimationFrame;
+    globalThis.requestAnimationFrame = ((fn: FrameRequestCallback) => {
+      queued.push(() => fn(0));
+      return queued.length;
+    }) as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = (() => undefined) as typeof cancelAnimationFrame;
+    try {
+      const ticks: number[] = [];
+      const press = createPressHaptic(() => ticks.push(1));
+      const point = { pointerId: 1, x: 0, y: 0, button: 0, pointerType: 'touch' };
+      press.down(point, true);
+      expect(ticks).toEqual([]);
+      queued.splice(0).forEach((fn) => fn());
+      expect(ticks).toEqual([1]);
+      press.up(point, true);
+      press.click();
+      expect(ticks).toEqual([1]);
+
+      const scrolled = createPressHaptic(() => ticks.push(2));
+      scrolled.down(point, true);
+      scrolled.move({ ...point, x: 40 });
+      queued.splice(0).forEach((fn) => fn());
+      scrolled.up({ ...point, x: 40 }, true);
+      scrolled.click();
+      expect(ticks).toEqual([1]);
+
+      const cancelled = createPressHaptic(() => ticks.push(3));
+      cancelled.down({ ...point, pointerId: 2 }, true);
+      cancelled.cancel(2);
+      queued.splice(0).forEach((fn) => fn());
+      cancelled.click();
+      expect(ticks).toEqual([1]);
+
+      const keyboard = createPressHaptic(() => ticks.push(4));
+      keyboard.click();
+      expect(ticks).toEqual([1, 4]);
+    } finally {
+      globalThis.requestAnimationFrame = request;
+      globalThis.cancelAnimationFrame = cancel;
+    }
   });
 
   it('ticks only when the set actually changes', () => {

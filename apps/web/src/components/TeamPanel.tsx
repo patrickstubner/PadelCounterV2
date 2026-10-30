@@ -1,3 +1,5 @@
+import { useRef, useState, type PointerEvent } from 'react';
+import { createPressHaptic, type HapticPoint, type PressHaptic } from '../domain/haptic';
 import { canIncrement, canTakeGame, displayGames, isUpcomingSet, serveChoice, setWinner } from '../domain/rules';
 import type { MatchState, SetIndex, TeamId } from '../domain/types';
 import { BallIcon, MinusIcon, PlusIcon } from './icons';
@@ -13,11 +15,41 @@ interface TeamPanelProps {
   onRename: (team: TeamId, name: string) => void;
   onSelectSet: (index: SetIndex) => void;
   onServe: (team: TeamId) => void;
+  /** vibrate ticks on pointer down. ios ticks on click. off is quiet. */
+  hapticMode?: 'vibrate' | 'ios' | 'off';
+  onHaptic?: () => void;
 }
 
 const SETS: readonly SetIndex[] = [0, 1, 2];
 
-export function TeamPanel({ team, state, onIncrement, onDecrement, onRename, onSelectSet, onServe }: TeamPanelProps) {
+function pointOf(event: PointerEvent<HTMLButtonElement>): HapticPoint {
+  return {
+    pointerId: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    button: event.button,
+    pointerType: event.pointerType,
+  };
+}
+
+function useVibratePress(mode: 'vibrate' | 'ios' | 'off', onHaptic: () => void): PressHaptic | null {
+  const pulseRef = useRef(onHaptic);
+  pulseRef.current = onHaptic;
+  const [press] = useState(() => createPressHaptic(() => pulseRef.current()));
+  return mode === 'vibrate' ? press : null;
+}
+
+export function TeamPanel({
+  team,
+  state,
+  onIncrement,
+  onDecrement,
+  onRename,
+  onSelectSet,
+  onServe,
+  hapticMode = 'off',
+  onHaptic = () => undefined,
+}: TeamPanelProps) {
   const name = state.teams[team].name;
   const active = state.sets[state.activeSet];
   const locked = state.ended;
@@ -32,6 +64,24 @@ export function TeamPanel({ team, state, onIncrement, onDecrement, onRename, onS
     : nextServe
       ? `Serve ${nextServe.team.toUpperCase()}${nextServe.player} for ${name}`
       : `Leave the serve open, ${name}`;
+  const press = useVibratePress(hapticMode, onHaptic);
+  const afterClick = () => {
+    if (hapticMode === 'ios') onHaptic();
+    else if (hapticMode === 'vibrate') press?.click();
+  };
+  const bind = (disabled: boolean) => press ? {
+    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // The tick still follows the pointer events that do arrive.
+      }
+      press.down(pointOf(event), !disabled && !event.currentTarget.disabled);
+    },
+    onPointerMove: (event: PointerEvent<HTMLButtonElement>) => press.move(pointOf(event)),
+    onPointerUp: (event: PointerEvent<HTMLButtonElement>) => press.up(pointOf(event), !disabled && !event.currentTarget.disabled),
+    onPointerCancel: (event: PointerEvent<HTMLButtonElement>) => press.cancel(event.pointerId),
+  } : {};
 
   return (
     <section className={`team team-${team}`} aria-label={name}>
@@ -41,7 +91,11 @@ export function TeamPanel({ team, state, onIncrement, onDecrement, onRename, onS
         data-testid={`decrement-${team}`}
         disabled={minusDisabled}
         aria-label={`${name}: remove one game`}
-        onClick={() => onDecrement(team)}
+        onClick={() => {
+          onDecrement(team);
+          if (!minusDisabled) afterClick();
+        }}
+        {...bind(minusDisabled)}
       >
         <MinusIcon />
       </button>
@@ -55,7 +109,11 @@ export function TeamPanel({ team, state, onIncrement, onDecrement, onRename, onS
             aria-pressed={serving}
             aria-label={serveLabel}
             disabled={locked}
-            onClick={() => onServe(team)}
+            onClick={() => {
+              onServe(team);
+              if (!locked) afterClick();
+            }}
+            {...bind(locked)}
           >
             <BallIcon />
             {serving && state.serve ? (
@@ -82,7 +140,13 @@ export function TeamPanel({ team, state, onIncrement, onDecrement, onRename, onS
                 won={winner === team}
                 upcoming={isUpcomingSet(state, index)}
                 locked={locked}
-                onSelect={() => onSelectSet(index)}
+                press={press}
+                hapticOnPress={!locked && index !== state.activeSet}
+                onSelect={() => {
+                  const changed = index !== state.activeSet;
+                  onSelectSet(index);
+                  if (changed) afterClick();
+                }}
               />
             );
           })}
@@ -94,7 +158,11 @@ export function TeamPanel({ team, state, onIncrement, onDecrement, onRename, onS
         data-testid={`increment-${team}`}
         disabled={plusDisabled}
         aria-label={`${name}: add one game`}
-        onClick={() => onIncrement(team)}
+        onClick={() => {
+          onIncrement(team);
+          if (!plusDisabled) afterClick();
+        }}
+        {...bind(plusDisabled)}
       >
         <PlusIcon />
       </button>
