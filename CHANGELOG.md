@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.8
+
+- Plus, minus, the serve ball, and changing the set give a short tap. Android vibrates for a moment. iPhone uses the system switch tick. Older phones stay quiet. Haptic feedback in the menu turns it off, and that choice stays on this phone.
+
 ## 2.2.7
 
 - The top bar shows a phone icon before the number of connected phones.

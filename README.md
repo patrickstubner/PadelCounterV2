@@ -14,6 +14,7 @@ Padel Counter V2 keeps the score of a padel match on your phone. You can play al
 - **Corrections.** **+** and **−** still work after a set has finished. A set that shows 6:0 can be corrected to 5:1. History keeps every change, with the time and which phone made it. Nothing is overwritten.
 - **New match.** If other phones are in the live match, New match asks “Take the connected phones into the new match?”. Yes moves every phone that already joined. They do not scan again. A phone that is offline joins when it reconnects, while its code is still valid. If that code has expired, the phone stays on the ended match and says the others continued. No starts the new match on this phone only: the phone that started the shared match ends it, and another phone leaves the shared match on that phone only. Cancel leaves the current match. A blank court asks before it resets.
 - **Victory sound.** When a team wins two sets, a short crowd clip plays once, together with the celebration. Ending the match early does not play it and does not name a winner. The court says who is leading, or Draw. Turn the sound on or off in the menu with **Victory sound**. The clip is stored in this app. If the phone blocks sound, the celebration still shows and the app stays quiet. Sources are in `CREDITS.md`.
+- **Haptic feedback.** Plus, minus, the serve ball, and changing the set make a short tap. Android vibrates for a moment. iPhone uses the system switch tick. Older phones do nothing. Turn it off in the menu with **Haptic feedback**. The choice stays on this phone.
 - **How long data is kept.** The score on this phone stays in this browser. A live match stops taking scores one day after the last change. After that, nobody can change the games. The match stays on the server as history for two years, then it is deleted. The app does not ask for a name, an email, or a sign-in.
 
 The privacy note in the menu says the same thing in the app. It is not legal advice.
@@ -27,6 +28,7 @@ The privacy note in the menu says the same thing in the app. It is not legal adv
 5. To start another match, open the menu and choose **New match**. If other phones are connected, choose **Take phones** or **Just this phone**. Cancel leaves the current match.
 6. Open **History** in the menu to read the games, who changed them, and the score after each change.
 7. Open the menu and use **Victory sound** to turn the win clip on or off.
+8. Open the menu and use **Haptic feedback** to turn the tap on or off.
 
 ## For developers
 
