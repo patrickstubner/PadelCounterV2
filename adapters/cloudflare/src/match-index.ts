@@ -40,7 +40,9 @@ const INSERT_MINTED =
 const REVOKE_SHARED_CREDS =
   'UPDATE credentials SET revoked_at = ? WHERE match_id = ? AND host = 0 AND revoked_at IS NULL';
 const FIND_CREDENTIAL =
-  'SELECT token_hash, match_id, host, expires_at, revoked_at FROM credentials WHERE token_hash = ?';
+  'SELECT token_hash, match_id, host, expires_at, revoked_at, device_id FROM credentials WHERE token_hash = ?';
+const DELETE_REVOKED_CREDENTIALS = 'DELETE FROM credentials WHERE match_id = ? AND revoked_at IS NOT NULL';
+const DELETE_REVOKED_CODES = 'DELETE FROM join_codes WHERE match_id = ? AND revoked_at IS NOT NULL';
 const REVOKE_PLAYERS =
   'UPDATE credentials SET revoked_at = ? WHERE match_id = ? AND host = 0 AND revoked_at IS NULL';
 const MOVE_CREDENTIAL = 'UPDATE credentials SET match_id = ? WHERE token_hash = ? AND match_id = ?';
@@ -120,7 +122,8 @@ export interface MatchIndex {
   putJoinCode(matchId: string, now: number, row: JoinCodeRow): Promise<void>;
   insertCredential(row: CredentialRow): Promise<void>;
   findCredential(tokenHash: string): Promise<CredentialRow | null>;
-  replacePlayerCredential(matchId: string, now: number, row: CredentialRow): Promise<void>;
+  replacePlayerCredential(matchId: string, now: number, row: CredentialRow, keepHash?: string): Promise<void>;
+  deleteRevokedAccess(matchId: string): Promise<void>;
   moveCredential(tokenHash: string, fromMatchId: string, toMatchId: string): Promise<void>;
   putTicket(ticketHash: string, matchId: string, expiresAt: number): Promise<void>;
   takeTicket(ticketHash: string, now: number): Promise<string | null>;
@@ -323,12 +326,22 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
         host: row.host === 1,
         expiresAt,
         revokedAt,
+        deviceId: typeof row.device_id === 'string' && row.device_id.length > 0 ? row.device_id : null,
       };
     },
-    async replacePlayerCredential(matchId, now, row) {
+    async replacePlayerCredential(matchId, now, row, keepHash) {
+      const revoke = keepHash && /^[0-9a-f]{64}$/.test(keepHash)
+        ? db.prepare(`${REVOKE_PLAYERS} AND token_hash != ?`).bind(now, matchId, keepHash)
+        : db.prepare(REVOKE_PLAYERS).bind(now, matchId);
       await db.batch([
-        db.prepare(REVOKE_PLAYERS).bind(now, matchId),
+        revoke,
         db.prepare(INSERT_CREDENTIAL).bind(row.tokenHash, row.matchId, row.host ? 1 : 0, row.expiresAt, row.revokedAt, row.deviceId ?? null),
+      ]);
+    },
+    async deleteRevokedAccess(matchId) {
+      await db.batch([
+        db.prepare(DELETE_REVOKED_CREDENTIALS).bind(matchId),
+        db.prepare(DELETE_REVOKED_CODES).bind(matchId),
       ]);
     },
     async moveCredential(tokenHash, fromMatchId, toMatchId) {

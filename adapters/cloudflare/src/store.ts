@@ -64,6 +64,7 @@ export function migrate(sql: RoomSql): void {
   sql.exec(CREATE_JOINED);
   sql.exec(CREATE_SEALED);
   sql.exec(CREATE_ROSTER);
+  sql.exec(CREATE_BUDGET);
   ensureActivityColumn(sql);
 }
 
@@ -267,8 +268,63 @@ export function revokeInviteHash(sql: RoomSql, tokenHash: string, now: number): 
   sql.exec('UPDATE invites SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL', now, tokenHash);
 }
 
-export function revokePlayerInvites(sql: RoomSql, now: number): void {
+export function revokePlayerInvites(sql: RoomSql, now: number, keepHash?: string): void {
+  if (keepHash && /^[0-9a-f]{64}$/.test(keepHash)) {
+    sql.exec(
+      'UPDATE invites SET revoked_at = ? WHERE host = 0 AND revoked_at IS NULL AND token_hash != ?',
+      now,
+      keepHash,
+    );
+    return;
+  }
   sql.exec('UPDATE invites SET revoked_at = ? WHERE host = 0 AND revoked_at IS NULL', now);
+}
+
+const CREATE_BUDGET = `CREATE TABLE IF NOT EXISTS budget (
+  kind TEXT PRIMARY KEY,
+  window_start INTEGER NOT NULL,
+  n INTEGER NOT NULL
+)`;
+
+export function ensureBudgetTable(sql: RoomSql): void {
+  sql.exec(CREATE_BUDGET);
+}
+
+/** `windowMs` of 0 never resets. A fresh window starts at 1. */
+export function takeMatchBudget(sql: RoomSql, kind: string, now: number, limit: number, windowMs: number): boolean {
+  ensureBudgetTable(sql);
+  const row = sql.exec('SELECT window_start, n FROM budget WHERE kind = ?', kind).toArray()[0];
+  const start = integer(row?.window_start);
+  const count = integer(row?.n);
+  const expired = start === null || count === null || (windowMs > 0 && now - start >= windowMs);
+  if (expired) {
+    sql.exec(
+      `INSERT INTO budget (kind, window_start, n) VALUES (?, ?, 1)
+       ON CONFLICT(kind) DO UPDATE SET window_start = excluded.window_start, n = 1`,
+      kind,
+      now,
+    );
+    return true;
+  }
+  if (count >= limit) return false;
+  sql.exec('UPDATE budget SET n = n + 1 WHERE kind = ?', kind);
+  return true;
+}
+
+export function dropMemberHashes(sql: RoomSql, tokenHashes: readonly string[]): void {
+  for (const hash of tokenHashes) {
+    if (!/^[0-9a-f]{64}$/.test(hash)) continue;
+    try {
+      sql.exec('DELETE FROM joined WHERE token_hash = ?', hash);
+    } catch {
+      // The joined table is created with the room.
+    }
+  }
+  try {
+    sql.exec('DELETE FROM roster WHERE device_id NOT IN (SELECT device_id FROM joined)');
+  } catch {
+    // No roster yet.
+  }
 }
 
 export interface SealRow {

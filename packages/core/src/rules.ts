@@ -82,13 +82,25 @@ export type MatchResult =
   | { readonly kind: 'leading'; readonly team: TeamId }
   | { readonly kind: 'draw' };
 
+function gameLead(sets: readonly [SetScore, SetScore, SetScore]): { a: number; b: number } {
+  let a = 0;
+  let b = 0;
+  for (const set of sets) {
+    a += set.a;
+    b += set.b;
+  }
+  return { a, b };
+}
+
 export function matchResult(state: MatchState): MatchResult {
   const decided = matchWinner(state.sets);
   if (decided) return { kind: 'winner', team: decided };
   if (!state.ended) return { kind: 'playing' };
-  const lead = setLead(state.sets);
-  if (lead.a === lead.b) return { kind: 'draw' };
-  return { kind: 'leading', team: lead.a > lead.b ? 'a' : 'b' };
+  const sets = setLead(state.sets);
+  if (sets.a !== sets.b) return { kind: 'leading', team: sets.a > sets.b ? 'a' : 'b' };
+  const games = gameLead(state.sets);
+  if (games.a !== games.b) return { kind: 'leading', team: games.a > games.b ? 'a' : 'b' };
+  return { kind: 'draw' };
 }
 
 function setLead(sets: readonly [SetScore, SetScore, SetScore]): { a: number; b: number } {

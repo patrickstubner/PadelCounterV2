@@ -110,7 +110,7 @@ async function connect(token: string, device: string, agent: string): Promise<{
 
 describe('connected phones', () => {
   it('lists two, three, and four phones, then one offline, without secrets', async () => {
-    const created = await createLive('d41000001');
+    const created = await createLive('d41000001000000000000000000000000');
     const invite = await call(`/matches/${created.matchId}/invites`, {
       method: 'POST',
       headers: { authorization: `Bearer ${created.hostToken}`, 'content-type': 'application/json' },
@@ -119,8 +119,8 @@ describe('connected phones', () => {
     expect(invite.status).toBe(201);
     const shared = (await invite.json()) as { token: string };
 
-    const host = await connect(created.hostToken, 'd41000001', DESKTOP);
-    const second = await connect(shared.token, 'd41000002', IPHONE);
+    const host = await connect(created.hostToken, 'd41000001000000000000000000000000', DESKTOP);
+    const second = await connect(shared.token, 'd41000002000000000000000000000000', IPHONE);
     const two = await host.messages.waitFor((message) => message.type === 'roster' && phonesOf(message).length === 2);
     assertSafe(two);
     assertSafe(second.roster);
@@ -130,12 +130,12 @@ describe('connected phones', () => {
     expect(phonesOf(second.roster).find((phone) => phone.self === true)?.kind).toBe('iphone');
     expect(phonesOf(two).every((phone) => phone.online === true)).toBe(true);
 
-    const third = await connect(shared.token, 'd41000003', ANDROID);
+    const third = await connect(shared.token, 'd41000003000000000000000000000000', ANDROID);
     const three = await host.messages.waitFor((message) => message.type === 'roster' && phonesOf(message).length === 3);
     assertSafe(three);
     expect(phonesOf(third.roster).find((phone) => phone.self === true)?.kind).toBe('android');
 
-    const fourth = await connect(shared.token, 'd41000004', OTHER);
+    const fourth = await connect(shared.token, 'd41000004000000000000000000000000', OTHER);
     const four = await host.messages.waitFor((message) => message.type === 'roster' && phonesOf(message).length === 4);
     assertSafe(four);
     const selfSeat = phonesOf(fourth.roster).find((phone) => phone.self === true)?.seat;
@@ -159,7 +159,7 @@ describe('connected phones', () => {
     const ticket = await call('/join', {
       method: 'POST',
       headers: { authorization: `Bearer ${created.hostToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ device: 'd41000009' }),
+      body: JSON.stringify({ device: 'd41000009000000000000000000000000' }),
     });
     expect(ticket.status).toBe(201);
     const opened = (await ticket.json()) as { ticket: string };
@@ -172,7 +172,7 @@ describe('connected phones', () => {
       type: 'hello',
       protocol: LIVE_PROTOCOL,
       token: 'abcdefghijklmnopqrstuv',
-      device: 'd41000009',
+      device: 'd41000009000000000000000000000000',
       clientNow: Date.now(),
     }));
     const error = await strangerMessages.waitFor((message) => message.type === 'error');

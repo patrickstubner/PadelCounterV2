@@ -572,10 +572,11 @@ export function App() {
       {room.offer ? (
         <ConfirmDialog
           titleId="join-new-title"
-          title="Join new match?"
-          body="You were in the last match. Join this one with one tap."
-          confirmLabel="Join"
+          title="Join the new match?"
+          body="A phone from this match started a new one. Join it, or stay here."
+          confirmLabel="Accept"
           confirmTestId="join-new-match"
+          cancelLabel="Decline"
           cancelTestId="dismiss-join"
           onCancel={room.dismissOffer}
           onConfirm={room.acceptOffer}

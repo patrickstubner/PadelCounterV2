@@ -65,6 +65,17 @@ describe('early end is not a win', () => {
     expect(document.body.textContent).not.toContain('Team A wins');
   });
 
+  it('treats 5-3 as a lead when the set is not finished', async () => {
+    const view = await mount();
+    mounted.push(view);
+    await games('a', 5);
+    await games('b', 3);
+    await press('end-match');
+    await press('confirm-end');
+    expect(document.querySelector('[data-testid="victory"]')).toBeNull();
+    expect(document.querySelector('[data-testid="match-result"]')?.textContent).toBe('Team A leading');
+  });
+
   it('shows a draw without a celebration when neither team has won more sets', async () => {
     const view = await mount();
     mounted.push(view);

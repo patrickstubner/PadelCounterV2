@@ -37,10 +37,31 @@ export const MAX_PLAYER_ACTOR = 32;
 
 export const HOST_ACTOR = 'host';
 
+/** 128 random bits, written as hex with a leading d. */
+export const DEVICE_ID_PATTERN = /^d[a-f0-9]{32}$/;
+
+export function isDeviceId(value: unknown): value is string {
+  return typeof value === 'string' && DEVICE_ID_PATTERN.test(value);
+}
+
+/** New codes a match may mint in one hour. Showing the current code does not count. */
+export const MINT_PER_MATCH = 10;
+
+/** Times New code may replace the shared invite in one hour. */
+export const ROTATE_PER_MATCH = 5;
+
+/** Times one match may move its phones into a later match. */
+export const CARRY_PER_MATCH = 3;
+
+export const MATCH_BUDGET_WINDOW_MS = 60 * 60 * 1000;
+
+/** An offline phone is still part of the court for this long after it was last seen. */
+export const MEMBER_SEEN_MS = RECONNECT_WINDOW_MS;
+
 export function actorId(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   if (value === 'host' || value === 'device') return value;
-  if (/^d[a-f0-9]{8}$/.test(value)) return value;
+  if (isDeviceId(value)) return value;
   const player = /^p([1-9]\d*)$/.exec(value);
   if (!player) return undefined;
   const n = Number(player[1]);
@@ -56,7 +77,7 @@ export function withActor(event: MatchEvent, by: unknown): MatchEvent {
 export function whoLabel(by: string | undefined): string | null {
   if (!by) return null;
   if (by === HOST_ACTOR) return 'Host';
-  if (by === 'device' || /^d[a-f0-9]{8}$/.test(by)) return 'This phone';
+  if (by === 'device' || isDeviceId(by)) return 'This phone';
   const player = /^p([1-9]\d*)$/.exec(by);
   if (player && actorId(by)) return `Player ${player[1]}`;
   return null;
@@ -113,7 +134,7 @@ export function carryDeviceIds(input: {
   const connected: string[] = [];
   const offline: string[] = [];
   for (const member of input.members) {
-    if (!/^d[a-f0-9]{8}$/.test(member.deviceId)) continue;
+    if (!isDeviceId(member.deviceId)) continue;
     if (member.deviceId === exclude || seen.has(member.deviceId)) continue;
     seen.add(member.deviceId);
     if (member.connected) connected.push(member.deviceId);

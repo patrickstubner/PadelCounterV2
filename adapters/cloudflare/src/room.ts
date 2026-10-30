@@ -164,15 +164,18 @@ export function issueInvite(
   role: Role,
   inviteHash: string,
   now: number,
+  keepHash?: string,
 ): { readonly ok: true; readonly record: RoomRecord; readonly expiresAt: number } | RoomFailure {
   const caller = record.invites.find((row) => safeEqualHex(row.tokenHash, callerHash));
   if (!caller || caller.revokedAt !== null || now >= caller.expiresAt) return fail('bad_token');
   if (!canPerform(credentialFor(caller), 'issue_invite')) return fail('forbidden');
   if (role !== 'player') return fail('spectator_not_available');
   const expiresAt = now + JOIN_TOKEN_TTL_MS;
-  const invites = record.invites.map((row) =>
-    row.host || row.revokedAt !== null ? row : { ...row, revokedAt: now },
-  );
+  const invites = record.invites.map((row) => {
+    if (row.host || row.revokedAt !== null) return row;
+    if (keepHash && row.deviceId && safeEqualHex(row.tokenHash, keepHash)) return row;
+    return { ...row, revokedAt: now };
+  });
   return {
     ok: true,
     expiresAt,

@@ -304,7 +304,7 @@ describe('connect overlay and scanned join', () => {
     expect(join?.init?.method).toBe('POST');
     expect(new Headers(join?.init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
     const body = JSON.parse(String(join?.init?.body)) as { device?: string };
-    expect(body.device).toMatch(/^d[a-f0-9]{8}$/);
+    expect(body.device).toMatch(/^d[a-f0-9]{32}$/);
     expect(fetchCalls.some((call) => call.url.includes('/ws/'))).toBe(false);
     const socket = sockets.at(-1);
     await act(async () => {

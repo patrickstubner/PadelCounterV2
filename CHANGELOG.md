@@ -5,7 +5,8 @@
 - Connect is one menu item. Show QR code connects another player, including a code to type. Scan QR code joins. Any phone already in the match can show the same code. The match still stops at 4 phones.
 - While a match is live, the top bar shows how many phones are connected. Tap the number to see each phone: since when, online or last seen, a coarse device type, and “This device” on this phone.
 - New match, while other phones are connected, asks whether to take them along. Yes moves those phones into the new match without a new scan. A phone that is offline joins when it reconnects, while its code is still valid. No starts the new match on this phone only.
-- End match celebrates a winner only when a team has won two sets. Ending early shows “Team A leading” or “Draw”, with no animation and no fanfare. History does not mark a winner for that match.
+- End match celebrates a winner only when a team has won two sets. Ending early shows who is leading. When the sets are level, the games decide, so 5–3 is “Team A leading”. “Draw” is only when the sets and the games are both level. There is no animation and no fanfare. History does not mark a winner for that match.
+- A phone that is asked to move into a new match can accept or decline. Only a phone that has already joined can start that move, and only three times for one match. New code leaves the phone that asked on the court. A device id is 128 random bits.
 
 ## 2.2.5
 

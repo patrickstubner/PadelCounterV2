@@ -26,7 +26,7 @@ describe('public phone list', () => {
     const listed = publicPhoneList(
       [
         {
-          deviceId: 'd11111111',
+          deviceId: 'd11111111000000000000000000000000',
           seat: 'host',
           since: 1_700_000_000_000,
           seen: 1_700_000_000_100,
@@ -37,7 +37,7 @@ describe('public phone list', () => {
           userAgent: IPHONE,
         } as never,
       ],
-      'd11111111',
+      'd11111111000000000000000000000000',
     );
     expect(listed).toEqual([
       {
@@ -53,17 +53,17 @@ describe('public phone list', () => {
     expect(wire).not.toContain('abcdefghijklmnopqrstuv');
     expect(wire).not.toContain('203.0.113.10');
     expect(wire).not.toContain('Mozilla');
-    expect(wire).not.toContain('d11111111');
+    expect(wire).not.toContain('d11111111000000000000000000000000');
     expect(wire).not.toContain('userAgent');
   });
 
   it('marks only the matching device and ignores a forged kind', () => {
     const listed = publicPhoneList(
       [
-        { deviceId: 'd22222222', seat: 'p2', since: 10, seen: 20, online: false, kind: 'android' },
-        { deviceId: 'd33333333', seat: 'p3', since: 11, seen: 21, online: true, kind: 'not-a-kind' },
+        { deviceId: 'd22222222000000000000000000000000', seat: 'p2', since: 10, seen: 20, online: false, kind: 'android' },
+        { deviceId: 'd33333333000000000000000000000000', seat: 'p3', since: 11, seen: 21, online: true, kind: 'not-a-kind' },
       ],
-      'd11111111',
+      'd11111111000000000000000000000000',
     );
     expect(listed).toEqual([
       { seat: 'p2', since: 10, seen: 20, online: false, kind: 'android', self: false },

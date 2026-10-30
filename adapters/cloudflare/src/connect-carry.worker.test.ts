@@ -84,12 +84,12 @@ async function connect(token: string, device: string): Promise<{ ws: WebSocket; 
 
 describe('shared connect and carry, 2.2.6', () => {
   it('lets a guest show the same code, stops at four phones, and revokes on a new code', async () => {
-    const created = await createLive('d10000001');
+    const created = await createLive('d10000001000000000000000000000000');
     const first = await showCode(created.matchId, created.hostToken);
     expect(first.status).toBe(201);
     if (!first.token || !first.code) throw new Error('missing code');
-    await connect(created.hostToken, 'd10000001');
-    const guest = await connect(first.token, 'd10000002');
+    await connect(created.hostToken, 'd10000001000000000000000000000000');
+    const guest = await connect(first.token, 'd10000002000000000000000000000000');
     const shown = await showCode(created.matchId, first.token);
     expect(shown.status).toBe(200);
     expect(shown.token).toBe(first.token);
@@ -101,19 +101,19 @@ describe('shared connect and carry, 2.2.6', () => {
     const typed = await call('/join', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ device: 'd10000003', code: first.code }),
+      body: JSON.stringify({ device: 'd10000003000000000000000000000000', code: first.code }),
     });
     expect(typed.status).toBe(201);
     const minted = (await typed.json()) as { token: string };
     const fromCode = await showCode(created.matchId, minted.token);
     expect(fromCode).toMatchObject({ status: 200, token: first.token, code: first.code });
-    await connect(minted.token, 'd10000003');
-    await connect(first.token, 'd10000004');
+    await connect(minted.token, 'd10000003000000000000000000000000');
+    await connect(first.token, 'd10000004000000000000000000000000');
 
     const fullTicket = await call('/join', {
       method: 'POST',
       headers: { authorization: `Bearer ${first.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ device: 'd10000005' }),
+      body: JSON.stringify({ device: 'd10000005000000000000000000000000' }),
     });
     expect(fullTicket.status).toBe(201);
     const fullBody = (await fullTicket.json()) as { ticket: string };
@@ -122,7 +122,7 @@ describe('shared connect and carry, 2.2.6', () => {
     if (!ws) throw new Error('socket');
     ws.accept();
     const messages = inbox(ws);
-    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: first.token, device: 'd10000005', clientNow: Date.now() }));
+    ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: first.token, device: 'd10000005000000000000000000000000', clientNow: Date.now() }));
     expect((await messages.waitFor((message) => message.type === 'error')).code).toBe('match_full');
 
     const rotated = await showCode(created.matchId, created.hostToken, true);
@@ -132,7 +132,7 @@ describe('shared connect and carry, 2.2.6', () => {
     const old = await call('/join', {
       method: 'POST',
       headers: { authorization: `Bearer ${first.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ device: 'd10000006' }),
+      body: JSON.stringify({ device: 'd10000006000000000000000000000000' }),
     });
     expect(old.status).toBe(401);
     expect((await guest.messages.waitFor((message) => message.type === 'error')).code).toBe('revoked');
@@ -145,20 +145,21 @@ describe('shared connect and carry, 2.2.6', () => {
   });
 
   it('moves three phones, including one that is offline, and does not move a stranger', async () => {
-    const created = await createLive('d20000001');
+    const created = await createLive('d20000001000000000000000000000000');
     const invite = await showCode(created.matchId, created.hostToken);
     if (!invite.token) throw new Error('invite');
-    const online = await connect(invite.token, 'd20000002');
-    const offline = await connect(invite.token, 'd20000003');
+    const hostSocket = await connect(created.hostToken, 'd20000001000000000000000000000000');
+    const online = await connect(invite.token, 'd20000002000000000000000000000000');
+    const offline = await connect(invite.token, 'd20000003000000000000000000000000');
     offline.ws.close();
-    const fourth = await connect(invite.token, 'd20000004');
+    const fourth = await connect(invite.token, 'd20000004000000000000000000000000');
 
     const base = createMatch(1_700_000_100_000);
     const next = await call('/matches', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        device: 'd20000001',
+        device: 'd20000001000000000000000000000000',
         log: { schemaVersion: 2, base, events: [] },
         previousHostToken: created.hostToken,
         carry: true,
@@ -169,7 +170,7 @@ describe('shared connect and carry, 2.2.6', () => {
     const carry = await call(`/matches/${createdNext.matchId}/carry`, {
       method: 'POST',
       headers: { authorization: `Bearer ${createdNext.hostToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ confirm: true, previousHostToken: created.hostToken, device: 'd20000001' }),
+      body: JSON.stringify({ confirm: true, previousHostToken: created.hostToken, device: 'd20000001000000000000000000000000' }),
     });
     expect(carry.status).toBe(200);
     expect(await carry.json()).toMatchObject({ carried: 3 });
@@ -180,13 +181,15 @@ describe('shared connect and carry, 2.2.6', () => {
     expect(movedOnline.token).not.toBe(invite.token);
     expect(movedFourth.token).not.toBe(movedOnline.token);
 
-    const back = await connect(invite.token, 'd20000003');
+    const back = await connect(invite.token, 'd20000003000000000000000000000000');
     const movedOffline = await back.messages.waitFor((message) => message.type === 'match_moved');
     expect(typeof movedOffline.token).toBe('string');
-    await connect(String(movedOffline.token), 'd20000003');
-    await connect(String(movedOnline.token), 'd20000002');
+    await connect(String(movedOffline.token), 'd20000003000000000000000000000000');
+    await connect(String(movedOnline.token), 'd20000002000000000000000000000000');
 
-    const stranger = await connect(invite.token, 'd20000009');
+    hostSocket.ws.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const stranger = await connect(invite.token, 'd20000009000000000000000000000000');
     const notice = await stranger.messages.waitFor((message) => message.type === 'match_notice' || message.type === 'match_moved');
     expect(notice.type).toBe('match_notice');
     expect(JSON.stringify(notice)).not.toContain('token');

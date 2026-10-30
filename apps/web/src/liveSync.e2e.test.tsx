@@ -1046,8 +1046,8 @@ describe('live socket reconnect', () => {
     }) as typeof fetch;
     await mountJoined();
     await reconnectOffline(ended, ['a']);
-    for (let attempt = 0; attempt < 40 && !scoreLine().includes('Draw'); attempt += 1) await wait(50);
-    expect(scoreLine()).toContain('Draw');
+    for (let attempt = 0; attempt < 40 && !scoreLine().includes('leading'); attempt += 1) await wait(50);
+    expect(scoreLine()).toContain('Team A leading');
     expect(scoreLine()).toContain('4–1');
     expect(scoreLine()).not.toContain('5–1');
   }, 8_000);

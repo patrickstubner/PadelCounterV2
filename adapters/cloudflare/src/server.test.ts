@@ -82,6 +82,12 @@ function harness(options?: {
           } else if (request.url.endsWith('/discard')) {
             ops.push('do-discard');
             return Response.json({ ok: true });
+          } else if (request.url.endsWith('/carry-claim')) {
+            const info = options?.roomInfo ?? { lastChangeAt: 0, members: [] };
+            return Response.json({
+              starterDevice: `d${'0'.repeat(32)}`,
+              members: info.members,
+            });
           } else if (request.url.endsWith('/reconnect-info')) {
             return Response.json(
               options?.roomInfo ?? { lastChangeAt: 0, members: [] },
@@ -190,12 +196,18 @@ function harness(options?: {
                 revokedAt: values[4] === null || values[4] === undefined ? null : Number(values[4]),
               });
             } else if (sql.startsWith('DELETE FROM credentials')) {
+              const revokedOnly = sql.includes('revoked_at IS NOT NULL');
               for (const [hash, row] of creds) {
-                if (row.matchId === values[0]) creds.delete(hash);
+                if (row.matchId !== values[0]) continue;
+                if (revokedOnly && row.revokedAt === null) continue;
+                creds.delete(hash);
               }
             } else if (sql.startsWith('UPDATE credentials SET revoked_at')) {
+              const keep = sql.includes('token_hash !=') ? String(values[2]) : null;
               for (const row of creds.values()) {
-                if (row.matchId === values[1] && row.host === 0 && row.revokedAt === null) row.revokedAt = Number(values[0]);
+                if (row.matchId === values[1] && row.host === 0 && row.revokedAt === null && row.tokenHash !== keep) {
+                  row.revokedAt = Number(values[0]);
+                }
               }
             } else if (sql.startsWith('INSERT INTO tickets')) {
               tickets.set(String(values[0]), { matchId: String(values[1]), expiresAt: Number(values[2]) });
@@ -261,7 +273,7 @@ function harness(options?: {
   return { env, found, calls, ops, creds, quota, joins, edge, queries };
 }
 
-function postMatch(ip: string, extra?: Record<string, unknown>, device = 'd00000001'): Request {
+function postMatch(ip: string, extra?: Record<string, unknown>, device = 'd00000001000000000000000000000000'): Request {
   return new Request('https://padel.example/matches', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip },
@@ -269,7 +281,7 @@ function postMatch(ip: string, extra?: Record<string, unknown>, device = 'd00000
   });
 }
 
-function joinRequest(ip: string, token: string, device = 'd00000001'): Request {
+function joinRequest(ip: string, token: string, device = 'd00000001000000000000000000000000'): Request {
   return new Request('https://padel.example/join', {
     method: 'POST',
     headers: {
@@ -401,21 +413,21 @@ describe('match index gate', () => {
 
   it('limits join tickets per device in D1 across addresses', async () => {
     const { env } = harness();
-    const created = await handleFetch(postMatch('192.0.2.1', undefined, 'd00000099'), env);
+    const created = await handleFetch(postMatch('192.0.2.1', undefined, 'd00000099000000000000000000000000'), env);
     expect(created.status).toBe(201);
     const body = (await created.json()) as { hostToken: string };
     for (let i = 0; i < 20; i += 1) {
-      const response = await handleFetch(joinRequest(`192.0.2.${i + 2}`, body.hostToken, 'd00000099'), env);
+      const response = await handleFetch(joinRequest(`192.0.2.${i + 2}`, body.hostToken, 'd00000099000000000000000000000000'), env);
       expect(response.status).toBe(201);
     }
-    const blocked = await handleFetch(joinRequest('192.0.2.30', body.hostToken, 'd00000099'), env);
+    const blocked = await handleFetch(joinRequest('192.0.2.30', body.hostToken, 'd00000099000000000000000000000000'), env);
     expect(blocked.status).toBe(429);
     const payload = (await blocked.json()) as { error: string; message: string };
     expect(payload).toEqual({
       error: 'join_device_limit',
       message: 'Too many connection attempts from this device. Wait a minute.',
     });
-    const other = await handleFetch(joinRequest('192.0.2.31', body.hostToken, 'd00000098'), env);
+    const other = await handleFetch(joinRequest('192.0.2.31', body.hostToken, 'd00000098000000000000000000000000'), env);
     expect(other.status).toBe(201);
     const missingDevice = await handleFetch(
       new Request('https://padel.example/join', {
@@ -433,24 +445,24 @@ describe('match index gate', () => {
     expect(missingDevice.status).toBe(400);
     expect(((await missingDevice.json()) as { error: string }).error).toBe('invalid_device');
     const missingKey = harness({ omitQuotaKey: true });
-    const unconfigured = await handleFetch(joinRequest('192.0.2.33', body.hostToken, 'd00000099'), missingKey.env);
+    const unconfigured = await handleFetch(joinRequest('192.0.2.33', body.hostToken, 'd00000099000000000000000000000000'), missingKey.env);
     expect(unconfigured.status).toBe(503);
   });
 
   it('counts the network only after a rejected token and still admits a valid one', async () => {
     const { env, joins } = harness();
-    const created = await handleFetch(postMatch('192.0.2.60', undefined, 'd00000060'), env);
+    const created = await handleFetch(postMatch('192.0.2.60', undefined, 'd00000060000000000000000000000000'), env);
     expect(created.status).toBe(201);
     const body = (await created.json()) as { hostToken: string };
     const window = joinWindow(Date.now());
-    const device = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd00000060', String(window));
+    const device = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd00000060000000000000000000000000', String(window));
     const network = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '192.0.2.61', String(window));
-    const ok = await handleFetch(joinRequest('192.0.2.61', body.hostToken, 'd00000060'), env);
+    const ok = await handleFetch(joinRequest('192.0.2.61', body.hostToken, 'd00000060000000000000000000000000'), env);
     expect(ok.status).toBe(201);
     expect(joins.get(`${device}|${window}`)).toBe(1);
     expect(joins.has(`${network}|${window}`)).toBe(false);
 
-    const bad = await handleFetch(joinRequest('192.0.2.61', 'b'.repeat(22), 'd00000060'), env);
+    const bad = await handleFetch(joinRequest('192.0.2.61', 'b'.repeat(22), 'd00000060000000000000000000000000'), env);
     expect(bad.status).toBe(401);
     expect(((await bad.json()) as { error: string }).error).toBe('bad_token');
     expect(joins.get(`${network}|${window}`)).toBe(1);
@@ -466,10 +478,10 @@ describe('match index gate', () => {
 
     const full = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '192.0.2.71', String(window));
     joins.set(`${full}|${window}`, 60);
-    const still = await handleFetch(joinRequest('192.0.2.71', body.hostToken, 'd00000070'), env);
+    const still = await handleFetch(joinRequest('192.0.2.71', body.hostToken, 'd00000070000000000000000000000000'), env);
     expect(still.status).toBe(201);
     expect(joins.get(`${full}|${window}`)).toBe(60);
-    const overflow = await handleFetch(joinRequest('192.0.2.71', 'c'.repeat(22), 'd00000071'), env);
+    const overflow = await handleFetch(joinRequest('192.0.2.71', 'c'.repeat(22), 'd00000071000000000000000000000000'), env);
     expect(overflow.status).toBe(429);
     expect(await overflow.json()).toEqual({
       error: 'join_network_limit',
@@ -480,17 +492,17 @@ describe('match index gate', () => {
 
   it('reads a rejected join before the one network write and then stops further writes', async () => {
     const { env, joins, queries } = harness();
-    const created = await handleFetch(postMatch('198.51.100.60', undefined, 'd00000061'), env);
+    const created = await handleFetch(postMatch('198.51.100.60', undefined, 'd00000061000000000000000000000000'), env);
     expect(created.status).toBe(201);
     const body = (await created.json()) as { hostToken: string };
     const window = joinWindow(Date.now());
     const network = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '198.51.100.61', String(window));
-    const device = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd00000061', String(window));
+    const device = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd00000061000000000000000000000000', String(window));
     const writes = (from: number) => queries.slice(from).filter((sql) => /^(INSERT|UPDATE|DELETE)\b/.test(sql));
 
     for (let i = 0; i < 5; i += 1) {
       const mark = queries.length;
-      const bad = await handleFetch(joinRequest('198.51.100.61', 'e'.repeat(22), 'd00000061'), env);
+      const bad = await handleFetch(joinRequest('198.51.100.61', 'e'.repeat(22), 'd00000061000000000000000000000000'), env);
       expect(bad.status).toBe(401);
       const added = writes(mark);
       expect(added).toEqual([
@@ -505,7 +517,7 @@ describe('match index gate', () => {
     expect(joins.has(`${device}|${window}`)).toBe(false);
 
     const mark = queries.length;
-    const stopped = await handleFetch(joinRequest('198.51.100.61', 'e'.repeat(22), 'd00000061'), env);
+    const stopped = await handleFetch(joinRequest('198.51.100.61', 'e'.repeat(22), 'd00000061000000000000000000000000'), env);
     expect(stopped.status).toBe(429);
     expect(((await stopped.json()) as { error: string }).error).toBe('slow_down');
     expect(writes(mark)).toEqual([]);
@@ -513,7 +525,7 @@ describe('match index gate', () => {
     expect(joins.get(`${network}|${window}`)).toBe(5);
 
     const okMark = queries.length;
-    const ok = await handleFetch(joinRequest('198.51.100.61', body.hostToken, 'd00000061'), env);
+    const ok = await handleFetch(joinRequest('198.51.100.61', body.hostToken, 'd00000061000000000000000000000000'), env);
     expect(ok.status).toBe(201);
     expect(joins.get(`${device}|${window}`)).toBe(1);
     expect(joins.get(`${network}|${window}`)).toBe(5);
@@ -567,7 +579,7 @@ describe('match index gate', () => {
 
     const keyed = harness();
     await handleFetch(postMatch('192.0.2.80'), keyed.env);
-    await handleFetch(postMatch('192.0.2.80', undefined, 'd00000080'), keyed.env);
+    await handleFetch(postMatch('192.0.2.80', undefined, 'd00000080000000000000000000000000'), keyed.env);
     const expected = await quotaMac(TEST_QUOTA_HMAC_KEY, 'rate-ip', '192.0.2.80', 'binding');
     expect(keyed.edge.keys).toEqual([expected, expected]);
     expect(expected).not.toContain('192.0.2.80');
@@ -622,20 +634,20 @@ describe('match index gate', () => {
   it('allows ten creates a day on one device and blocks the eleventh', async () => {
     const { env, ops } = harness();
     for (let i = 0; i < 10; i += 1) {
-      const response = await handleFetch(postMatch('203.0.113.71', undefined, 'd00000071'), env);
+      const response = await handleFetch(postMatch('203.0.113.71', undefined, 'd00000071000000000000000000000000'), env);
       expect(response.status).toBe(201);
     }
-    const blocked = await handleFetch(postMatch('203.0.113.71', undefined, 'd00000071'), env);
+    const blocked = await handleFetch(postMatch('203.0.113.71', undefined, 'd00000071000000000000000000000000'), env);
     expect(blocked.status).toBe(429);
     expect(await blocked.json()).toEqual({
       error: 'device_daily_limit',
       message: "You've reached 10 new matches today on this device.",
     });
     expect(ops.filter((op) => op === 'do-create')).toHaveLength(10);
-    const sameDevice = await handleFetch(postMatch('203.0.113.72', undefined, 'd00000071'), env);
+    const sameDevice = await handleFetch(postMatch('203.0.113.72', undefined, 'd00000071000000000000000000000000'), env);
     expect(sameDevice.status).toBe(429);
     expect(((await sameDevice.json()) as { error: string }).error).toBe('device_daily_limit');
-    const otherDevice = await handleFetch(postMatch('203.0.113.71', undefined, 'd00000072'), env);
+    const otherDevice = await handleFetch(postMatch('203.0.113.71', undefined, 'd00000072000000000000000000000000'), env);
     expect(otherDevice.status).toBe(201);
     expect(ops.filter((op) => op === 'do-create')).toHaveLength(11);
   });
@@ -645,7 +657,7 @@ describe('match index gate', () => {
     const day = quotaDay(Date.now());
     const ipHash = await quotaMac(TEST_QUOTA_HMAC_KEY, 'ip', '198.51.100.51', day);
     quota.set(`${ipHash}|${day}`, 100);
-    const response = await handleFetch(postMatch('198.51.100.51', undefined, 'd00000051'), env);
+    const response = await handleFetch(postMatch('198.51.100.51', undefined, 'd00000051000000000000000000000000'), env);
     expect(response.status).toBe(429);
     expect(await response.json()).toEqual({
       error: 'network_daily_limit',
@@ -670,7 +682,7 @@ describe('match index gate', () => {
       roomInfo: {
         lastChangeAt: Date.now(),
         members: [
-          { deviceId: 'd11111111', connected: true },
+          { deviceId: 'd11111111000000000000000000000000', connected: true },
           { deviceId: 'not-a-phone', connected: true },
         ],
       },
@@ -725,14 +737,14 @@ describe('match index gate', () => {
         }
       })
       .find((body) => Array.isArray(body?.offers));
-    expect(notify?.offers?.map((offer) => offer.deviceId)).toEqual(['d11111111']);
+    expect(notify?.offers?.map((offer) => offer.deviceId)).toEqual(['d11111111000000000000000000000000']);
   });
 
   it('still moves joined phones when the last point is older than an hour', async () => {
     const { env, ops } = harness({
       roomInfo: {
         lastChangeAt: Date.now() - 2 * 60 * 60 * 1000,
-        members: [{ deviceId: 'd11111111', connected: false }],
+        members: [{ deviceId: 'd11111111000000000000000000000000', connected: false }],
       },
     });
     const previousResponse = await handleFetch(postMatch('203.0.113.96'), env);
@@ -844,7 +856,7 @@ describe('match index gate', () => {
 
   it('consumes a websocket ticket once with a single delete', async () => {
     const { env, calls } = harness();
-    const created = await handleFetch(postMatch('198.51.100.21', undefined, 'd00000021'), env);
+    const created = await handleFetch(postMatch('198.51.100.21', undefined, 'd00000021000000000000000000000000'), env);
     const body = (await created.json()) as { hostToken: string };
     const joined = await handleFetch(joinRequest('198.51.100.22', body.hostToken), env);
     expect(joined.status).toBe(201);
@@ -868,7 +880,7 @@ describe('match index gate', () => {
 
   it('keeps one player credential when a second invite insert fails', async () => {
     const { env, creds, ops } = harness({ failPlayerInsert: true });
-    const created = await handleFetch(postMatch('198.51.100.31', undefined, 'd00000031'), env);
+    const created = await handleFetch(postMatch('198.51.100.31', undefined, 'd00000031000000000000000000000000'), env);
     const body = (await created.json()) as { matchId: string; hostToken: string };
     const first = await handleFetch(
       new Request(`https://padel.example/matches/${body.matchId}/invites`, {

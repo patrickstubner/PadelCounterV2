@@ -137,7 +137,7 @@ describe('celebrationWinner', () => {
       true,
     );
     expect(celebrationWinner(split)).toBeNull();
-    expect(matchResult(split)).toEqual({ kind: 'draw' });
+    expect(matchResult(split)).toEqual({ kind: 'leading', team: 'b' });
     const levelGames = match(
       [
         { a: 6, b: 5 },
@@ -147,7 +147,7 @@ describe('celebrationWinner', () => {
       true,
     );
     expect(celebrationWinner(levelGames)).toBeNull();
-    expect(matchResult(levelGames)).toEqual({ kind: 'draw' });
+    expect(matchResult(levelGames)).toEqual({ kind: 'leading', team: 'a' });
     const blank = match([{ a: 0, b: 0 }, { a: 0, b: 0 }, { a: 0, b: 0 }], true);
     expect(celebrationWinner(blank)).toBeNull();
     expect(matchResult(blank)).toEqual({ kind: 'draw' });

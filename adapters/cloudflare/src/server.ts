@@ -12,6 +12,7 @@ import {
   replayScore,
   carryDeviceIds,
   createMatchId,
+  isDeviceId,
   isJoinToken,
   isRoomCode,
   normalizeJoinCode,
@@ -145,8 +146,6 @@ async function enforceMatchRouteLimit(
   return null;
 }
 
-const DEVICE_ID = /^d[a-f0-9]{8}$/;
-
 async function createMatch(request: Request, env: ServerEnv): Promise<Response> {
   const body = await readJson(request, 96_000);
   if (!body || typeof body !== 'object') return Response.json({ error: 'invalid_match' }, { status: 400 });
@@ -158,7 +157,7 @@ async function createMatch(request: Request, env: ServerEnv): Promise<Response> 
   if (parseLiveTeamName(played.teams.a.name) !== played.teams.a.name || parseLiveTeamName(played.teams.b.name) !== played.teams.b.name) {
     return Response.json({ error: 'invalid_match' }, { status: 400 });
   }
-  if (typeof record.device !== 'string' || !DEVICE_ID.test(record.device)) {
+  if (!isDeviceId(record.device)) {
     return Response.json({ error: 'invalid_match' }, { status: 400 });
   }
   const secret = quotaSecret(env.QUOTA_HMAC_KEY);
@@ -303,7 +302,16 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
     body: JSON.stringify({ memberToken, inviteToken, role: role satisfies Role, rotate, code }),
   });
   if (!stored.ok) return pass(stored);
-  const payload = (await stored.json()) as { expiresAt?: number; reuse?: unknown; token?: unknown; code?: unknown };
+  const payload = (await stored.json()) as {
+    expiresAt?: number;
+    reuse?: unknown;
+    token?: unknown;
+    code?: unknown;
+    keepHash?: unknown;
+    sessionToken?: unknown;
+    sessionDevice?: unknown;
+    sessionExpiresAt?: unknown;
+  };
   if (payload.reuse === true && isJoinToken(payload.token)) {
     const reusedCode = typeof payload.code === 'string' ? payload.code : null;
     return Response.json(
@@ -319,13 +327,29 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
   }
   const expiresAt = payload.expiresAt ?? now + JOIN_TOKEN_TTL_MS;
   const inviteHash = await sha256Hex(inviteToken);
+  const kept = typeof payload.keepHash === 'string' && /^[0-9a-f]{64}$/.test(payload.keepHash) ? payload.keepHash : undefined;
   await index.replacePlayerCredential(matchId, now, {
     tokenHash: inviteHash,
     matchId,
     host: false,
     expiresAt,
     revokedAt: null,
-  });
+  }, kept);
+  if (isJoinToken(payload.sessionToken) && isDeviceId(payload.sessionDevice)) {
+    await index.insertCredential({
+      tokenHash: await sha256Hex(payload.sessionToken),
+      matchId,
+      host: false,
+      expiresAt: typeof payload.sessionExpiresAt === 'number' ? payload.sessionExpiresAt : expiresAt,
+      revokedAt: null,
+      deviceId: payload.sessionDevice,
+    });
+  }
+  try {
+    await index.deleteRevokedAccess(matchId);
+  } catch {
+    // The new code is already stored. Old rows can wait for the next purge.
+  }
   let savedCode: string | null = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const next = attempt === 0 ? code : randomJoinCode();
@@ -350,7 +374,14 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
     });
   }
   return Response.json(
-    { matchId, token: inviteToken, role: 'player', expiresAt, ...(savedCode ? { code: savedCode } : {}) },
+    {
+      matchId,
+      token: inviteToken,
+      role: 'player',
+      expiresAt,
+      ...(savedCode ? { code: savedCode } : {}),
+      ...(isJoinToken(payload.sessionToken) ? { sessionToken: payload.sessionToken } : {}),
+    },
     { status: 201, headers: { 'cache-control': 'no-store' } },
   );
 }
@@ -383,7 +414,7 @@ async function roomInfo(env: ServerEnv, matchId: string, hostToken: string): Pro
 async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
   const body = await readJson(request, 1000);
   const device = body && typeof body === 'object' ? (body as { device?: unknown }).device : undefined;
-  if (typeof device !== 'string' || !DEVICE_ID.test(device)) {
+  if (!isDeviceId(device)) {
     return Response.json({ error: 'invalid_device', message: ROOM_MESSAGES.invalid_device }, { status: 400 });
   }
   const rawCode = body && typeof body === 'object' ? (body as { code?: unknown }).code : undefined;
@@ -422,9 +453,52 @@ async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
       { status: 429 },
     );
   }
+  if (!credential.host && !credential.deviceId) return bindSharedJoin(env, index, credential, device, now);
   const ticket = randomToken();
   await index.putTicket(await sha256Hex(ticket), credential.matchId, now + TICKET_TTL_MS);
   return Response.json({ ticket, expiresAt: now + TICKET_TTL_MS }, { status: 201, headers: { 'cache-control': 'no-store' } });
+}
+
+/** A scanned QR becomes this phone's own credential. The shared code stays for showing. */
+async function bindSharedJoin(
+  env: ServerEnv,
+  index: MatchIndex,
+  credential: { matchId: string; expiresAt: number },
+  device: string,
+  now: number,
+): Promise<Response> {
+  const token = randomToken();
+  const tokenHash = await sha256Hex(token);
+  const stub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(credential.matchId));
+  const added = await stub.fetch('https://match.internal/player-invite', {
+    method: 'POST',
+    body: JSON.stringify({ token, deviceId: device, expiresAt: credential.expiresAt }),
+  });
+  if (added.status === 409) return joinCodeRejected();
+  if (!added.ok) return Response.json({ error: 'unavailable' }, { status: 503 });
+  const minted = await readMintGrant(added);
+  const claimed = await index.claimMinted({
+    tokenHash,
+    matchId: credential.matchId,
+    host: false,
+    expiresAt: credential.expiresAt,
+    revokedAt: null,
+    deviceId: device,
+  }, now);
+  if (!claimed) {
+    await stub.fetch('https://match.internal/revoke-minted', {
+      method: 'POST',
+      body: JSON.stringify({ tokenHash, restore: minted.replaced, revokedAt: minted.revokedAt }),
+    });
+    return joinCodeRejected();
+  }
+  const ticket = randomToken();
+  const ticketExpiresAt = now + TICKET_TTL_MS;
+  await index.putTicket(await sha256Hex(ticket), credential.matchId, ticketExpiresAt);
+  return Response.json(
+    { token, expiresAt: credential.expiresAt, ticket, ticketExpiresAt },
+    { status: 201, headers: { 'cache-control': 'no-store' } },
+  );
 }
 
 function joinCodeRejected(): Response {
@@ -556,7 +630,6 @@ async function carryPlayers(request: Request, env: ServerEnv, pathname: string):
   const body = await readJson(request, 2000);
   const confirm = Boolean(body && typeof body === 'object' && (body as { confirm?: unknown }).confirm === true);
   const previousHostToken = body && typeof body === 'object' ? (body as { previousHostToken?: unknown }).previousHostToken : undefined;
-  const starterDevice = body && typeof body === 'object' ? (body as { device?: unknown }).device : undefined;
   if (!isJoinToken(previousHostToken)) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
   const index = d1MatchIndex(env.DB);
   const now = Date.now();
@@ -568,13 +641,30 @@ async function carryPlayers(request: Request, env: ServerEnv, pathname: string):
   if (!previous || previous.revokedAt !== null || now >= previous.expiresAt || previous.matchId === matchId) {
     return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
   }
-  const info = await roomInfo(env, previous.matchId, previousHostToken);
-  if (!info) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
+  if (!confirm) return Response.json({ carried: 0, offered: true }, { status: 200 });
+  const previousStub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(previous.matchId));
+  const claim = await previousStub.fetch('https://match.internal/carry-claim', {
+    method: 'POST',
+    body: JSON.stringify({ hostToken: previousHostToken }),
+  });
+  if (claim.status === 429) return pass(claim);
+  if (!claim.ok) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
+  const claimed = (await claim.json()) as { starterDevice?: unknown; members?: unknown };
+  const starterDevice = isDeviceId(claimed.starterDevice) ? claimed.starterDevice : null;
+  const members = Array.isArray(claimed.members)
+    ? claimed.members.flatMap((row) => {
+        if (!row || typeof row !== 'object') return [];
+        const member = row as { deviceId?: unknown; connected?: unknown };
+        if (!isDeviceId(member.deviceId) || typeof member.connected !== 'boolean') return [];
+        return [{ deviceId: member.deviceId, connected: member.connected }];
+      })
+    : [];
+  if (!starterDevice) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
   const players = carryDeviceIds({
-    confirm,
+    confirm: true,
     memberInitiated: true,
-    members: info.members,
-    excludeDeviceId: typeof starterDevice === 'string' ? starterDevice : null,
+    members,
+    excludeDeviceId: starterDevice,
   });
   if (!confirm || players.length === 0) return Response.json({ carried: 0, offered: true }, { status: 200 });
   const offers: { deviceId: string; token: string }[] = [];
@@ -596,7 +686,6 @@ async function carryPlayers(request: Request, env: ServerEnv, pathname: string):
     });
     offers.push({ deviceId, token });
   }
-  const previousStub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(previous.matchId));
   await previousStub.fetch('https://match.internal/notify', {
     method: 'POST',
     body: JSON.stringify({ hostToken: previousHostToken, offers }),

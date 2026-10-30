@@ -72,11 +72,16 @@ async function errorText(response: Response): Promise<string> {
 
 function thisDevice(): string {
   try {
-    if (typeof localStorage === 'undefined') return 'd00000000';
-    return deviceId(localStorage);
+    if (typeof localStorage !== 'undefined') return deviceId(localStorage);
   } catch {
-    return 'd00000000';
+    // Storage can throw in private mode; fall through to a fresh id.
   }
+  return deviceId({
+    getItem: () => null,
+    setItem: () => {
+      throw new Error('unavailable');
+    },
+  });
 }
 
 function devApiOverride(): string {
@@ -527,15 +532,16 @@ export function useLive(
   };
 
   const open = (token: string, asJoin: boolean, existingTicket?: string) => {
+    let sessionToken = token;
     const held = tokenRef.current;
-    if (held?.token === token && (opening.current || socketIsUp(socketRef.current))) return;
-    if (held && held.token !== token) {
+    if (held?.token === sessionToken && (opening.current || socketIsUp(socketRef.current))) return;
+    if (held && held.token !== sessionToken) {
       clearPending();
       generation.current += 1;
       opening.current = false;
     }
     detachSocket(socketRef.current);
-    if (!rememberToken(token, asJoin)) {
+    if (!rememberToken(sessionToken, asJoin)) {
       dropToken();
       clearPending();
       liveRef.current = null;
@@ -571,7 +577,7 @@ export function useLive(
       noteError(message);
       if (tokenRef.current && message !== ROOM_MESSAGES.not_configured) wakeRef.current();
     };
-    if (!isJoinToken(token)) {
+    if (!isJoinToken(sessionToken)) {
       fail(ROOM_MESSAGES.bad_token);
       return;
     }
@@ -600,12 +606,19 @@ export function useLive(
             fail(await errorText(response));
             return;
           }
-          const body = (await response.json()) as { ticket?: unknown };
+          const body = (await response.json()) as { ticket?: unknown; token?: unknown };
           if (typeof body.ticket !== 'string') {
             fail(ROOM_MESSAGES.offline);
             return;
           }
           ticket = body.ticket;
+          if (isJoinToken(body.token) && body.token !== sessionToken) {
+            if (!rememberToken(body.token, true)) {
+              fail(ROOM_MESSAGES.bad_token);
+              return;
+            }
+            sessionToken = body.token;
+          }
           if (!asJoin) {
             setError(null);
             setJoinError(null);
@@ -620,7 +633,7 @@ export function useLive(
       const ws = new WebSocket(socketUrl(api, ticket));
       socketRef.current = ws;
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token, device: thisDevice(), clientNow: Date.now() }));
+        ws.send(JSON.stringify({ type: 'hello', protocol: LIVE_PROTOCOL, token: sessionToken, device: thisDevice(), clientNow: Date.now() }));
       };
       ws.onmessage = (event) => {
         if (socketRef.current !== ws) return;
@@ -637,8 +650,7 @@ export function useLive(
         }
         if (notice.kind === 'match_moved') {
           setContinued(false);
-          setJoining(true);
-          open(notice.token, true);
+          rememberOffer(notice.token);
           return;
         }
         if (notice.kind === 'match_notice') {
@@ -1031,10 +1043,14 @@ export function useLive(
       setError(await errorText(response));
       return;
     }
-    const body = (await response.json()) as { token?: unknown; expiresAt?: unknown; code?: unknown };
+    const body = (await response.json()) as { token?: unknown; expiresAt?: unknown; code?: unknown; sessionToken?: unknown };
     if (typeof body.token !== 'string') {
       setError(ROOM_MESSAGES.offline);
       return;
+    }
+    if (isJoinToken(body.sessionToken)) {
+      rememberToken(body.sessionToken, true);
+      open(body.sessionToken, false);
     }
     const expiresAt = typeof body.expiresAt === 'number' && Number.isFinite(body.expiresAt)
       ? body.expiresAt
@@ -1223,7 +1239,6 @@ export function useLive(
                 body: JSON.stringify({
                   confirm: true,
                   previousHostToken: options.previousHostToken,
-                  device: thisDevice(),
                 }),
               });
               if (!carried.ok) setError(await errorText(carried));

@@ -14,6 +14,7 @@ import {
   ROOM_CLOSE_MS,
   actorId,
   canReopen,
+  isDeviceId,
   CARRY_LIMIT,
   carryDeviceIds,
   carryTokenHashes,
@@ -31,11 +32,21 @@ const NOW = 1_700_000_000_000;
 const JOINED = 'a'.repeat(64);
 const OUTSIDER = 'b'.repeat(64);
 
+describe('device ids', () => {
+  it('accepts 128 bits and rejects the old 32-bit form', () => {
+    expect(isDeviceId(`d${'a'.repeat(32)}`)).toBe(true);
+    expect(isDeviceId(`d${'a'.repeat(8)}`)).toBe(false);
+    expect(isDeviceId('d00000000')).toBe(false);
+    expect(actorId(`d${'b'.repeat(32)}`)).toBe(`d${'b'.repeat(32)}`);
+    expect(actorId(`d${'b'.repeat(8)}`)).toBeUndefined();
+  });
+});
+
 describe('reconnect offer', () => {
   const invites = [
-    { tokenHash: JOINED, host: false, deviceId: 'd11111111' },
-    { tokenHash: OUTSIDER, host: false, deviceId: 'd22222222' },
-    { tokenHash: 'c'.repeat(64), host: true, deviceId: 'd33333333' },
+    { tokenHash: JOINED, host: false, deviceId: 'd11111111000000000000000000000000' },
+    { tokenHash: OUTSIDER, host: false, deviceId: 'd22222222000000000000000000000000' },
+    { tokenHash: 'c'.repeat(64), host: true, deviceId: 'd33333333000000000000000000000000' },
   ];
 
   it('carries nobody when the member does not confirm', () => {
@@ -49,13 +60,13 @@ describe('reconnect offer', () => {
       memberInitiated: true,
       joinedHashes: [shared, 'c'.repeat(64)],
       invites: [
-        { tokenHash: shared, host: false, deviceId: 'd11111111' },
-        { tokenHash: shared, host: false, deviceId: 'd22222222' },
+        { tokenHash: shared, host: false, deviceId: 'd11111111000000000000000000000000' },
+        { tokenHash: shared, host: false, deviceId: 'd22222222000000000000000000000000' },
         { tokenHash: shared, host: false, deviceId: null },
-        { tokenHash: 'c'.repeat(64), host: true, deviceId: 'd33333333' },
+        { tokenHash: 'c'.repeat(64), host: true, deviceId: 'd33333333000000000000000000000000' },
       ],
     });
-    expect(carried.map((row) => row.deviceId)).toEqual(['d11111111', 'd22222222', 'd33333333']);
+    expect(carried.map((row) => row.deviceId)).toEqual(['d11111111000000000000000000000000', 'd22222222000000000000000000000000', 'd33333333000000000000000000000000']);
   });
 
   it('does not carry an outsider or a request that did not come from a member', () => {
@@ -71,19 +82,19 @@ describe('reconnect offer', () => {
 
   it('moves connected phones first, skips the starter, and stops at three others', () => {
     const members = [
-      { deviceId: 'd00000001', connected: false },
-      { deviceId: 'd00000002', connected: true },
-      { deviceId: 'd00000003', connected: true },
-      { deviceId: 'd00000004', connected: false },
+      { deviceId: 'd00000001000000000000000000000000', connected: false },
+      { deviceId: 'd00000002000000000000000000000000', connected: true },
+      { deviceId: 'd00000003000000000000000000000000', connected: true },
+      { deviceId: 'd00000004000000000000000000000000', connected: false },
       { deviceId: 'not-a-device', connected: true },
-      { deviceId: 'd00000002', connected: true },
+      { deviceId: 'd00000002000000000000000000000000', connected: true },
     ];
     expect(carryDeviceIds({
       confirm: true,
       memberInitiated: true,
       members,
-      excludeDeviceId: 'd00000003',
-    })).toEqual(['d00000002', 'd00000001', 'd00000004']);
+      excludeDeviceId: 'd00000003000000000000000000000000',
+    })).toEqual(['d00000002000000000000000000000000', 'd00000001000000000000000000000000', 'd00000004000000000000000000000000']);
     expect(CARRY_LIMIT).toBe(3);
     expect(carryDeviceIds({ confirm: false, memberInitiated: true, members })).toEqual([]);
     expect(carryDeviceIds({ confirm: true, memberInitiated: false, members })).toEqual([]);
