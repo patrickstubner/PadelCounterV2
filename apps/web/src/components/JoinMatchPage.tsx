@@ -29,7 +29,12 @@ function stopStream(stream: MediaStream | null): void {
 /** The camera preview stops on its own so an old phone is not left capturing. */
 export const CAMERA_LIMIT_MS = 90_000;
 
+/** At most about 8 scans a second. A faster loop keeps the main thread busy. */
+const SCAN_GAP_MS = 120;
+
 const CAMERA_STOPPED = 'Camera stopped. Tap Use camera to try again.';
+
+const CAMERA_BLOCKED = 'Allow camera access in Settings, then tap Use camera.';
 
 /** Safari will not show the camera unless the video is inline, muted, and play() is awaited. */
 function prepareVideo(video: HTMLVideoElement): void {
@@ -142,8 +147,12 @@ export function JoinMatchPage({
   const [cameraHint, setCameraHint] = useState<string | null>(null);
   const onTokenRef = useRef(onToken);
   const onCloseRef = useRef(onClose);
+  const enteringRef = useRef(false);
+  const pauseScanRef = useRef<(() => void) | null>(null);
+  const resumeScanRef = useRef<(() => void) | null>(null);
   onTokenRef.current = onToken;
   onCloseRef.current = onClose;
+  enteringRef.current = entering;
 
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -179,21 +188,42 @@ export function JoinMatchPage({
 
   useEffect(() => {
     if (!camera) return;
+    if (entering) pauseScanRef.current?.();
+    else resumeScanRef.current?.();
+  }, [camera, entering]);
+
+  useEffect(() => {
+    if (!camera) return;
     const video = videoRef.current;
     let stream: MediaStream | null = null;
     let stopped = false;
     let scanning = false;
+    let waiting = false;
     let limit = 0;
+    let gapTimer = 0;
     let cancelFrame: (() => void) | null = null;
     const stop = () => {
       stopped = true;
+      waiting = false;
       window.clearTimeout(limit);
+      window.clearTimeout(gapTimer);
       cancelFrame?.();
       cancelFrame = null;
+      pauseScanRef.current = null;
+      resumeScanRef.current = null;
       const current = stream;
       stream = null;
       releaseVideo(video);
       stopStream(current);
+    };
+    pauseScanRef.current = () => {
+      window.clearTimeout(gapTimer);
+      waiting = true;
+    };
+    resumeScanRef.current = () => {
+      if (stopped || scanning || !waiting) return;
+      waiting = false;
+      void run();
     };
     limit = window.setTimeout(() => {
       if (stopped) return;
@@ -211,7 +241,8 @@ export function JoinMatchPage({
     };
     document.addEventListener('visibilitychange', onHide);
     const run = async () => {
-      if (stopped || scanning || !video) return;
+      if (stopped || scanning || !video || enteringRef.current) return;
+      const started = performance.now();
       scanning = true;
       try {
         const text = await scanWithin(scanFrame ?? readQrVideo, video);
@@ -231,9 +262,15 @@ export function JoinMatchPage({
         scanning = false;
       }
       if (stopped || !video) return;
-      cancelFrame = scheduleScanFrame(video, () => {
+      if (enteringRef.current) {
+        waiting = true;
+        return;
+      }
+      const used = performance.now() - started;
+      waiting = false;
+      gapTimer = window.setTimeout(() => {
         void run();
-      });
+      }, Math.max(0, SCAN_GAP_MS - used));
     };
     void (async () => {
       const devices = navigator.mediaDevices;
@@ -245,9 +282,15 @@ export function JoinMatchPage({
       }
       try {
         stream = await openScanCamera((constraints) => devices.getUserMedia(constraints));
-      } catch {
+      } catch (error) {
         if (stopped) return;
-        setLocalError('The camera did not start.');
+        const name = error instanceof Error ? error.name : '';
+        if (name === 'NotAllowedError' || name === 'SecurityError') {
+          setLocalError(null);
+          setCameraHint(CAMERA_BLOCKED);
+        } else {
+          setLocalError('The camera did not start.');
+        }
         setCamera(false);
         return;
       }
@@ -316,16 +359,19 @@ export function JoinMatchPage({
         onClick={(event) => event.stopPropagation()}
       >
         {camera ? (
-          <video
-            ref={videoRef}
-            className="join-camera"
-            data-testid="join-camera"
-            muted
-            playsInline
-            autoPlay
-            width={1920}
-            height={1080}
-          />
+          <>
+            <video
+              ref={videoRef}
+              className="join-camera"
+              data-testid="join-camera"
+              muted
+              playsInline
+              autoPlay
+              width={1920}
+              height={1080}
+            />
+            <div className="scan-target" data-testid="scan-target" aria-hidden="true" />
+          </>
         ) : null}
         <div className={camera ? 'join-scan-ui' : undefined}>
           <div className="connect-dialog-bar">
@@ -336,7 +382,7 @@ export function JoinMatchPage({
           </div>
           {camera ? (
             <div className="join-scan-bottom">
-              <p className="join-scan-hint" data-testid="scan-hint">Fill the frame with the code and hold steady.</p>
+              <p className="join-scan-hint" data-testid="scan-hint">Hold the code inside the white frame.</p>
               {configured ? null : (
                 <p data-testid="join-unconfigured">Live sharing is not configured in this build.</p>
               )}

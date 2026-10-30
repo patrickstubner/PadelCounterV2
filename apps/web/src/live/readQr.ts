@@ -21,10 +21,10 @@ interface DecodeAttempt {
   cancelled: boolean;
 }
 
-type Sample = (coverage: number, edge: number) => ImageData | null;
+type Region = 'center' | 'tight' | 'full' | 'top' | 'bottom';
 
 interface DecodeStep {
-  readonly coverage: number;
+  readonly region: Region;
   readonly edge: number;
   readonly prepare: 'raw' | 'stretch' | 'glare' | 'invert';
   readonly effort: number;
@@ -49,19 +49,39 @@ const MAX_TEXT = 2048;
 const MAX_SIDE = 4096;
 
 /**
- * Order is the usual camera frame first, then exposure, glare, a tight crop, a
- * smaller image for blur, and an inverted pass for a reflection.
+ * A still photo tries every region. The long edge of the whole frame is about
+ * 960, and the top and bottom squares cover a code the centre square misses.
+ * Glare is its own pass: a bright spike must not be handled only by stretching.
  */
-const STEPS: readonly DecodeStep[] = [
-  { coverage: 1, edge: 640, prepare: 'raw', effort: 2 },
-  { coverage: 1, edge: 640, prepare: 'stretch', effort: 3 },
-  { coverage: 1, edge: 640, prepare: 'glare', effort: 3 },
-  { coverage: 0.55, edge: 640, prepare: 'stretch', effort: 3 },
-  { coverage: 1, edge: 420, prepare: 'stretch', effort: 2 },
-  { coverage: 1, edge: 640, prepare: 'invert', effort: 2 },
+const STILL_STEPS: readonly DecodeStep[] = [
+  { region: 'center', edge: 640, prepare: 'raw', effort: 2 },
+  { region: 'center', edge: 640, prepare: 'glare', effort: 3 },
+  { region: 'full', edge: 960, prepare: 'raw', effort: 2 },
+  { region: 'top', edge: 640, prepare: 'raw', effort: 2 },
+  { region: 'bottom', edge: 640, prepare: 'raw', effort: 2 },
+  { region: 'center', edge: 640, prepare: 'stretch', effort: 3 },
+  { region: 'tight', edge: 640, prepare: 'stretch', effort: 3 },
+  { region: 'center', edge: 420, prepare: 'stretch', effort: 2 },
+  { region: 'center', edge: 640, prepare: 'invert', effort: 2 },
 ];
 
+/** Every camera attempt reads the centre, then one rotating heavier pass. */
+const VIDEO_EXTRA: readonly DecodeStep[] = [
+  { region: 'full', edge: 960, prepare: 'raw', effort: 2 },
+  { region: 'top', edge: 640, prepare: 'raw', effort: 2 },
+  { region: 'bottom', edge: 640, prepare: 'raw', effort: 2 },
+  { region: 'center', edge: 640, prepare: 'glare', effort: 3 },
+  { region: 'center', edge: 640, prepare: 'stretch', effort: 3 },
+  { region: 'center', edge: 640, prepare: 'invert', effort: 2 },
+  { region: 'tight', edge: 640, prepare: 'stretch', effort: 2 },
+];
+
+const CENTER_RAW: DecodeStep = { region: 'center', edge: 640, prepare: 'raw', effort: 2 };
+
+let videoTurn = 0;
+
 let cachedDetector: QrDetector | null = null;
+let cachedDetectorCtor: BarcodeDetectorHost['BarcodeDetector'] | null = null;
 
 /**
  * True while a frame is being read.
@@ -73,9 +93,14 @@ let decodeBusy = false;
 let scratch: HTMLCanvasElement | null = null;
 
 function nativeDetector(): QrDetector | null {
-  if (cachedDetector) return cachedDetector;
   const host = globalThis as BarcodeDetectorHost;
-  if (typeof host.BarcodeDetector !== 'function') return null;
+  if (typeof host.BarcodeDetector !== 'function') {
+    cachedDetector = null;
+    cachedDetectorCtor = null;
+    return null;
+  }
+  if (cachedDetector && cachedDetectorCtor === host.BarcodeDetector) return cachedDetector;
+  cachedDetectorCtor = host.BarcodeDetector;
   cachedDetector = new host.BarcodeDetector({ formats: ['qr_code'] });
   return cachedDetector;
 }
@@ -196,9 +221,67 @@ export function invertImage(image: ImageData): ImageData {
   return grayFrom(image, (value) => 255 - value);
 }
 
+/**
+ * Remove a slow brightness ramp, such as a lamp across a phone screen.
+ * The block is larger than a module, so the code stays and the ramp goes.
+ */
+export function evenLighting(image: ImageData): ImageData {
+  const { width, height } = image;
+  const count = width * height;
+  const luma = new Uint8Array(count);
+  for (let index = 0; index < count; index += 1) luma[index] = lumaAt(image.data, index * 4);
+  const block = 28;
+  const columns = Math.ceil(width / block);
+  const rows = Math.ceil(height / block);
+  const means = new Float32Array(columns * rows);
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      let sum = 0;
+      let seen = 0;
+      const y0 = row * block;
+      const x0 = column * block;
+      const y1 = Math.min(height, y0 + block);
+      const x1 = Math.min(width, x0 + block);
+      for (let y = y0; y < y1; y += 1) {
+        for (let x = x0; x < x1; x += 1) {
+          sum += luma[y * width + x] ?? 0;
+          seen += 1;
+        }
+      }
+      means[row * columns + column] = seen > 0 ? sum / seen : 128;
+    }
+  }
+  const data = new Uint8ClampedArray(count * 4);
+  for (let y = 0; y < height; y += 1) {
+    const gy = y / block - 0.5;
+    const row0 = Math.max(0, Math.min(rows - 1, Math.floor(gy)));
+    const row1 = Math.max(0, Math.min(rows - 1, row0 + 1));
+    const fy = Math.max(0, Math.min(1, gy - row0));
+    for (let x = 0; x < width; x += 1) {
+      const gx = x / block - 0.5;
+      const column0 = Math.max(0, Math.min(columns - 1, Math.floor(gx)));
+      const column1 = Math.max(0, Math.min(columns - 1, column0 + 1));
+      const fx = Math.max(0, Math.min(1, gx - column0));
+      const mean00 = means[row0 * columns + column0] ?? 128;
+      const mean10 = means[row0 * columns + column1] ?? 128;
+      const mean01 = means[row1 * columns + column0] ?? 128;
+      const mean11 = means[row1 * columns + column1] ?? 128;
+      const mean = mean00 * (1 - fx) * (1 - fy) + mean10 * fx * (1 - fy) + mean01 * (1 - fx) * fy + mean11 * fx * fy;
+      const value = luma[y * width + x] ?? 0;
+      const scaled = Math.max(0, Math.min(255, Math.round(128 + (value - mean) * 8)));
+      const offset = (y * width + x) * 4;
+      data[offset] = scaled;
+      data[offset + 1] = scaled;
+      data[offset + 2] = scaled;
+      data[offset + 3] = 255;
+    }
+  }
+  return stretchContrast(asImage(data, width, height));
+}
+
 function prepare(image: ImageData, kind: DecodeStep['prepare']): ImageData {
   if (kind === 'stretch') return stretchContrast(image);
-  if (kind === 'glare') return flattenGlare(image);
+  if (kind === 'glare') return evenLighting(flattenGlare(image));
   if (kind === 'invert') return invertImage(stretchContrast(image));
   return image;
 }
@@ -222,16 +305,71 @@ function budgetLeft(started: number): number {
   return FRAME_BUDGET_MS - (Date.now() - started);
 }
 
-function cachedSample(sample: Sample): Sample {
-  const cache = new Map<string, ImageData | null>();
-  return (coverage, edge) => {
-    const key = `${coverage}:${edge}`;
-    const found = cache.get(key);
-    if (found !== undefined) return found;
-    const image = sample(coverage, edge);
-    cache.set(key, image);
+interface SampleRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+function regionRect(width: number, height: number, region: Region): SampleRect {
+  if (region === 'full') return { x: 0, y: 0, width, height };
+  const side = Math.min(width, height);
+  const x = (width - side) / 2;
+  if (region === 'top') return { x, y: 0, width: side, height: side };
+  if (region === 'bottom') return { x, y: Math.max(0, height - side), width: side, height: side };
+  return { x, y: (height - side) / 2, width: side, height: side };
+}
+
+function resample(image: ImageData, rect: SampleRect, destWidth: number, destHeight: number): ImageData | null {
+  if (destWidth < 8 || destHeight < 8 || rect.width < 8 || rect.height < 8) return null;
+  if (
+    rect.x === 0 &&
+    rect.y === 0 &&
+    rect.width === image.width &&
+    rect.height === image.height &&
+    destWidth === image.width &&
+    destHeight === image.height
+  ) {
     return image;
-  };
+  }
+  const data = new Uint8ClampedArray(destWidth * destHeight * 4);
+  for (let y = 0; y < destHeight; y += 1) {
+    const gy = rect.y + ((y + 0.5) * rect.height) / destHeight - 0.5;
+    const y1 = Math.floor(gy);
+    const fy = gy - y1;
+    for (let x = 0; x < destWidth; x += 1) {
+      const gx = rect.x + ((x + 0.5) * rect.width) / destWidth - 0.5;
+      const x1 = Math.floor(gx);
+      const fx = gx - x1;
+      const to = (y * destWidth + x) * 4;
+      for (let band = 0; band < 3; band += 1) {
+        const a = channel(image.data, image.width, image.height, x1, y1, band);
+        const b = channel(image.data, image.width, image.height, x1 + 1, y1, band);
+        const c = channel(image.data, image.width, image.height, x1, y1 + 1, band);
+        const d = channel(image.data, image.width, image.height, x1 + 1, y1 + 1, band);
+        const top = a + (b - a) * fx;
+        const bottom = c + (d - c) * fx;
+        data[to + band] = Math.max(0, Math.min(255, Math.round(top + (bottom - top) * fy)));
+      }
+      data[to + 3] = 255;
+    }
+  }
+  return asImage(data, destWidth, destHeight);
+}
+
+function stillSample(image: ImageData, step: DecodeStep): ImageData | null {
+  if (step.region === 'center') return sampleSquare(image, step.edge, 1);
+  if (step.region === 'tight') return sampleSquare(image, step.edge, 0.55);
+  const rect = regionRect(image.width, image.height, step.region);
+  if (step.region === 'full') {
+    const long = Math.max(rect.width, rect.height);
+    const scale = step.edge / long;
+    const width = Math.max(8, Math.round(rect.width * scale));
+    const height = Math.max(8, Math.round(rect.height * scale));
+    return resample(image, rect, width, height);
+  }
+  return resample(image, rect, step.edge, step.edge);
 }
 
 /** Resolves with null if `work` does not settle in time. `work` itself is left running. */
@@ -259,20 +397,35 @@ async function loadDecoder(): Promise<QrDecode> {
   return imported.default as QrDecode;
 }
 
-async function decodeSamples(sample: Sample, attempt: DecodeAttempt): Promise<string | null> {
-  const take = cachedSample(sample);
+async function decodeSamples(
+  take: (step: DecodeStep) => ImageData | null,
+  steps: readonly DecodeStep[],
+  attempt: DecodeAttempt,
+): Promise<string | null> {
+  const cache = new Map<string, ImageData | null>();
   const decodeQR = await loadDecoder();
   if (attempt.cancelled) return null;
   const started = Date.now();
-  for (const step of STEPS) {
+  for (const step of steps) {
     const remaining = budgetLeft(started);
     if (attempt.cancelled || remaining <= 8) return null;
-    const cropped = take(step.coverage, step.edge);
+    const key = `${step.region}:${step.edge}`;
+    let cropped = cache.get(key);
+    if (cropped === undefined) {
+      cropped = take(step);
+      cache.set(key, cropped);
+    }
     if (!cropped) continue;
     const text = readDecoded(decodeQR, prepare(cropped, step.prepare), step.effort, remaining);
     if (text) return text;
   }
   return null;
+}
+
+function videoSteps(): readonly DecodeStep[] {
+  const extra = VIDEO_EXTRA[videoTurn % VIDEO_EXTRA.length] ?? CENTER_RAW;
+  videoTurn += 1;
+  return [CENTER_RAW, extra];
 }
 
 function frameCanvas(): HTMLCanvasElement | null {
@@ -281,20 +434,31 @@ function frameCanvas(): HTMLCanvasElement | null {
   return scratch;
 }
 
-function grabSquare(video: HTMLVideoElement, edge: number, coverage: number): ImageData | null {
+function grabRegion(video: HTMLVideoElement, step: DecodeStep): ImageData | null {
   const width = video.videoWidth;
   const height = video.videoHeight;
   if (width < 8 || height < 8) return null;
-  const side = Math.min(width, height);
-  const span = Math.max(8, Math.min(side, Math.round(side * coverage)));
+  const rect = step.region === 'tight'
+    ? (() => {
+        const side = Math.min(width, height);
+        const span = Math.max(8, Math.round(side * 0.55));
+        return { x: (width - span) / 2, y: (height - span) / 2, width: span, height: span };
+      })()
+    : regionRect(width, height, step.region);
+  const dest = step.region === 'full'
+    ? {
+        width: Math.max(8, Math.round((rect.width * step.edge) / Math.max(rect.width, rect.height))),
+        height: Math.max(8, Math.round((rect.height * step.edge) / Math.max(rect.width, rect.height))),
+      }
+    : { width: step.edge, height: step.edge };
   const canvas = frameCanvas();
   const context = canvas?.getContext('2d', { willReadFrequently: true });
   if (!canvas || !context) return null;
-  canvas.width = edge;
-  canvas.height = edge;
-  context.imageSmoothingEnabled = span !== edge;
-  context.drawImage(video, (width - span) / 2, (height - span) / 2, span, span, 0, 0, edge, edge);
-  return context.getImageData(0, 0, edge, edge);
+  canvas.width = dest.width;
+  canvas.height = dest.height;
+  context.imageSmoothingEnabled = true;
+  context.drawImage(video, rect.x, rect.y, rect.width, rect.height, 0, 0, dest.width, dest.height);
+  return context.getImageData(0, 0, dest.width, dest.height);
 }
 
 async function nativeValue(detect: () => Promise<readonly QrHit[]>, attempt: DecodeAttempt): Promise<string | null> {
@@ -328,7 +492,7 @@ async function readImage(image: ImageData, attempt: DecodeAttempt): Promise<stri
     }
   }
   if (attempt.cancelled) return null;
-  return decodeSamples((coverage, edge) => sampleSquare(image, edge, coverage), attempt);
+  return decodeSamples((step) => stillSample(image, step), STILL_STEPS, attempt);
 }
 
 async function readVideo(video: HTMLVideoElement, attempt: DecodeAttempt): Promise<string | null> {
@@ -338,7 +502,7 @@ async function readVideo(video: HTMLVideoElement, attempt: DecodeAttempt): Promi
     if (text) return text;
   }
   if (attempt.cancelled || video.videoWidth < 8 || video.videoHeight < 8) return null;
-  return decodeSamples((coverage, edge) => grabSquare(video, edge, coverage), attempt);
+  return decodeSamples((step) => grabRegion(video, step), videoSteps(), attempt);
 }
 
 function readLocked(work: (attempt: DecodeAttempt) => Promise<string | null>): Promise<string | null> {

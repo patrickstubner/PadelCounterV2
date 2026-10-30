@@ -335,6 +335,15 @@ An iPhone home-screen app could not read the QR shown on an Android screen. The 
 - Host QR. The symbol is SVG rectangles at error correction H, with a four-module quiet zone inside the graphic, so the corner finders are not on the edge and a radius cannot clip them. The accessible name does not include the token. The dialog behind the code is white and asks for full brightness. The page cannot set the screen brightness. There is no new host, no new permission, and no new request.
 - Dependencies and licence. No new runtime package. `qr` 0.7.2 and `qrcode` 1.5.4 stay exact pins. NOTICE already records both licences. The fixture PNGs are generated in this repo. The test PNG reader uses the platform `DecompressionStream`. It is not part of the client bundle.
 
+## Review 23, 2026-10-30
+
+Follow-up on the 2.2.5 scanner, still on the same pull request. No new dependency, no new host, and no change to the content security policy.
+
+- The decoder reads the whole frame, with the long edge about 960 pixels, and the top and bottom squares, as well as the centre. A white frame on the preview is that area. A code next to Close is not ignored.
+- A camera attempt reads the centre and one rotating pass, then waits until 120 ms have passed since it started. That is about 8 tries a second. Enter code pauses the loop, so typing is not waiting on a decode. The picture is still not uploaded.
+- `NotAllowedError` and `SecurityError` stop the constraint fallback. The page shows “Allow camera access in Settings, then tap Use camera.” The browser's own message is not shown. `OverconstrainedError`, `NotReadableError`, and `AbortError` still try the next size.
+- A decoded string longer than 2048 characters is still dropped, including one returned by `BarcodeDetector`. An empty native result still falls through to `qr` 0.7.2. Closing the scanner, including while `getUserMedia` has not resolved, stops every track.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.

@@ -38,10 +38,23 @@ function paceFrames(): void {
   };
 }
 
+function liveTrack() {
+  const track = {
+    readyState: 'live' as 'live' | 'ended',
+    kind: 'video' as const,
+    stop: vi.fn(),
+    getCapabilities: () => ({}),
+  };
+  track.stop.mockImplementation(() => {
+    track.readyState = 'ended';
+  });
+  return track;
+}
+
 function camera(trackCount = 1) {
   paceFrames();
-  const stops = Array.from({ length: trackCount }, () => vi.fn());
-  const tracks = stops.map((stop) => ({ stop, kind: 'video' as const, getCapabilities: () => ({}) }));
+  const tracks = Array.from({ length: trackCount }, () => liveTrack());
+  const stops = tracks.map((track) => track.stop);
   const stream = new MediaStream();
   Object.defineProperty(stream, 'getTracks', { value: () => tracks });
   Object.defineProperty(stream, 'getVideoTracks', { value: () => tracks });
@@ -91,7 +104,8 @@ describe('join match in the app', () => {
     expect(document.querySelector('[data-testid="join-match-dialog"]')?.classList.contains('join-scanning')).toBe(true);
     expect(document.querySelector('[data-testid="enter-code"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="match-code-input"]')).toBeNull();
-    expect(document.querySelector('[data-testid="scan-hint"]')?.textContent).toContain('Fill the frame');
+    expect(document.querySelector('[data-testid="scan-target"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="scan-hint"]')?.textContent).toContain('white frame');
     await act(async () => {
       document.querySelector<HTMLButtonElement>('[data-testid="enter-code"]')?.click();
     });
@@ -307,6 +321,160 @@ describe('join match in the app', () => {
       document.querySelector<HTMLButtonElement>('[data-testid="join-by-code"]')?.click();
     });
     expect(codes).toEqual(['K7M4-2QAB']);
+  });
+
+  it('stops the tracks when the scanner unmounts', async () => {
+    const media = camera(2);
+    let scanned = 0;
+    render(
+      <JoinMatchPage
+        configured
+        error={null}
+        pageHref={PAGE}
+        onCode={() => undefined}
+        onToken={() => undefined}
+        onClose={() => undefined}
+        scanFrame={async () => {
+          scanned += 1;
+          return null;
+        }}
+      />,
+    );
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]')?.click();
+      for (let attempt = 0; attempt < 20 && scanned === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    });
+    expect(scanned).toBeGreaterThan(0);
+    await act(async () => {
+      root?.unmount();
+    });
+    root = null;
+    expect(media.stops.every((stop) => stop.mock.calls.length > 0)).toBe(true);
+  });
+
+  it('stops a camera that starts after the scanner has closed', async () => {
+    paceFrames();
+    let release: ((stream: MediaStream) => void) | null = null;
+    const track = liveTrack();
+    const stream = new MediaStream();
+    Object.defineProperty(stream, 'getTracks', { value: () => [track] });
+    Object.defineProperty(stream, 'getVideoTracks', { value: () => [track] });
+    const getUserMedia = vi.fn(
+      () =>
+        new Promise<MediaStream>((resolve) => {
+          release = resolve;
+        }),
+    );
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    HTMLVideoElement.prototype.play = () => Promise.resolve();
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      if (!open) return null;
+      return (
+        <JoinMatchPage
+          configured
+          error={null}
+          pageHref={PAGE}
+          onCode={() => undefined}
+          onToken={() => undefined}
+          onClose={() => setOpen(false)}
+        />
+      );
+    }
+    render(<Harness />);
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]')?.click();
+      await Promise.resolve();
+    });
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="join-match-close"]')?.click();
+    });
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
+    await act(async () => {
+      release?.(stream);
+      await Promise.resolve();
+    });
+    expect(track.readyState).toBe('ended');
+    expect(track.stop).toHaveBeenCalled();
+  });
+
+  it('does not ask again when camera access is denied, and tells you to enable it', async () => {
+    paceFrames();
+    const getUserMedia = vi.fn(async () => {
+      throw new DOMException('denied at /private/settings', 'NotAllowedError');
+    });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    render(
+      <JoinMatchPage
+        configured
+        error={null}
+        pageHref={PAGE}
+        onCode={() => undefined}
+        onToken={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-testid="join-camera-hint"]')?.textContent).toBe(
+      'Allow camera access in Settings, then tap Use camera.',
+    );
+    expect(document.body.textContent ?? '').not.toContain('/private/settings');
+    expect(document.querySelector('[data-testid="join-camera"]')).toBeNull();
+  });
+
+  it('waits at least 120 ms between scans and pauses while Enter code is open', async () => {
+    vi.useFakeTimers();
+    camera();
+    let calls = 0;
+    render(
+      <JoinMatchPage
+        configured
+        error={null}
+        pageHref={PAGE}
+        onCode={() => undefined}
+        onToken={() => undefined}
+        onClose={() => undefined}
+        scanFrame={async () => {
+          calls += 1;
+          return null;
+        }}
+      />,
+    );
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]')?.click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(calls).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(calls).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    expect(calls).toBe(2);
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="enter-code"]')?.click();
+    });
+    const paused = calls;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(calls).toBe(paused);
   });
 
   it('closes on Escape and keeps focus inside the dialog', () => {

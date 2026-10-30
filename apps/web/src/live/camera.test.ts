@@ -16,6 +16,30 @@ describe('scan camera', () => {
     expect(calls[1]?.video).toEqual(SCAN_VIDEO_CONSTRAINTS[1]);
   });
 
+  it('does not try another size after NotAllowedError or SecurityError', async () => {
+    for (const name of ['NotAllowedError', 'SecurityError']) {
+      const getUserMedia = vi.fn(async () => {
+        throw new DOMException('denied', name);
+      });
+      await expect(openScanCamera(getUserMedia)).rejects.toMatchObject({ name });
+      expect(getUserMedia).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('tries the next size when the camera is busy or the size is refused', async () => {
+    const stream = { getTracks: () => [] } as unknown as MediaStream;
+    for (const name of ['NotReadableError', 'AbortError']) {
+      const calls: string[] = [];
+      const getUserMedia = vi.fn(async () => {
+        calls.push(name);
+        if (calls.length === 1) throw new DOMException('retry', name);
+        return stream;
+      });
+      await expect(openScanCamera(getUserMedia)).resolves.toBe(stream);
+      expect(getUserMedia).toHaveBeenCalledTimes(2);
+    }
+  });
+
   it('requests continuous focus only when the track lists it', async () => {
     const apply = vi.fn(async () => undefined);
     const quiet = {

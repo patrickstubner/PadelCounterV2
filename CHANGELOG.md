@@ -6,6 +6,8 @@
 - An iPhone can read a code shown on another phone. The scan keeps trying contrast, glare, and a smaller crop, and it does not need the browser's barcode detector.
 - As soon as a code is read, the camera turns off and the match score is shown.
 - The phone that shows the code draws it large, with a white margin, and asks for full brightness.
+- A code at the top or bottom of the picture is read, and a white frame shows the area. The scan rests between tries, and it pauses while Enter code is open.
+- If the camera is blocked, the page asks you to allow it in Settings and does not ask again.
 
 ## 2.2.4
 

@@ -1,17 +1,28 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { create } from 'qrcode';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { QR_QUIET_MODULES, QrCode } from './QrCode';
 
 const TOKEN = 'abcdefghijklmnopqrstuv';
+const LINK = `https://patrickstubner.github.io/PadelCounterV2/#/join?t=${TOKEN}`;
+
+function darkCount(level: 'M' | 'H'): number {
+  const qr = create(LINK, { errorCorrectionLevel: level });
+  let count = 0;
+  for (let y = 0; y < qr.modules.size; y += 1) {
+    for (let x = 0; x < qr.modules.size; x += 1) {
+      if (qr.modules.get(y, x)) count += 1;
+    }
+  }
+  return count;
+}
 
 describe('host QR', () => {
   it('keeps a quiet zone inside the graphic and does not print the token', () => {
-    const html = renderToStaticMarkup(
-      <QrCode text={`https://patrickstubner.github.io/PadelCounterV2/#/join?t=${TOKEN}`} />,
-    );
+    const html = renderToStaticMarkup(<QrCode text={LINK} />);
     expect(html).toContain('aria-label="QR code for players"');
     expect(html).not.toContain(TOKEN);
     expect(html).toContain('fill="#ffffff"');
@@ -20,9 +31,12 @@ describe('host QR', () => {
       x: Number(match[1]),
       y: Number(match[2]),
     }));
-    expect(modules.length).toBeGreaterThan(20);
-    expect(Math.min(...modules.map((cell) => cell.x))).toBe(QR_QUIET_MODULES);
-    expect(Math.min(...modules.map((cell) => cell.y))).toBe(QR_QUIET_MODULES);
+    expect(QR_QUIET_MODULES).toBe(4);
+    expect(Math.min(...modules.map((cell) => cell.x))).toBe(4);
+    expect(Math.min(...modules.map((cell) => cell.y))).toBe(4);
+    const high = darkCount('H');
+    expect(high).not.toBe(darkCount('M'));
+    expect(modules.length).toBe(high);
     const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../app.css'), 'utf8');
     const qrRule = css.slice(css.indexOf('.qr {'));
     expect(qrRule.startsWith('.qr {')).toBe(true);

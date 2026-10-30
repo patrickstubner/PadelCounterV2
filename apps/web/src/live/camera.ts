@@ -22,10 +22,14 @@ interface FocusTrack {
   applyConstraints: (constraints: MediaTrackConstraints) => Promise<void>;
 }
 
+const RETRYABLE_CAMERA_ERRORS = new Set(['OverconstrainedError', 'NotReadableError', 'AbortError']);
+
 /**
  * Open the rear camera. The first constraint set asks for a 1080p frame.
  * A phone that refuses that size is asked for 720p, then for any rear camera.
  * Audio is never requested.
+ * NotAllowedError and SecurityError are not retried. Another size will not
+ * change a denied permission, and a second prompt is worse on iOS.
  */
 export async function openScanCamera(
   getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>,
@@ -36,6 +40,8 @@ export async function openScanCamera(
       return await getUserMedia({ audio: false, video });
     } catch (error) {
       last = error;
+      const name = error instanceof Error ? error.name : '';
+      if (!RETRYABLE_CAMERA_ERRORS.has(name)) throw error;
     }
   }
   if (last instanceof Error) throw last;
