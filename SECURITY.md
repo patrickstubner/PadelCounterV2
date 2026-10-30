@@ -563,7 +563,8 @@ Decisions:
 - P26-05. Tests cover the first code leaving a device-bound seat in place, a guest continuing a match that has not ended, disconnect on continue while live, `join_offer` following the same path as a move, the new-match note clearing, `pointercancel`, the right mouse button, and a disabled control.
 - P26-06. `POST /carry` is not in the per-address match-route budget. Phones on one network can still move after other requests have filled that budget. The per-phone carry cap in the durable object is unchanged.
 - P26-07. Take phones counts every other phone on the roster, including offline ones. The roster is already only on an admitted socket.
-- P26-09. D1 revocation for End match, activity, kick, and (in the next commit of this branch) leave uses the durable object name, not `base.matchId`. The update is `token_hash` and `match_id` together. A later `match/new` in the log cannot aim the revoke at another row.
+- P26-09. D1 revocation for End match, activity, kick, and leave uses the durable object name, not `base.matchId`. The update is `token_hash` and `match_id` together. A later `match/new` in the log cannot aim the revoke at another row.
+- Leave. `POST /matches/:id/leave` requires the caller’s bearer token. The worker checks that token against this match before it calls the durable object. The body is not read for a target, so a phone cannot name another device or seat. The object revokes that token only, and the D1 update uses the durable object name, never `base.matchId`. The shared player code (`device_id` is null) is not revoked, so the join code still works. Other sockets stay open. Five calls per credential per ten minutes, and the same per-address cap as invite and join. After that the answer is `leave_limited`. A missing or foreign token is `bad_token`.
 
 ## Out of scope
 

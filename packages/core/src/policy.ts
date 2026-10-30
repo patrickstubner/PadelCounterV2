@@ -72,6 +72,11 @@ export const KICK_PER_MATCH = 8;
 /** Kick-war window. A new code does not reset a credential that is still in the match. */
 export const KICK_WINDOW_MS = 10 * 60 * 1000;
 
+/** Times one credential may call Leave in {@link LEAVE_WINDOW_MS}. */
+export const LEAVE_PER_ACTOR = 5;
+
+export const LEAVE_WINDOW_MS = 10 * 60 * 1000;
+
 /** Same number as {@link CARRY_PER_DEVICE}. The cap is per starter phone, not per match. */
 export const CARRY_PER_MATCH = CARRY_PER_DEVICE;
 

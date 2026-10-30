@@ -16,6 +16,9 @@ describe('public routes', () => {
     expect(classifyPath('POST', '/join')).toBe('ticket');
     expect(classifyPath('GET', '/ws/abcdefghijklmnopqrstuv')).toBe('socket');
     expect(classifyPath('POST', `/matches/${ID}/carry`)).toBe('carry');
+    expect(classifyPath('POST', `/matches/${ID}/leave`)).toBe('leave');
+    expect(classifyPath('POST', `/matches/${ID}/leave`)).not.toBe('none');
+    expect(classifyPath('GET', `/matches/${ID}/leave`)).toBe('none');
     expect(classifyPath('POST', '/auth/google')).toBe('auth');
   });
 
@@ -38,6 +41,7 @@ describe('public routes', () => {
     expect(limitsMatchRoute('socket')).toBe(true);
     expect(limitsMatchRoute('ticket')).toBe(true);
     expect(limitsMatchRoute('carry')).toBe(false);
+    expect(limitsMatchRoute('leave')).toBe(true);
     expect(limitsMatchRoute('health')).toBe(false);
     expect(limitsMatchRoute('auth')).toBe(false);
     expect(limitsMatchRoute('none')).toBe(false);
@@ -109,6 +113,12 @@ describe('rate limit', () => {
     expect(kick).toContain('durableMatchId');
     expect(kick).toContain('revokeCredentialInMatch');
     expect(kick).not.toContain('base.matchId');
+    const leave = source.slice(source.indexOf('private async leave'), source.indexOf('private async kick'));
+    expect(leave).toContain('durableMatchId');
+    expect(leave).toContain('revokeCredentialInMatch');
+    expect(leave).not.toContain('base.matchId');
+    expect(leave).not.toContain('fields.device');
+    expect(leave).not.toContain('record.seat');
     const index = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'match-index.ts'), 'utf8');
     expect(index).toContain('token_hash = ? AND match_id = ?');
   });

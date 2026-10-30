@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, JOIN_TOKEN_TTL_MS, KICK_PER_ACTOR, KICK_PER_MATCH, KICK_WINDOW_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, UNUSED_MINT_MS, actorId, canonicalCausalId, clampClockOffset, connectionCloses, decideKick, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isLegacyDeviceId, isRole, isRoomCode, isUuid, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
+import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, JOIN_TOKEN_TTL_MS, KICK_PER_ACTOR, KICK_PER_MATCH, KICK_WINDOW_MS, LEAVE_PER_ACTOR, LEAVE_WINDOW_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, UNUSED_MINT_MS, actorId, canonicalCausalId, clampClockOffset, connectionCloses, decideKick, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isLegacyDeviceId, isRole, isRoomCode, isUuid, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
@@ -109,6 +109,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       if (request.method === 'POST' && url.pathname === '/notify') return this.notify(request);
       if (request.method === 'POST' && url.pathname === '/create') return this.create(request);
       if (request.method === 'POST' && url.pathname === '/invite') return this.invite(request);
+      if (request.method === 'POST' && url.pathname === '/leave') return this.leave(request);
       if (request.method === 'POST' && url.pathname === '/player-invite') return this.playerInvite(request);
       if (request.method === 'POST' && url.pathname === '/revoke-minted') return this.revokeMinted(request);
       return json(404, { error: 'not_found' });
@@ -759,7 +760,58 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
   }
 
-  /** A new code revokes the old one. Phones that joined with it leave the live match now. */
+  /**
+   * The caller drops their own credential. The shared join code is a different row and stays.
+   * The body cannot name another phone. D1 is updated only for ctx.id.name.
+   */
+  private async leave(request: Request): Promise<Response> {
+    const body = await readBody(request, 2000);
+    const token = body && typeof body === 'object' ? (body as { token?: unknown }).token : undefined;
+    if (!isJoinToken(token)) return json(401, { error: 'bad_token' });
+    const matchId = this.durableMatchId();
+    if (!matchId) return json(503, { error: 'unavailable' });
+    const room = readRoom(this.sql());
+    if (!room) return json(404, { error: 'unavailable' });
+    const tokenHash = await sha256Hex(token);
+    const now = Date.now();
+    const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, tokenHash));
+    if (!invite || invite.revokedAt !== null || now >= invite.expiresAt || invite.role !== 'player') {
+      return json(401, { error: 'bad_token' });
+    }
+    if (!takeMatchBudget(this.sql(), `leave:${tokenHash}`, now, LEAVE_PER_ACTOR, LEAVE_WINDOW_MS)) {
+      return json(429, { error: 'leave_limited' });
+    }
+    if (!invite.host && !invite.deviceId) return json(200, { revoked: false });
+    const devices = readJoined(this.sql()).flatMap((row) => (
+      safeEqualHex(row.tokenHash, tokenHash) && row.deviceId ? [row.deviceId] : []
+    ));
+    this.ctx.storage.transactionSync(() => {
+      const sql = this.sql();
+      revokeInviteHash(sql, tokenHash, now);
+      for (const deviceId of devices) {
+        dropJoinedDevice(sql, deviceId);
+        dropRosterDevice(sql, deviceId);
+        deleteSeal(sql, `move:${deviceId}`);
+      }
+    });
+    try {
+      await d1MatchIndex(this.env.DB).revokeCredentialInMatch(tokenHash, matchId, now);
+    } catch {
+      // The room row is already revoked, so hello with this token fails.
+    }
+    this.closeToken(tokenHash);
+    this.broadcastPresence();
+    this.sendRoster();
+    return json(200, { revoked: true });
+  }
+
+  private closeToken(tokenHash: string): void {
+    for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
+      const peer = this.readState(socket);
+      if (peer?.admitted === true && safeEqualHex(peer.tokenHash, tokenHash)) this.reject(socket, 'revoked');
+    }
+  }
+
   /**
    * Remove one other phone. The target is a public seat, never a device id.
    * The device credential is revoked. The current shared code will not seat that device again.

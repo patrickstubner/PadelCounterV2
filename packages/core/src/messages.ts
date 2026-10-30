@@ -29,6 +29,7 @@ export const ROOM_MESSAGES = {
   carry_limited: 'These phones were already moved. Start again with a new code.',
   kick_refused: 'That phone cannot be removed.',
   kick_limited: 'Too many phones removed. Wait a while.',
+  leave_limited: 'Too many attempts to leave. Wait a while.',
 } as const;
 
 export type RoomCode = keyof typeof ROOM_MESSAGES;

@@ -11,6 +11,7 @@
 - Continue does not show the win celebration again. Points entered offline before a follow are kept in History, with a short note.
 - Take phones is offered when another phone has joined, even if that phone is offline. Carry is not counted in the shared per-address limit.
 - Removing a phone revokes that credential only for this room’s id, not for a match id stored in the score log.
+- Leave live match revokes this phone’s own credential. The shared code stays valid, and the other phones stay connected.
 
 ## 2.2.10
 

@@ -515,6 +515,20 @@ export function useLive(
   };
 
   const disconnect = () => {
+    const held = tokenRef.current;
+    const matchId = matchRef.current;
+    const api = apiBase();
+    if (held && isUuid(matchId) && api) {
+      const token = held.token;
+      void fetch(`${api}/matches/${matchId}/leave`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      }).catch(() => undefined);
+    }
     dropToken();
     clearPending();
     clearWake();
