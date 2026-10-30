@@ -101,15 +101,30 @@ button:disabled { cursor: not-allowed; }
 .top-end { position: relative; }
 
 .phone-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.28rem;
   min-width: 2.25rem;
   min-height: 2.25rem;
-  padding: 0 0.4rem;
+  padding: 0 0.5rem;
   border: 2px solid currentColor;
   border-radius: 999px;
   background: transparent;
   font-size: 0.95rem;
   font-weight: 800;
   line-height: 1;
+}
+
+.phone-icon {
+  width: 1rem;
+  height: 1rem;
+  display: block;
+  flex: 0 0 auto;
+}
+
+.phone-count-num {
+  font-variant-numeric: tabular-nums;
 }
 
 .phone-rows {
@@ -1209,8 +1224,15 @@ button:disabled { cursor: not-allowed; }
 
 .qr-stage {
   display: grid;
-  justify-items: center;
+  justify-items: stretch;
+  align-items: center;
   gap: 0.45rem;
+  width: 100%;
+}
+
+.qr-stage .qr,
+.qr-stage .match-code {
+  justify-self: center;
 }
 
 .qr {
@@ -1297,8 +1319,12 @@ button:disabled { cursor: not-allowed; }
 
 .join-scan-bottom {
   display: grid;
-  gap: 0.45rem;
-  justify-items: start;
+  justify-items: stretch;
+  align-items: stretch;
+  gap: 0.5rem;
+  width: min(18rem, 100%);
+  margin-left: auto;
+  margin-right: 0;
 }
 
 .join-scan-hint {
@@ -1322,7 +1348,10 @@ button:disabled { cursor: not-allowed; }
 
 .join-code-form {
   display: grid;
+  justify-items: stretch;
+  align-items: stretch;
   gap: 0.45rem;
+  width: 100%;
 }
 
 .join-code-form input {
@@ -1339,7 +1368,10 @@ button:disabled { cursor: not-allowed; }
 
 .connect-choices {
   display: grid;
+  justify-items: stretch;
+  align-items: stretch;
   gap: 0.75rem;
+  width: 100%;
   margin-top: 0.85rem;
 }
 
@@ -1363,10 +1395,32 @@ button:disabled { cursor: not-allowed; }
 }
 
 .connect-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  justify-items: stretch;
+  align-items: stretch;
   gap: 0.6rem;
+  width: 100%;
   margin-top: 0.85rem;
+}
+
+.connect-dialog .text-btn,
+.connect-choice,
+.join-code-form .text-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+  transform: none;
+  writing-mode: horizontal-tb;
+  text-align: center;
+}
+
+.connect-choice {
+  align-items: flex-start;
+  text-align: left;
 }
 
 .connect-overlay {
@@ -1455,5 +1509,102 @@ button:disabled { cursor: not-allowed; }
     background: Canvas;
     color: CanvasText;
     border-color: CanvasText;
+  }
+}
+
+@media (orientation: portrait) {
+  .connect-dialog:not(.join-scanning) {
+    width: min(24rem, 100%);
+  }
+
+  .connect-dialog:not(.join-scanning) .text-btn,
+  .connect-dialog:not(.join-scanning) .connect-choice,
+  .connect-dialog:not(.join-scanning) .join-code-form,
+  .connect-dialog:not(.join-scanning) .connect-actions,
+  .connect-dialog:not(.join-scanning) .connect-choices {
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    margin-right: 0;
+    transform: none;
+    justify-items: stretch;
+    align-items: stretch;
+  }
+
+  .join-scan-bottom {
+    width: min(18rem, 100%);
+    margin-left: auto;
+    margin-right: 0;
+    justify-items: stretch;
+    align-items: stretch;
+    transform: none;
+  }
+}
+
+@media (orientation: landscape) {
+  .connect-overlay:not(:has(.join-scanning)) {
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    padding:
+      max(0.4rem, env(safe-area-inset-top, 0px))
+      max(0.6rem, env(safe-area-inset-right, 0px))
+      max(0.4rem, env(safe-area-inset-bottom, 0px))
+      max(0.6rem, env(safe-area-inset-left, 0px));
+  }
+
+  .connect-dialog:not(.join-scanning) {
+    width: min(28rem, calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 1rem));
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 0.6rem);
+    margin-inline: auto;
+  }
+
+  .connect-bright .qr {
+    max-width: min(100%, 42dvh);
+  }
+
+  .connect-dialog .text-btn,
+  .connect-choice,
+  .connect-actions,
+  .join-code-form {
+    width: 100%;
+    transform: none;
+    writing-mode: horizontal-tb;
+  }
+
+  .join-scan-bottom {
+    display: flex;
+    flex-flow: row wrap;
+    align-items: center;
+    justify-content: flex-end;
+    width: auto;
+    max-width: 100%;
+    margin-left: auto;
+  }
+
+  .join-scanning .join-scan-bottom .text-btn {
+    width: auto;
+    min-width: 8.5rem;
+    min-height: 2.75rem;
+    transform: none;
+  }
+
+  .join-scanning .join-code-form {
+    display: flex;
+    flex-flow: row wrap;
+    align-items: center;
+    justify-content: flex-end;
+    width: auto;
+    gap: 0.45rem;
+  }
+
+  .join-scanning .join-code-form input {
+    width: 9.5rem;
+    min-height: 2.75rem;
+  }
+
+  .join-scanning .join-code-form .text-btn {
+    width: auto;
+    min-width: 6rem;
   }
 }

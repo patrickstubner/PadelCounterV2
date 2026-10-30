@@ -28,7 +28,7 @@ import { colonSetScore, currentHistory } from './domain/history';
 import { RULES_SUMMARY, celebrationWinner, matchResult, serveCourtLabel, servePickPrompt, tiebreakHint } from './domain/rules';
 import { useInstallOffer } from './hooks/useInstallOffer';
 import { useMatch } from './hooks/useMatch';
-import { forgetJoinToken, heldJoin, readJoinToken, releaseHeldJoin } from './live/protocol';
+import { forgetJoinToken, heldJoin, readJoinToken, releaseHeldJoin, type JoinAttempt } from './live/protocol';
 import { useLive } from './live/useLive';
 import { INSTALL_LABEL, IOS_INSTALL_HINT } from './installOffer';
 import { watchControllerChange } from './registerServiceWorker';
@@ -94,7 +94,11 @@ export function App() {
   const [phonesOpen, setPhonesOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
   const joinStarted = useRef(false);
-  const applyJoin = useCallback((attempt: { readonly ok: true; readonly token: string } | { readonly ok: false; readonly invalid: boolean }) => {
+  const applyJoin = useCallback((attempt: JoinAttempt) => {
+    if (attempt.ok && 'code' in attempt) {
+      void room.joinByCode(attempt.code);
+      return;
+    }
     if (attempt.ok) {
       room.connect(attempt.token);
       return;
@@ -124,9 +128,10 @@ export function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onHash = () => {
+      const hash = window.location.hash;
+      const joinHash = /^#\/join\b/i.test(hash) || hash.startsWith('#join=');
       if (room.host && room.status === 'live') {
-        const hash = window.location.hash;
-        if (/^#\/join\b/i.test(hash)) {
+        if (joinHash) {
           window.history.replaceState({ padelArchive: 'court' }, '', `${window.location.pathname}${window.location.search}`);
         }
         return;

@@ -403,9 +403,6 @@ export function JoinMatchPage({
                   Enter code
                 </button>
               )}
-              <button type="button" className="text-btn" data-testid="join-match-dismiss" onClick={onClose}>
-                Close
-              </button>
             </div>
           ) : (
             <>
@@ -430,9 +427,6 @@ export function JoinMatchPage({
                 Use camera
               </button>
               <CodeForm draft={draft} onDraft={setDraft} onSubmit={submitCode} />
-              <button type="button" className="text-btn" data-testid="join-match-dismiss" onClick={onClose}>
-                Close
-              </button>
             </>
           )}
         </div>

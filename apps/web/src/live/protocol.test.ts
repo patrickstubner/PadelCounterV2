@@ -1,29 +1,66 @@
 import { describe, expect, it } from 'vitest';
 import { ROOM_MESSAGES } from '@padel/core';
-import { JOIN_KEY, interpretMessage, isTerminalCode, isTerminalMessage, joinLink, matchCodeShareText, onlineRetryAllowed, parseJoinHash, readJoinToken, reconnectDelayMs, sendMatchCode, shouldResumeSocket, socketUrl, tokenFromJoinQr, unackedAfterSnapshot } from './protocol';
+import { JOIN_KEY, interpretMessage, isTerminalCode, isTerminalMessage, joinCodeLink, joinLink, matchCodeShareText, onlineRetryAllowed, parseJoinCodeHash, parseJoinHash, readJoinToken, reconnectDelayMs, sendMatchCode, shouldResumeSocket, socketUrl, tokenFromJoinQr, unackedAfterSnapshot } from './protocol';
 
 const ID = '00000000-0000-4000-8000-0000000000aa';
 const TOKEN = 'abcdefghijklmnopqrstuv';
 
+const PAGE = 'https://patrickstubner.github.io/PadelCounterV2/';
+const CODE = 'K7M4-2QAB';
+
 describe('sending a short code', () => {
-  it('shares the code, copies it when sharing is missing, and ignores a cancelled share', async () => {
-    const text = matchCodeShareText('K7M-42Q');
-    expect(text).toBe('Join my padel match in Padel Counter. Code: K7M-42Q');
-    expect(text).not.toContain('#/join');
-    const share = async () => undefined;
-    expect(await sendMatchCode('K7M-42Q', { share })).toBe('shared');
-    const writeText = async () => undefined;
-    expect(await sendMatchCode('K7M-42Q', { clipboard: { writeText } })).toBe('copied');
-    let copied = false;
-    expect(await sendMatchCode('K7M-42Q', {
+  it('shares the fragment link, copies it when sharing is missing, and ignores a cancelled share', async () => {
+    const text = matchCodeShareText(PAGE, 'k7m42qab');
+    expect(text).toBe(`${PAGE}#join=${CODE}`);
+    expect(text.split('#')[0]).not.toContain(CODE);
+    expect(new URL(text).search).toBe('');
+    expect(new URL(text).hash).toBe(`#join=${CODE}`);
+    expect(joinCodeLink(`${PAGE}index.html?source=pwa`, CODE)).toBe(text);
+    expect(joinCodeLink(`${'java' + 'script:'}alert(1)`, CODE)).toBeNull();
+    expect(matchCodeShareText(PAGE, '<script>alert(1)</script>')).toBe('');
+    expect(matchCodeShareText(PAGE, 'K7M-42Q')).toBe('');
+    let shared = '';
+    expect(await sendMatchCode(CODE, PAGE, {
+      share: async (data) => {
+        shared = `${data.text}|${data.url ?? ''}`;
+      },
+    })).toBe('shared');
+    expect(shared).toBe(`${text}|${text}`);
+    let copied = '';
+    expect(await sendMatchCode(CODE, PAGE, {
+      clipboard: { writeText: async (value) => {
+        copied = value;
+      } },
+    })).toBe('copied');
+    expect(copied).toBe(text);
+    let fallback = '';
+    expect(await sendMatchCode(CODE, PAGE, {
+      share: async () => {
+        throw new Error('unavailable');
+      },
+      clipboard: { writeText: async (value) => {
+        fallback = value;
+      } },
+    })).toBe('copied');
+    expect(fallback).toBe(text);
+    let cancelled = false;
+    expect(await sendMatchCode(CODE, PAGE, {
       share: async () => {
         throw new DOMException('cancelled', 'AbortError');
       },
       clipboard: { writeText: async () => {
-        copied = true;
+        cancelled = true;
       } },
     })).toBe('visible');
-    expect(copied).toBe(false);
+    expect(cancelled).toBe(false);
+    expect(await sendMatchCode('<img src=x onerror=alert(1)>', PAGE, {
+      share: async () => {
+        throw new Error('should not share');
+      },
+      clipboard: { writeText: async () => {
+        throw new Error('should not copy');
+      } },
+    })).toBe('visible');
   });
 });
 
@@ -224,6 +261,86 @@ describe('socket resume', () => {
     expect(shouldResumeSocket('visible', null, true)).toBe(false);
     expect(shouldResumeSocket('visible', null, false)).toBe(true);
     expect(shouldResumeSocket('visible', 3, false)).toBe(true);
+  });
+});
+
+describe('short code fragment', () => {
+  function historyOf(): { calls: unknown[][]; history: { replaceState: (...args: unknown[]) => void } } {
+    const calls: unknown[][] = [];
+    return {
+      calls,
+      history: {
+        replaceState: (...args: unknown[]) => {
+          calls.push(args);
+        },
+      },
+    };
+  }
+
+  it('accepts only an allowlisted code and strips it with replaceState', () => {
+    const storage = memoryStorage();
+    const { calls, history } = historyOf();
+    const location = { hash: `#join=${CODE}`, pathname: '/PadelCounterV2/', search: '?source=pwa' };
+    expect(parseJoinCodeHash(`#join=${CODE}`)).toEqual({ code: CODE });
+    expect(parseJoinCodeHash(`#join=${CODE.toLowerCase()}`)).toEqual({ code: CODE });
+    expect(parseJoinCodeHash('#join=k7m42qab')).toEqual({ code: CODE });
+    expect(readJoinToken(location, history, storage)).toEqual({ ok: true, code: CODE });
+    expect(calls).toEqual([[{ padelArchive: 'court' }, '', '/PadelCounterV2/?source=pwa']]);
+    expect(JSON.stringify(calls)).not.toContain(CODE);
+    expect(storage.getItem(JOIN_KEY)).toBeNull();
+  });
+
+  it('drops invalid and malicious fragments without decoding them into a target', () => {
+    const samples = [
+      '#join=',
+      '#join=K7M-42Q',
+      '#join=K7M4-2QAO',
+      '#join=K7M4-2QA0',
+      '#join=K7M4-2QAI',
+      '#join=K7M4-2QA1',
+      '#join=K7M4-2QAL',
+      '#join=<script>alert(1)</script>',
+      '#join=<img src=x onerror=alert(1)>',
+      `#join=${'java' + 'script:'}alert(1)`,
+      '#join=https://evil.example',
+      '#join=//evil.example',
+      `#join=${CODE}&next=https://evil.example`,
+      `#join=${CODE}%00`,
+      '#join=%3Cscript%3Ealert(1)%3C/script%3E',
+      `#join=${CODE}#/join?t=${TOKEN}`,
+      `#JOIN=${CODE}`,
+      'join=https://evil.example/steal',
+      `#/join?t=${TOKEN}&next=https://evil.example`,
+    ];
+    for (const hash of samples) {
+      expect(parseJoinCodeHash(hash), hash).toBeNull();
+    }
+    expect(parseJoinHash(`#/join?next=https://evil.example&t=${TOKEN}`)).toEqual({ token: TOKEN });
+    const storage = memoryStorage();
+    const { calls, history } = historyOf();
+    const location = {
+      hash: `#join=${CODE}&next=https://evil.example/<script>`,
+      pathname: '/PadelCounterV2/',
+      search: '',
+    };
+    expect(readJoinToken(location, history, storage)).toEqual({ ok: false, invalid: true });
+    expect(calls).toEqual([[{ padelArchive: 'court' }, '', '/PadelCounterV2/']]);
+    expect(JSON.stringify(calls)).not.toContain('evil.example');
+    expect(JSON.stringify(calls)).not.toContain('script');
+    expect(JSON.stringify(calls)).not.toContain(CODE);
+    expect(storage.getItem(JOIN_KEY)).toBeNull();
+  });
+
+  it('keeps the host token when a code fragment arrives in that tab', () => {
+    const storage = memoryStorage();
+    const host = 'hhhhhhhhhhhhhhhhhhhhhh';
+    storage.setItem(JOIN_KEY, JSON.stringify({ token: host, expiresAt: Date.now() + 60_000, host: true, matchId: ID }));
+    const { calls, history } = historyOf();
+    const location = { hash: `#join=${CODE}`, pathname: '/PadelCounterV2/', search: '' };
+    expect(readJoinToken(location, history, storage)).toEqual({ ok: true, token: host });
+    expect(calls[0]?.[2]).toBe('/PadelCounterV2/');
+    expect(JSON.stringify(calls)).not.toContain(CODE);
+    expect(JSON.parse(storage.getItem(JOIN_KEY) ?? '{}').token).toBe(host);
   });
 });
 

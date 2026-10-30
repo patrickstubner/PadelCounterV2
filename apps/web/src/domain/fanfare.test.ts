@@ -1,8 +1,11 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { fanfareEnabled, playFanfare, setFanfareEnabled, shouldPlayFanfare } from './fanfare';
+import { FANFARE_FILE, fanfareEnabled, fanfareSrc, playFanfare, setFanfareEnabled, shouldPlayFanfare } from './fanfare';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
 describe('victory fanfare', () => {
   it('is on unless this device stored off', () => {
@@ -28,20 +31,48 @@ describe('victory fanfare', () => {
     expect(shouldPlayFanfare(false, true, null, 'win-1')).toBe(false);
   });
 
-  it('stays silent when the browser refuses audio', () => {
-    const previous = globalThis.AudioContext;
-    globalThis.AudioContext = class {
-      constructor() {
-        throw new Error('denied');
+  it('plays the local crowd clip and stays silent when playback is refused', () => {
+    const src = fanfareSrc();
+    expect(src.endsWith(`/${FANFARE_FILE}`)).toBe(true);
+    expect(src.includes('://')).toBe(false);
+    const played: string[] = [];
+    const previous = globalThis.Audio;
+    globalThis.Audio = class {
+      src: string;
+      preload = '';
+      constructor(value?: string) {
+        this.src = value ?? '';
       }
-    } as unknown as typeof AudioContext;
+      play(): Promise<void> {
+        played.push(this.src);
+        return Promise.reject(new Error('denied'));
+      }
+    } as unknown as typeof Audio;
     expect(() => playFanfare()).not.toThrow();
-    globalThis.AudioContext = previous;
+    expect(played).toEqual([src]);
+    globalThis.Audio = class {
+      constructor() {
+        throw new Error('missing');
+      }
+    } as unknown as typeof Audio;
+    expect(() => playFanfare()).not.toThrow();
+    globalThis.Audio = previous;
   });
 
-  it('synthesizes the sound and does not name an audio file', () => {
+  it('ships the checked crowd file and does not point at another host', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fanfare.ts'), 'utf8');
-    expect(source).toContain('AudioContext');
-    expect(source).not.toMatch(/\.mp3|\.wav|\.ogg|fetch\(/);
+    expect(source).toContain(FANFARE_FILE);
+    expect(source).toContain('withBase');
+    expect(source).not.toContain('AudioContext');
+    expect(source).not.toContain('http://');
+    expect(source).not.toContain('https://');
+    expect(source).not.toContain('freesound');
+    const file = readFileSync(join(root, 'public', FANFARE_FILE));
+    expect(createHash('sha256').update(file).digest('hex')).toBe(
+      '09f686627dc2b8db4e1a32dc4e7a943b48a15e30c581a0beeb2ca4632c097a13',
+    );
+    expect(file.length).toBe(112892);
+    const build = readFileSync(join(root, 'rsbuild.config.ts'), 'utf8');
+    expect(build).toContain('mp3');
   });
 });

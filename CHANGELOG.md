@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.7
+
+- The top bar shows a phone icon before the number of connected phones.
+- Connect and Join match close with the X or a tap outside. The extra Close button is gone. The buttons line up in portrait and in landscape.
+- Send code shares a link to this app. The join code is only after the #, for example `https://patrickstubner.github.io/PadelCounterV2/#join=K7M4-2QAB`. Opening that link joins the match, including from Safari on an iPhone, and then removes the code from the address bar. If the phone cannot share, the link is copied.
+- A real win plays a short crowd clip stored in the app. Ending the match early still does not play it. Victory sound on or off is unchanged.
+
 ## 2.2.6
 
 - Connect is one menu item. Show QR code connects another player, including a code to type. Scan QR code joins. Any phone already in the match can show the same code. The match still stops at 4 phones.
