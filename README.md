@@ -64,6 +64,8 @@ pnpm dev
 
 `pnpm dev` starts the court. `pnpm dev:worker` starts `wrangler dev --env dev` from `adapters/cloudflare`. Copy `adapters/cloudflare/.dev.vars.example` to `.dev.vars` and set `QUOTA_HMAC_KEY` to a random string of at least 32 characters. There are no OAuth secrets to fill in.
 
+`pnpm test` runs the unit tests and then the Connect layout check in Chrome (`apps/web/e2e/connect-layout.spec.ts`, at 390×780, 844×390, and 568×320). CI installs that browser with `playwright install --with-deps chrome` before the tests. On a machine without Chrome, run `pnpm --filter @padel/web exec playwright install chrome`. `pnpm --filter @padel/web test:unit` runs the unit tests without Chrome.
+
 To point a local court at a local worker, start the worker and run the court with `PUBLIC_API_URL=http://127.0.0.1:8787`. The dev worker allows that origin. Production and staging do not.
 
 ### Before the first deploy

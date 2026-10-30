@@ -689,7 +689,6 @@ export function App() {
           onConfirm={() => {
             const code = pendingCode;
             setPendingCode(null);
-            match.archiveCurrent();
             void room.joinByCode(code);
           }}
         />

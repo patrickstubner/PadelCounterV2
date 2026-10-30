@@ -67,6 +67,34 @@ describe('victory fanfare', () => {
     globalThis.Audio = previous;
   });
 
+  it('pauses the first clip when a second one starts', () => {
+    const src = fanfareSrc();
+    const played: string[] = [];
+    const paused: string[] = [];
+    const previous = globalThis.Audio;
+    globalThis.Audio = class {
+      src: string;
+      preload = '';
+      volume = 1;
+      constructor(value?: string) {
+        this.src = value ?? '';
+      }
+      play(): Promise<void> {
+        played.push(this.src);
+        return Promise.resolve();
+      }
+      pause(): void {
+        paused.push(this.src);
+      }
+    } as unknown as typeof Audio;
+    playFanfare();
+    playFanfare();
+    expect(played).toEqual([src, src]);
+    expect(paused).toEqual([src]);
+    stopFanfare();
+    globalThis.Audio = previous;
+  });
+
   it('ships the checked crowd file and does not point at another host', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fanfare.ts'), 'utf8');
     expect(source).toContain(FANFARE_FILE);

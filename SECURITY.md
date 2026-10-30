@@ -454,6 +454,14 @@ Decisions:
 - Both paths are in try/catch. An older phone with neither API scores as before.
 - Nothing is sent to the worker. CSP is unchanged.
 
+## Review 30, 2026-10-30
+
+Version 2.2.8, after pull request 24 is on `main`. This note is the leftover from that review. No new package is shipped, and the content security policy is unchanged.
+
+- P24r-01. The `archive-current` action is removed. It copied the open match into History and left the same match on the court. `replace` already copies the previous log when a join switches to another match id. Confirming a link still keeps a started match in History. A join that never switches matches does not write a second copy first.
+- P24r-02. Confirming Join removes the dialog before the request returns. `joinByCode` normalizes the code and does not call the network for a string outside the short-code alphabet, including `ungueltig`. A second play of the win clip pauses the first element.
+- P24r-03. The layout test is part of `pnpm test`. CI installs Chrome with `playwright install --with-deps chrome` and then runs `apps/web/e2e/connect-layout.spec.ts`. That browser is a CI tool. The court bundle does not include it, and the test talks only to the local dev server.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.
