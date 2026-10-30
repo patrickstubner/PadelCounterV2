@@ -25,6 +25,9 @@ export function PrivacyPage({ onBack }: PrivacyPageProps) {
           camera fills the screen. It starts only after you tap Use camera, and it stops as soon as a code
           is read, when you close the scanner, or when you leave the app. The picture stays on this phone.
           The short code is kept in this tab so you can send it. It is not written to local storage.
+          Sending it shares a link to this app. The code is only in the part after #. This page reads that
+          part, checks that it is a match code, and then removes it from the address bar. It is not sent to
+          the server that hosts the page, and it is not used to open another site.
           Phones in the same match can see how many are connected, a coarse device type (iPhone, Android,
           desktop, or other), and when each phone connected or was last seen. They do not receive the
           join code, the network address, or the full browser identity.

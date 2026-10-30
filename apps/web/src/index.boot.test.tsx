@@ -37,6 +37,27 @@ describe('index boot join', () => {
     window.history.replaceState(null, '', '/');
   });
 
+  it('strips a malicious short-code fragment before paint and does not render it', async () => {
+    window.history.replaceState(null, '', '/PadelCounterV2/#join=EVILPAYLOAD');
+    await bootIndex();
+    expect(window.location.hash).toBe('');
+    expect(window.location.href).not.toContain('EVILPAYLOAD');
+    expect(window.location.pathname).toBe('/PadelCounterV2/');
+    expect(document.body.textContent).not.toContain('EVILPAYLOAD');
+    expect(document.body.textContent).toContain('This code is not valid.');
+  });
+
+  it('does not follow a fragment that looks like another site', async () => {
+    const origin = window.location.origin;
+    window.history.replaceState(null, '', '/PadelCounterV2/#join=https://evil.example/steal');
+    await bootIndex();
+    expect(window.location.origin).toBe(origin);
+    expect(window.location.pathname).toBe('/PadelCounterV2/');
+    expect(window.location.hash).toBe('');
+    expect(window.location.href).not.toContain('evil.example');
+    expect(document.body.textContent).not.toContain('evil.example');
+  });
+
   it('shows an error for an invalid fragment and removes it', async () => {
     window.history.replaceState(null, '', `/PadelCounterV2/#/join?t=short`);
     await bootIndex();

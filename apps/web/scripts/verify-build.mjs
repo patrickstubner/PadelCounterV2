@@ -91,6 +91,7 @@ const precached = [
   'favicon-32.png',
   'manifest.webmanifest',
   'NOTICE.txt',
+  '06_crowd-in-hardrock.mp3',
 ];
 const sw = readFileSync(join(dist, 'sw.js'), 'utf8');
 for (const file of precached) {
@@ -111,7 +112,7 @@ if (!notice.includes('qr 0.7.2') || !notice.includes('Paul Miller')) fail('NOTIC
 if (!notice.includes('qrcode 1.5.4') || !notice.includes('Ryan Day')) fail('NOTICE missing the qrcode drawer');
 
 for (const file of walk(dist)) {
-  if (file.endsWith('.png') || file.endsWith('.ico') || file.endsWith('.mp4')) continue;
+  if (file.endsWith('.png') || file.endsWith('.ico') || file.endsWith('.mp4') || file.endsWith('.mp3')) continue;
   const text = readFileSync(file, 'utf8');
   if (text.includes('__PADEL_TEST_API__')) fail(`test API hook shipped in ${file}`);
   for (const host of banned) {

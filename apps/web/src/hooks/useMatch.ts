@@ -71,6 +71,7 @@ export function useMatch() {
       });
     },
     readLog: () => logRef.current,
+    archiveCurrent: () => dispatch({ type: 'archive-current' }),
     replaceLog: (next: MatchLog) => {
       logRef.current = next;
       dispatch({ type: 'replace', log: next });

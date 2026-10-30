@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { nextMenuIndex } from '../menuKeys';
+import { PhoneIcon } from './icons';
 
 export interface CourtAction {
   readonly id: string;
@@ -35,6 +36,25 @@ interface CourtHeaderProps {
 }
 
 const WIDE_BAR = '(orientation: landscape) and (min-width: 900px)';
+
+export function phonesConnectedLabel(count: number): string {
+  return count === 1 ? '1 phone connected' : `${count} phones connected`;
+}
+
+function PhoneCount({ count, onPhones }: { readonly count: number; readonly onPhones: () => void }) {
+  return (
+    <button
+      type="button"
+      className="phone-count"
+      data-testid="phone-count"
+      aria-label={phonesConnectedLabel(count)}
+      onClick={onPhones}
+    >
+      <PhoneIcon />
+      <span className="phone-count-num">{count}</span>
+    </button>
+  );
+}
 
 function useWideBar(): boolean {
   const [wide, setWide] = useState(
@@ -112,17 +132,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout, phoneCount, on
       <p className="set-heading" data-testid="active-set">{setLabel}</p>
       {mode === 'bar' ? (
         <div className="top-actions">
-          {typeof phoneCount === 'number' && onPhones ? (
-            <button
-              type="button"
-              className="phone-count"
-              data-testid="phone-count"
-              aria-label={`${phoneCount} phones connected`}
-              onClick={onPhones}
-            >
-              {phoneCount}
-            </button>
-          ) : null}
+          {typeof phoneCount === 'number' && onPhones ? <PhoneCount count={phoneCount} onPhones={onPhones} /> : null}
           {shown.map((action) => (
             <button
               key={action.id}
@@ -138,17 +148,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout, phoneCount, on
         </div>
       ) : (
         <div className="top-end">
-          {typeof phoneCount === 'number' && onPhones ? (
-            <button
-              type="button"
-              className="phone-count"
-              data-testid="phone-count"
-              aria-label={`${phoneCount} phones connected`}
-              onClick={onPhones}
-            >
-              {phoneCount}
-            </button>
-          ) : null}
+          {typeof phoneCount === 'number' && onPhones ? <PhoneCount count={phoneCount} onPhones={onPhones} /> : null}
           <button
             ref={toggleRef}
             type="button"

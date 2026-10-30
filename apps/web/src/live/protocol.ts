@@ -8,6 +8,7 @@ import {
   isJoinToken,
   isRoomCode,
   JOIN_TOKEN_TTL_MS,
+  normalizeJoinCode,
   parseMatchLog,
   parsePublicPhones,
   parseStoredEvent,
@@ -171,18 +172,55 @@ export function tokenFromJoinQr(text: string, pageHref: string): string | null {
   return parseJoinHash(scanned.hash)?.token ?? null;
 }
 
-export function matchCodeShareText(code: string): string {
-  return `Join my padel match in Padel Counter. Code: ${code}`;
+/**
+ * Short-code alphabet, four symbols, an optional hyphen, and four more.
+ * I, L, O, 0, and 1 are excluded. The fragment is not decoded before this check.
+ */
+const JOIN_CODE_FRAGMENT = /^join=([A-HJ-KMNP-Za-hj-kmnp-z2-9]{4}-?[A-HJ-KMNP-Za-hj-kmnp-z2-9]{4})$/i;
+
+/** `#join=` and `#JOIN=` are the same fragment. The check does not decode the text. */
+export function isJoinCodeFragment(hash: string): boolean {
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
+  return /^join=/i.test(raw);
+}
+
+/**
+ * A shared short code is only the fragment `#join=CODE` on this app.
+ * The code is not placed in the query string, so the static host does not receive it.
+ */
+export function joinCodeLink(pageHref: string, code: string): string | null {
+  const normalized = normalizeJoinCode(code);
+  if (!normalized) return null;
+  if (!JOIN_CODE_FRAGMENT.test(`join=${normalized}`)) return null;
+  let url: URL;
+  try {
+    url = new URL(pageHref, 'http://localhost');
+  } catch {
+    return null;
+  }
+  if (url.username || url.password) return null;
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  const path = canonicalAppPath(PAGE_BASE);
+  const directory = path === '/' ? '/' : `${path}/`;
+  return `${url.origin}${directory}#join=${normalized}`;
+}
+
+export function matchCodeShareText(pageHref: string, code: string): string {
+  return joinCodeLink(pageHref, code) ?? '';
 }
 
 export async function sendMatchCode(
   code: string,
+  pageHref: string,
   nav: {
     share?: (data: { text: string }) => Promise<void>;
     clipboard?: { writeText: (value: string) => Promise<void> };
   },
 ): Promise<'shared' | 'copied' | 'visible'> {
-  const text = matchCodeShareText(code);
+  const text = matchCodeShareText(pageHref, code);
+  if (!text.includes('#join=')) return 'visible';
+  const query = text.split('#')[0] ?? '';
+  if (query.includes('join=') || query.includes(normalizeJoinCode(code) ?? '\u0000')) return 'visible';
   if (nav.share) {
     try {
       await nav.share({ text });
@@ -201,6 +239,21 @@ export async function sendMatchCode(
     }
   }
   return 'visible';
+}
+
+/**
+ * Accept only `#join=` and a short code from the alphabet.
+ * The raw fragment is not decoded and is not returned unless it matches.
+ */
+export function parseJoinCodeHash(hash: string): { code: string } | null {
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (raw.length === 0 || raw.length > 32) return null;
+  const match = JOIN_CODE_FRAGMENT.exec(raw);
+  if (!match?.[1]) return null;
+  const code = normalizeJoinCode(match[1]);
+  if (!code) return null;
+  if (!JOIN_CODE_FRAGMENT.test(`join=${code}`)) return null;
+  return { code };
 }
 
 export function parseJoinHash(hash: string): { token: string } | null {
@@ -226,7 +279,10 @@ export interface JoinHistory {
   replaceState(data: unknown, unused: string, url?: string | URL | null): void;
 }
 
-export type JoinAttempt = { readonly ok: true; readonly token: string } | { readonly ok: false; readonly invalid: boolean };
+export type JoinAttempt =
+  | { readonly ok: true; readonly token: string; readonly keptHost?: boolean }
+  | { readonly ok: true; readonly code: string }
+  | { readonly ok: false; readonly invalid: boolean };
 
 /** Invite captured at boot, including when sessionStorage is blocked. */
 let heldAttempt: JoinAttempt | null = null;
@@ -267,15 +323,35 @@ function replaceCourt(locationLike: JoinLocation, historyLike: JoinHistory): voi
 }
 
 /**
- * Read a scanned invite. A valid token is returned and removed from the URL.
- * A join fragment that is not a 128-bit token is also removed and reported invalid.
- * Storage may be null or throw. The token is still returned so the caller can keep it in memory.
+ * A `#join=` fragment is removed. A valid code is not stored and is not turned into a navigation.
+ * The raw text is not decoded before the allowlist.
  */
+function readJoinCodeFragment(
+  locationLike: JoinLocation,
+  historyLike: JoinHistory,
+  storage: Storage | null,
+): JoinAttempt | null {
+  const raw = locationLike.hash.startsWith('#') ? locationLike.hash.slice(1) : locationLike.hash;
+  if (!isJoinCodeFragment(raw)) return null;
+  try {
+    replaceCourt(locationLike, historyLike);
+  } catch {
+    // The fragment is still refused. Nothing from it is opened.
+  }
+  const hostToken = storage ? storedHostToken(storage, Date.now()) : null;
+  if (hostToken) return { ok: true, token: hostToken, keptHost: true };
+  const parsed = parseJoinCodeHash(raw);
+  if (!parsed) return { ok: false, invalid: true };
+  return { ok: true, code: parsed.code };
+}
+
 export function readJoinToken(
   locationLike: JoinLocation,
   historyLike: JoinHistory,
   storage: Storage | null,
 ): JoinAttempt {
+  const fromCode = readJoinCodeFragment(locationLike, historyLike, storage);
+  if (fromCode) return fromCode;
   const fragment = locationLike.hash.startsWith('#') ? locationLike.hash.slice(1) : locationLike.hash;
   const joinFragment = /^\/join\b/i.test(fragment);
   const fromHash = parseJoinHash(locationLike.hash);
@@ -337,7 +413,8 @@ export function captureJoinHash(
 ): StoredJoin | null {
   const attempt = readJoinToken(locationLike, historyLike, storage);
   holdJoin(attempt);
-  return attempt.ok ? { token: attempt.token } : null;
+  if (attempt.ok && 'token' in attempt) return { token: attempt.token };
+  return null;
 }
 
 export type LiveNotice =

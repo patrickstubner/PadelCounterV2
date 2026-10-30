@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
+import { ARCHIVE_KEY } from './domain/archive';
 import { JOIN_KEY } from './live/protocol';
 
 const TOKEN = 'abcdefghijklmnopqrstuv';
@@ -20,7 +21,7 @@ interface FetchCall {
 
 const fetchCalls: FetchCall[] = [];
 const sockets: FakeSocket[] = [];
-let joinMode: 'ok' | 'expired' | 'bad' = 'ok';
+let joinMode: 'ok' | 'expired' | 'bad' | 'limited' | 'shaped' = 'ok';
 let createMode: 'ok' | 'down' = 'ok';
 let snapshot: unknown = null;
 let snapshotHost = false;
@@ -90,6 +91,8 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   if (url.endsWith('/join')) {
     if (joinMode === 'expired') return Response.json({ error: 'expired', message: '<b>expired</b>' }, { status: 401 });
     if (joinMode === 'bad') return Response.json({ error: 'bad_token', message: '<img src=x onerror=alert(1)>' }, { status: 401 });
+    if (joinMode === 'limited') return Response.json({ error: 'code_limited', message: '<a href="https://evil.example">go</a>' }, { status: 429 });
+    if (joinMode === 'shaped') return Response.json({ token: '<b>nope</b>', ticket: 1, message: '<img src=x onerror=alert(1)>' }, { status: 201 });
     const parsed = init?.body ? JSON.parse(String(init.body)) as { code?: unknown } : {};
     if (typeof parsed.code === 'string') {
       return Response.json({ token: INVITE, ticket: TICKET, expiresAt: Date.now() + 3_600_000 }, { status: 201 });
@@ -107,7 +110,13 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
       inviteFails -= 1;
       return Response.json({ error: 'offline' }, { status: 503 });
     }
-    return Response.json({ token: INVITE, role: 'player', matchId: MATCH, expiresAt: Date.now() + 3_600_000 }, { status: 201 });
+    return Response.json({
+      token: INVITE,
+      role: 'player',
+      matchId: MATCH,
+      code: 'K7M4-2QAB',
+      expiresAt: Date.now() + 3_600_000,
+    }, { status: 201 });
   }
   return Response.json({ error: 'not_found' }, { status: 404 });
 }
@@ -215,7 +224,7 @@ describe('connect overlay and scanned join', () => {
     expect((window.history.state as { padelArchive?: string } | null)?.padelArchive).not.toBe('join');
   });
 
-  it('opens the QR over the court and closes from X, Close, backdrop, and Esc', async () => {
+  it('opens the QR over the court and closes from X, the backdrop, and Esc', async () => {
     const view = await mount();
     mounted.push(view);
     expect(document.querySelector('[data-testid="connect-dialog"]')).toBeNull();
@@ -248,7 +257,11 @@ describe('connect overlay and scanned join', () => {
     expect(returned === 'menu-toggle' || returned === 'connect-open').toBe(true);
 
     await press('connect-open');
-    await press('connect-close');
+    expect(document.querySelector('[data-testid="connect-close"]')).toBeNull();
+    expect(document.querySelector('[data-testid="connect-dialog"]')?.textContent).not.toContain('Close');
+    await act(async () => {
+      (document.querySelector('[data-testid="connect-backdrop"]') as HTMLElement).click();
+    });
     expect(document.querySelector('[data-testid="connect-dialog"]')).toBeNull();
 
     await press('connect-open');
@@ -555,5 +568,254 @@ describe('connect overlay and scanned join', () => {
     const joins = fetchCalls.filter((call) => call.url.endsWith('/join'));
     expect(joins).toHaveLength(joinsBefore + 1);
     expect(String(joins.at(-1)?.init?.headers && new Headers(joins.at(-1)?.init?.headers).get('authorization'))).toContain(moved);
+  });
+
+  it('joins a fragment code the same way as a typed code, then strips it', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    const origin = window.location.origin;
+    window.history.replaceState(null, '', '/PadelCounterV2/#join=K7M4-2QAB');
+    const view = await mount();
+    mounted.push(view);
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(0);
+    expect(document.querySelector('[data-testid="confirm-join-link"]')).not.toBeNull();
+    expect(document.body.textContent).toContain('The score on this phone will be replaced.');
+    await press('cancel-join-link');
+    expect(document.querySelector('[data-testid="confirm-join-link"]')).toBeNull();
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(0);
+    expect(scoreA()).toContain('0');
+    await act(async () => {
+      window.location.hash = '#join=k7m42qab';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await press('confirm-join-link');
+    await waitFor(() => scoreA().includes('4'));
+    expect(window.location.hash).toBe('');
+    expect(window.location.href).not.toContain('K7M4-2QAB');
+    expect(window.location.origin).toBe(origin);
+    expect(window.location.pathname).toBe('/PadelCounterV2/');
+    expect(document.body.textContent).not.toContain('K7M4-2QAB');
+    const join = fetchCalls.find((call) => call.url.endsWith('/join'));
+    const body = JSON.parse(String(join?.init?.body)) as { code?: string; device?: string };
+    expect(body.code).toBe('K7M4-2QAB');
+    expect(body.device).toMatch(/^d[a-f0-9]{32}$/);
+    expect(join?.url.startsWith(API)).toBe(true);
+    expect(sockets[0]?.url).toContain(`/ws/${TICKET}`);
+  });
+
+  it('refuses a malicious fragment and does not navigate or render it', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    const origin = window.location.origin;
+    const scheme = 'java' + 'script:';
+    window.history.replaceState(null, '', `/PadelCounterV2/#join=${scheme}alert(1)`);
+    const malicious = await mount();
+    mounted.push(malicious);
+    await waitFor(() => (document.querySelector('[data-testid="join-error"]')?.textContent ?? '').includes('This code is not valid.'));
+    expect(fetchCalls).toHaveLength(0);
+    expect(window.location.hash).toBe('');
+    expect(window.location.origin).toBe(origin);
+    expect(window.location.pathname).toBe('/PadelCounterV2/');
+    expect(window.location.href).not.toContain(scheme);
+    expect(window.location.href).not.toContain('alert');
+    expect(document.body.textContent ?? '').not.toContain(scheme);
+    expect(document.querySelector('img')).toBeNull();
+
+    await unmount(malicious.root, malicious.container);
+    mounted.splice(0);
+    window.history.replaceState(null, '', '/PadelCounterV2/#join=K7M4-2QAB&next=https://evil.example');
+    const extra = await mount();
+    mounted.push(extra);
+    await waitFor(() => (document.querySelector('[data-testid="join-error"]')?.textContent ?? '').includes('This code is not valid.'));
+    expect(fetchCalls).toHaveLength(0);
+    expect(window.location.href).not.toContain('evil.example');
+    expect(window.location.href).not.toContain('K7M4');
+    expect(document.body.textContent).not.toContain('evil.example');
+    expect(window.location.origin).toBe(origin);
+  });
+
+  it('shows the fixed limit sentence for a fragment code and does not render the server body', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    joinMode = 'limited';
+    window.history.replaceState(null, '', '/PadelCounterV2/#join=k7m42qab');
+    const view = await mount();
+    mounted.push(view);
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(0);
+    await press('confirm-join-link');
+    await waitFor(() => (document.querySelector('[data-testid="join-error"]')?.textContent ?? '').includes('Too many tries from this network.'));
+    expect(document.body.textContent).not.toContain('evil.example');
+    expect(document.body.textContent).not.toContain('k7m42qab');
+    expect(document.body.textContent).not.toContain('K7M4-2QAB');
+    expect(window.location.hash).toBe('');
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(1);
+  });
+
+  it('shares the fragment link and copies it when the share sheet is missing', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const shared: Array<{ text?: string; url?: string; title?: string }> = [];
+    const copied: string[] = [];
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: (data: { text?: string; url?: string; title?: string }) => {
+        shared.push(data);
+        return Promise.resolve();
+      },
+    });
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('show-qr');
+    await waitFor(() => document.querySelector('[data-testid="share-code"]') !== null);
+    await press('share-code');
+    await waitFor(() => shared.length === 1);
+    const sent = shared[0];
+    const text = sent?.text ?? '';
+    expect(sent?.url).toBeUndefined();
+    expect(sent?.title).toBeUndefined();
+    expect(text.endsWith('#join=K7M4-2QAB')).toBe(true);
+    expect(text.split('#')[0]).not.toContain('K7M4');
+    expect(new URL(text).search).toBe('');
+    expect(new URL(text).origin).toBe(window.location.origin);
+
+    Reflect.deleteProperty(navigator, 'share');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: (value: string) => {
+        copied.push(value);
+        return Promise.resolve();
+      } },
+    });
+    await press('share-code');
+    await waitFor(() => copied.length === 1);
+    expect(copied[0]).toBe(text);
+    expect(document.querySelector('[data-testid="code-copied"]')?.textContent).toBe('Copied.');
+    Reflect.deleteProperty(navigator, 'clipboard');
+  });
+
+  it('closes Join match from X and the backdrop, with no bottom Close button', async () => {
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('scan-qr');
+    expect(document.querySelector('[data-testid="join-match-dismiss"]')).toBeNull();
+    expect(document.querySelector('[data-testid="join-match-close"]')).not.toBeNull();
+    const dialog = document.querySelector('[data-testid="join-match-dialog"]');
+    expect(dialog?.textContent).not.toMatch(/\bClose\b/);
+    (dialog as HTMLElement).click();
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).not.toBeNull();
+    await act(async () => {
+      (document.querySelector('[data-testid="join-match-backdrop"]') as HTMLElement).click();
+    });
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
+    await press('connect-open');
+    await press('scan-qr');
+    await press('join-match-close');
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
+  });
+
+  it('asks before a link replaces a started match and keeps that match in History', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    const view = await mount();
+    mounted.push(view);
+    await press('increment-a');
+    expect(scoreA()).toContain('1');
+    await act(async () => {
+      window.location.hash = '#join=K7M4-2QAB';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(document.querySelector('[data-testid="confirm-join-link"]')).not.toBeNull();
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(0);
+    expect(scoreA()).toContain('1');
+    expect(localStorage.getItem(ARCHIVE_KEY) ?? '').not.toContain('game/increment');
+    await press('cancel-join-link');
+    expect(scoreA()).toContain('1');
+    expect(window.location.hash).toBe('');
+    await act(async () => {
+      window.location.hash = '#JOIN=K7M4-2QAB';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await press('confirm-join-link');
+    expect(localStorage.getItem(ARCHIVE_KEY) ?? '').toContain('game/increment');
+    await waitFor(() => scoreA().includes('4'));
+    expect(window.location.href).not.toContain('K7M4');
+    expect(localStorage.getItem(ARCHIVE_KEY) ?? '').toContain('game/increment');
+  });
+
+  it('removes a code fragment from a live host and says the link was not used', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    snapshotHost = true;
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('show-qr');
+    await waitFor(() => document.querySelector('.app.is-online') !== null);
+    const joinsBefore = fetchCalls.filter((call) => call.url.endsWith('/join')).length;
+    await act(async () => {
+      window.location.hash = '#JOIN=K7M4-2QAB';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(window.location.hash).toBe('');
+    expect(window.location.href).not.toContain('K7M4');
+    expect(document.querySelector('[data-testid="host-link-ignored"]')?.textContent).toContain('You are already the host');
+    expect(document.querySelector('[data-testid="confirm-join-link"]')).toBeNull();
+    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(joinsBefore);
+  });
+
+  it('keeps Join match open when the code is refused or the response is not a token', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    joinMode = 'bad';
+    const refused = await mount();
+    mounted.push(refused);
+    await press('connect-open');
+    await press('scan-qr');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => (document.querySelector('[data-testid="join-match-error"]')?.textContent ?? '').includes('This code is not valid.'));
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).not.toBeNull();
+    expect(sockets).toHaveLength(0);
+    const body = JSON.parse(String(fetchCalls.find((call) => call.url.endsWith('/join'))?.init?.body)) as { code?: string };
+    expect(body.code).toBe('K7M4-2QAB');
+
+    await unmount(refused.root, refused.container);
+    mounted.splice(0);
+    fetchCalls.splice(0);
+    sockets.splice(0);
+    joinMode = 'shaped';
+    const shaped = await mount();
+    mounted.push(shaped);
+    await press('connect-open');
+    await press('scan-qr');
+    const again = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!again) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(again, 'K7M4-2QAB');
+      again.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => (document.querySelector('[data-testid="join-match-error"]')?.textContent ?? '').includes('That code did not work.'));
+    expect(document.querySelector('[data-testid="join-match-dialog"]')).not.toBeNull();
+    expect(sockets).toHaveLength(0);
+    expect(document.body.textContent).not.toContain('onerror');
+    expect(document.body.textContent).not.toContain('<b>');
   });
 });

@@ -43,7 +43,8 @@ describe('shipped source stays local and text-only', () => {
         !file.endsWith('.test.ts') &&
         !file.endsWith('.png') &&
         !file.endsWith('.ico') &&
-        !file.endsWith('.mp4'),
+        !file.endsWith('.mp4') &&
+        !file.endsWith('.mp3'),
     );
     for (const file of paths) {
       const text = readFileSync(file, 'utf8');
@@ -137,8 +138,11 @@ describe('shipped source stays local and text-only', () => {
     expect(html).not.toContain('blob:');
     expect(html).not.toContain('data:');
     const fanfare = readFileSync(join(repoRoot, 'src/domain/fanfare.ts'), 'utf8');
-    expect(fanfare).toContain('AudioContext');
-    expect(fanfare).not.toMatch(/\.mp3|\.wav|\.ogg/);
+    expect(fanfare).toContain('06_crowd-in-hardrock.mp3');
+    expect(fanfare).toContain('withBase');
+    expect(fanfare).not.toContain('AudioContext');
+    expect(fanfare).not.toContain('http://');
+    expect(fanfare).not.toContain('https://');
     const buildConfig = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');
     expect(buildConfig).toContain("'**/icon-1024.png'");
     expect(html).toContain('content="#0a1a3f"');

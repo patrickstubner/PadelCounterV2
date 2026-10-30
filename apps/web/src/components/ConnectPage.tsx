@@ -143,7 +143,8 @@ export function ConnectPage({
                   className="text-btn"
                   data-testid="share-code"
                   onClick={() => {
-                    void sendMatchCode(code, {
+                    const pageHref = typeof location === 'undefined' ? '' : location.href;
+                    void sendMatchCode(code, pageHref, {
                       share: typeof navigator.share === 'function' ? (data) => navigator.share(data) : undefined,
                       clipboard: typeof navigator.clipboard?.writeText === 'function' ? navigator.clipboard : undefined,
                     }).then((result) => {
@@ -170,21 +171,20 @@ export function ConnectPage({
             </button>
           </div>
         ) : null}
-        <div className="connect-actions">
-          {mode === 'show' && qr ? (
-            <button type="button" className="text-btn" data-testid="rotate-code" onClick={onRotate}>
-              New code
-            </button>
-          ) : null}
-          {mode === 'show' && status === 'live' ? (
-            <button type="button" className="text-btn" data-testid="leave-live" onClick={onLeave}>
-              Leave live match
-            </button>
-          ) : null}
-          <button type="button" className="text-btn" data-testid="connect-close" onClick={onClose}>
-            Close
-          </button>
-        </div>
+        {mode === 'show' && (qr || status === 'live') ? (
+          <div className="connect-actions">
+            {qr ? (
+              <button type="button" className="text-btn" data-testid="rotate-code" onClick={onRotate}>
+                New code
+              </button>
+            ) : null}
+            {status === 'live' ? (
+              <button type="button" className="text-btn" data-testid="leave-live" onClick={onLeave}>
+                Leave live match
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
