@@ -1,12 +1,13 @@
 import { DurableObject } from 'cloudflare:workers';
-import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, JOIN_TOKEN_TTL_MS, KICK_PER_ACTOR, KICK_PER_MATCH, KICK_WINDOW_MS, LEAVE_PER_ACTOR, LEAVE_WINDOW_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, UNUSED_MINT_MS, actorId, canonicalCausalId, clampClockOffset, connectionCloses, decideKick, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isLegacyDeviceId, isRole, isRoomCode, isUuid, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
+import { CARRY_PER_DEVICE, GUEST_ROTATE_PER_DEVICE, JOIN_TOKEN_TTL_MS, KICK_PER_ACTOR, KICK_PER_MATCH, KICK_WINDOW_MS, LEAVE_PER_ACTOR, LEAVE_WINDOW_MS, LIVE_PROTOCOL, MATCH_BUDGET_WINDOW_MS, MAX_MINTED_TOKENS, MEMBER_SEEN_MS, MINT_PER_MATCH, ROOM_MESSAGES, ROTATE_PER_MATCH, UNUSED_MINT_MS, actorId, canonicalCausalId, clampClockOffset, connectionCloses, decideKick, deviceKindFromAgent, isDeviceId, isDeviceKind, isJoinToken, isLegacyDeviceId, isRole, isRoomCode, liveTeamSide, parseLiveTeamName, parseMatchLog, prepareLiveLog, publicPhoneList, replayScore, type Credential, type DeviceKind, type Role } from '@padel/core';
 import { allowPending, expiredHello, nextHelloAlarm, type SocketView } from './admission';
 import { CLIENT_IP_HEADER, d1MatchIndex, shouldTouchActivity, touchMatchActivity, type D1Like } from './match-index';
 import { allowRate, RENAME_PER_SECOND, takeLiveMessage } from './rate';
+import { resolveRoomMatchId } from './room-id';
 import { applyLiveEvent, chooseActor, createRoom, currentSharedInvite, eventDelta, helloPayload, issueInvite, serverLastChange, type RoomRecord } from './room';
 import { openText, sealText } from './seal';
 import { randomToken } from './tokens';
-import { blockKickedDevice, clearKickedDevices, deleteSeal, dropJoinedDevice, dropMemberHashes, dropRosterDevice, ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, isKickedDevice, latestEventSeq, markActivityTouch, markRosterOffline, matchBudgetOpen, openRoomForCreate, pendingMintStale, readActivityTouch, readEventSeq, readJoined, readRoom, readRoster, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, revokeSharedInvites, saveRosterPhone, takeMatchBudget, writeSeal, type RoomSql } from './store';
+import { blockKickedDevice, clearKickedDevices, deleteSeal, dropJoinedDevice, dropMemberHashes, dropRosterDevice, ensureActivityColumn, ensureSealedTable, grantMintedInvite, hasMoveSeal, insertEvent, insertInvite, insertJoined, insertRoom, isKickedDevice, latestEventSeq, markActivityTouch, markRosterOffline, matchBudgetOpen, openRoomForCreate, pendingMintStale, readActivityTouch, readEventSeq, readJoined, readRoom, readRoomMatchId, readRoster, readSeal, restoreInviteHashes, revokeInviteHash, revokePlayerInvites, revokeSharedInvites, saveRosterPhone, takeMatchBudget, writeRoomMatchId, writeSeal, type RoomSql } from './store';
 import { quotaMac, quotaSecret, safeEqualHex, sha256Hex } from './tokens';
 
 function publicSeat(value: unknown): string | null {
@@ -87,12 +88,21 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   }
 
   /**
-   * The id this object was created with (`idFromName`). It is not `base.matchId`:
-   * a later `match/new` in the log must not retarget D1.
+   * The id this object was created with (`idFromName`), or the copy stored in `meta` when that name is missing.
+   * It is not `base.matchId`: a later `match/new` in the log must not retarget D1.
+   * A name that is not a UUID is ignored.
    */
   private durableMatchId(): string | null {
-    const name = this.ctx.id.name;
-    return isUuid(name) ? name.toLowerCase() : null;
+    const stored = readRoomMatchId(this.sql());
+    const resolved = resolveRoomMatchId(this.ctx.id.name, stored);
+    if (resolved && stored !== resolved) {
+      try {
+        writeRoomMatchId(this.sql(), resolved);
+      } catch {
+        // The next call stores it. This answer still uses the resolved id.
+      }
+    }
+    return resolved;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -462,26 +472,22 @@ export class MatchRoom extends DurableObject<RoomEnv> {
       return;
     }
     if (!result.duplicate) {
+      if (result.event.event.type === 'match/end' && this.durableMatchId() === null) {
+        this.reject(ws, 'unavailable', record.eventId);
+        return;
+      }
       try {
         const sql = this.sql();
         insertEvent(sql, result.event);
         ensureActivityColumn(sql);
-        if (result.event.event.type === 'match/end') {
-          const endedAt = Date.now();
-          const keep = readJoined(sql).map((row) => row.tokenHash);
-          const kept = new Set(keep);
-          const open = readRoom(sql);
-          if (open) {
-            for (const invite of open.invites) {
-              if (!invite.host && invite.revokedAt === null && !kept.has(invite.tokenHash)) {
-                revokeInviteHash(sql, invite.tokenHash, endedAt);
-              }
-            }
-          }
-          const matchId = this.durableMatchId();
-          if (!matchId) throw new Error('room');
-          await d1MatchIndex(this.env.DB).revokeSharedAccess(matchId, endedAt, keep);
-        }
+        if (result.event.event.type === 'match/end') await this.revokeSharedRoom(sql);
+      } catch {
+        this.reject(ws, 'unavailable', record.eventId);
+        return;
+      }
+    } else if (result.event.event.type === 'match/end') {
+      try {
+        await this.revokeSharedRoom(this.sql());
       } catch {
         this.reject(ws, 'unavailable', record.eventId);
         return;
@@ -590,7 +596,9 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
     const now = Date.now();
     const created = createRoom(log, await sha256Hex(hostToken), now);
-    insertRoom(this.sql(), created.record);
+    const replayId = replayScore(created.record.base, created.record.events.map((item) => item.event)).matchId;
+    const roomId = resolveRoomMatchId(this.ctx.id.name, replayId);
+    insertRoom(this.sql(), created.record, roomId);
     return json(201, { expiresAt: created.expiresAt });
   }
 
@@ -761,8 +769,28 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   }
 
   /**
+   * Shared invites and the join code for this room. Safe to repeat: a duplicate end still finishes D1.
+   */
+  private async revokeSharedRoom(sql: RoomSql): Promise<void> {
+    const matchId = this.durableMatchId();
+    if (!matchId) return;
+    const endedAt = Date.now();
+    const keep = readJoined(sql).map((row) => row.tokenHash);
+    const kept = new Set(keep);
+    const open = readRoom(sql);
+    if (open) {
+      for (const invite of open.invites) {
+        if (!invite.host && invite.revokedAt === null && !kept.has(invite.tokenHash)) {
+          revokeInviteHash(sql, invite.tokenHash, endedAt);
+        }
+      }
+    }
+    await d1MatchIndex(this.env.DB).revokeSharedAccess(matchId, endedAt, keep);
+  }
+
+  /**
    * The caller drops their own credential. The shared join code is a different row and stays.
-   * The body cannot name another phone. D1 is updated only for ctx.id.name.
+   * The body cannot name another phone. D1 is updated for the durable object id, or the id stored at create.
    */
   private async leave(request: Request): Promise<Response> {
     const body = await readBody(request, 2000);

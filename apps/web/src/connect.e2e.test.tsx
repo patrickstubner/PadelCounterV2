@@ -14,6 +14,7 @@ const HOST = 'hhhhhhhhhhhhhhhhhhhhhh';
 const INVITE = 'iiiiiiiiiiiiiiiiiiiiii';
 const MATCH = '11111111-1111-4111-8111-111111111111';
 const API = 'https://padel-counter.example.workers.dev';
+let createdMatchId = MATCH;
 
 interface FetchCall {
   readonly url: string;
@@ -104,7 +105,7 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     if (createMode === 'down') {
       return Response.json({ error: 'not_configured', message: '<script>alert(1)</script>' }, { status: 503 });
     }
-    return Response.json({ matchId: MATCH, hostToken: HOST }, { status: 201 });
+    return Response.json({ matchId: createdMatchId, hostToken: HOST }, { status: 201 });
   }
   if (url.endsWith('/invites')) {
     if (inviteFails > 0) {
@@ -178,6 +179,7 @@ describe('connect overlay and scanned join', () => {
     snapshot = null;
     snapshotHost = false;
     inviteFails = 0;
+    createdMatchId = MATCH;
     localStorage.clear();
     sessionStorage.clear();
     window.history.replaceState(null, '', '/');
@@ -409,6 +411,38 @@ describe('connect overlay and scanned join', () => {
     expect(document.querySelector('[data-testid="connect-error"]')?.textContent).not.toContain('script');
     expect(document.querySelector('[data-testid="join-error"]')?.textContent).toContain('This code is not valid.');
     expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(true);
+  });
+
+  it('stores the replay id from a chained log and asks that room for a new code', async () => {
+    const first = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const room = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const base = createMatch(1_700_000_000_000, first);
+    createdMatchId = room;
+    snapshotHost = true;
+    snapshot = {
+      schemaVersion: 2,
+      base,
+      events: [
+        { type: 'match/end', at: 1_700_000_000_010, by: 'host' },
+        { type: 'match/new', matchId: room, at: 1_700_000_000_020, by: 'host' },
+        { type: 'team/rename', team: 'a', name: 'Chainroom', at: 1_700_000_000_030, by: 'host' },
+      ],
+    };
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('show-qr');
+    await waitFor(() => document.querySelector('.team-a .team-name')?.textContent === 'Chainroom');
+    const stored = JSON.parse(sessionStorage.getItem(JOIN_KEY) ?? '{}') as { matchId?: string };
+    expect(stored.matchId).toBe(room);
+    expect(stored.matchId).not.toBe(first);
+    await press('rotate-code');
+    await waitFor(() => fetchCalls.some((item) => item.url.endsWith('/invites')));
+    expect(fetchCalls.some((item) => item.url === `${API}/matches/${room}/invites`)).toBe(true);
+    expect(fetchCalls.some((item) => item.url === `${API}/matches/${first}/invites`)).toBe(false);
   });
 
   it('rotates the same match after the host reloads', async () => {

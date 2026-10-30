@@ -14,7 +14,8 @@ const CREATE_META = `CREATE TABLE IF NOT EXISTS meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   base_json TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  activity_touch INTEGER NOT NULL DEFAULT 0
+  activity_touch INTEGER NOT NULL DEFAULT 0,
+  match_id TEXT
 )`;
 
 const CREATE_INVITES = `CREATE TABLE IF NOT EXISTS invites (
@@ -66,6 +67,7 @@ export function migrate(sql: RoomSql): void {
   sql.exec(CREATE_ROSTER);
   sql.exec(CREATE_BUDGET);
   ensureActivityColumn(sql);
+  ensureMatchIdColumn(sql);
   ensureMintedColumn(sql);
 }
 
@@ -83,6 +85,14 @@ export function ensureActivityColumn(sql: RoomSql): void {
   const names = sql.exec('PRAGMA table_info(meta)').toArray().map((row) => row.name);
   if (!names.includes('activity_touch')) {
     sql.exec('ALTER TABLE meta ADD COLUMN activity_touch INTEGER NOT NULL DEFAULT 0');
+  }
+}
+
+/** Older rooms predate the stored room id. Create already includes it. */
+export function ensureMatchIdColumn(sql: RoomSql): void {
+  const names = sql.exec('PRAGMA table_info(meta)').toArray().map((row) => row.name);
+  if (!names.includes('match_id')) {
+    sql.exec('ALTER TABLE meta ADD COLUMN match_id TEXT');
   }
 }
 
@@ -162,12 +172,14 @@ export function loadRoom(sql: RoomSql): RoomRecord | null {
   return { serverCreatedAt, base, events, invites };
 }
 
-export function insertRoom(sql: RoomSql, record: RoomRecord): void {
+export function insertRoom(sql: RoomSql, record: RoomRecord, matchId: string | null = null): void {
+  ensureMatchIdColumn(sql);
   sql.exec(
-    'INSERT INTO meta (id, base_json, created_at, activity_touch) VALUES (1, ?, ?, ?)',
+    'INSERT INTO meta (id, base_json, created_at, activity_touch, match_id) VALUES (1, ?, ?, ?, ?)',
     JSON.stringify(record.base),
     record.serverCreatedAt,
     record.serverCreatedAt,
+    matchId,
   );
   for (const invite of record.invites) insertInvite(sql, invite);
   for (const event of record.events) insertEvent(sql, event);
@@ -250,6 +262,22 @@ export function readActivityTouch(sql: RoomSql): number | null {
 
 export function markActivityTouch(sql: RoomSql, now: number): void {
   sql.exec('UPDATE meta SET activity_touch = ? WHERE id = 1', now);
+}
+
+/** The id this room was created under. Empty until create, or until a later call stores the object name. */
+export function readRoomMatchId(sql: RoomSql): string | null {
+  try {
+    ensureMatchIdColumn(sql);
+    const value = sql.exec('SELECT match_id FROM meta WHERE id = 1').toArray()[0]?.match_id;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeRoomMatchId(sql: RoomSql, matchId: string): void {
+  ensureMatchIdColumn(sql);
+  sql.exec('UPDATE meta SET match_id = ? WHERE id = 1', matchId);
 }
 
 export interface MintGrant {

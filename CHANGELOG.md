@@ -12,6 +12,7 @@
 - Take phones is offered when another phone has joined, even if that phone is offline. Carry is not counted in the shared per-address limit.
 - Removing a phone revokes that credential only for this room’s id, not for a match id stored in the score log.
 - Leave live match revokes this phone’s own credential. The shared code stays valid, and the other phones stay connected.
+- Ending a match still turns the code off when the room’s name is missing. The room keeps its id from when it was created. If that id is missing too, the ending is not saved, so a retry can still turn the code off.
 
 ## 2.2.10
 

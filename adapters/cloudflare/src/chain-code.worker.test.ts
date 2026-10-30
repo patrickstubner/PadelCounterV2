@@ -199,14 +199,18 @@ describe('join code of a carried match chain', () => {
   it('rejects the code after End match and records activity on this room', async () => {
     const court = await carriedChain();
     const firstActivity = await activityOf(court.firstId);
-    const storedId = await runInDurableObject(env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(court.secondId)), (_instance, state) => {
+    const stored = await runInDurableObject(env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(court.secondId)), (_instance, state) => {
       state.storage.sql.exec('UPDATE meta SET activity_touch = 1 WHERE id = 1');
-      const row = state.storage.sql.exec('SELECT base_json FROM meta WHERE id = 1').toArray()[0];
+      const row = state.storage.sql.exec('SELECT base_json, match_id FROM meta WHERE id = 1').toArray()[0];
       const base = JSON.parse(String(row?.base_json)) as { matchId?: unknown };
-      return typeof base.matchId === 'string' ? base.matchId : '';
+      return {
+        baseId: typeof base.matchId === 'string' ? base.matchId : '',
+        roomId: typeof row?.match_id === 'string' ? row.match_id : '',
+      };
     });
-    expect(storedId).toBe(court.firstId);
-    expect(storedId).not.toBe(court.secondId);
+    expect(stored.baseId).toBe(court.firstId);
+    expect(stored.baseId).not.toBe(court.secondId);
+    expect(stored.roomId).toBe(court.secondId);
     await env.DB.prepare('UPDATE matches SET last_activity = 1 WHERE id = ?').bind(court.secondId).run();
 
     expect((await redeem(court.code, dev())).status).toBe(201);
@@ -257,7 +261,7 @@ describe('join code of a carried match chain', () => {
     expect((await redeem(next.code, dev())).status).toBe(201);
   });
 
-  it('keeps the code when a phone leaves, and there is no kick route', async () => {
+  it('keeps the code when the socket closes, and an anonymous leave does not revoke it', async () => {
     const court = await carriedChain();
     expect((await redeem(court.code, dev())).status).toBe(201);
     const host = await connect(court.secondToken, dev());
@@ -265,9 +269,9 @@ describe('join code of a carried match chain', () => {
     expect((await redeem(court.code, dev())).status).toBe(201);
     const leave = await call(`/matches/${court.secondId}/leave`, { method: 'POST' });
     const kick = await call(`/matches/${court.secondId}/kick`, { method: 'POST' });
-    expect(leave.status).toBe(404);
+    expect(leave.status).toBe(401);
     expect(kick.status).toBe(404);
-    expect(await leave.json()).toEqual({ error: 'not_found' });
+    expect(await leave.json()).toMatchObject({ error: 'bad_token' });
     expect(await kick.json()).toEqual({ error: 'not_found' });
     expect((await redeem(court.code, dev())).status).toBe(201);
   });
