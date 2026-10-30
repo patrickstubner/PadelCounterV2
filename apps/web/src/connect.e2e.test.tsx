@@ -531,7 +531,7 @@ describe('connect overlay and scanned join', () => {
     expect(document.querySelector('[data-testid="live-error"]')).toBeNull();
   }, 8_000);
 
-  it('asks before joining a moved match, and decline stays on this one', async () => {
+  it('follows a moved match without asking, and does not decline', async () => {
     (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
     globalThis.fetch = fakeFetch as typeof fetch;
     globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
@@ -555,18 +555,12 @@ describe('connect overlay and scanned join', () => {
     await act(async () => {
       sockets[0]?.onmessage?.({ data: JSON.stringify({ type: 'match_moved', token: moved, seat: 'p3' }) });
     });
-    expect(document.body.textContent).toContain('Player 3 started a new match. Join it, or stay here.');
-    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(joinsBefore);
-    await press('dismiss-join');
     expect(document.querySelector('[data-testid="join-new-match"]')).toBeNull();
-    expect(sockets[0]?.sent.some((entry) => entry.includes('"decline_move"'))).toBe(true);
-    expect(fetchCalls.filter((call) => call.url.endsWith('/join'))).toHaveLength(joinsBefore);
-    await act(async () => {
-      sockets[0]?.onmessage?.({ data: JSON.stringify({ type: 'match_moved', token: moved, seat: 'p3' }) });
-    });
-    await press('join-new-match');
+    expect(document.querySelector('[data-testid="new-match-notice"]')?.textContent).toBe('New match');
+    expect(document.body.textContent).not.toContain('Join the new match?');
     const joins = fetchCalls.filter((call) => call.url.endsWith('/join'));
     expect(joins).toHaveLength(joinsBefore + 1);
+    expect(sockets[0]?.sent.some((entry) => entry.includes('"decline_move"'))).toBe(false);
     expect(String(joins.at(-1)?.init?.headers && new Headers(joins.at(-1)?.init?.headers).get('authorization'))).toContain(moved);
   });
 

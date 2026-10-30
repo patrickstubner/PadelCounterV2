@@ -334,7 +334,7 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
     host: false,
     expiresAt,
     revokedAt: null,
-  }, kept);
+  }, kept, !rotate);
   if (isJoinToken(payload.sessionToken) && isDeviceId(payload.sessionDevice)) {
     await index.insertCredential({
       tokenHash: await sha256Hex(payload.sessionToken),

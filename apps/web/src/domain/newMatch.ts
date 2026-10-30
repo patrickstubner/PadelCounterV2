@@ -35,7 +35,7 @@ export function newMatchCopy(plan: NewMatchPlan): {
       : 'No ends this match and starts the new one on this phone only.';
     return {
       title: 'Take the connected phones into the new match?',
-      body: `Yes moves every phone that already joined. They do not scan again. A phone that is offline joins when it reconnects, while its code is still valid. ${alone}`,
+      body: `Yes moves every phone that already joined. They follow this match on their own and are not asked. A phone that is offline follows when it reconnects, while its code is still valid. ${alone}`,
       confirmLabel: 'Take phones',
       confirmTestId: 'take-phones',
       alternateLabel: 'Just this phone',

@@ -130,12 +130,12 @@ describe('new match while one is open', () => {
     expect(stale).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false, askCarry: true });
   });
 
-  it('lets a non-host leave without ending the shared match, and still ask about the other phones', () => {
+  it('lets a non-host leave without ending the shared match or moving the other phones', () => {
     expect(planNewMatch({ host: false, open: true, lastEventAt: NOW, now: NOW, coPlayers: 3 })).toEqual({
       kind: 'leave',
       showReconnect: false,
       reconnectSelected: false,
-      askCarry: true,
+      askCarry: false,
     });
     expect(planNewMatch({ host: false, open: true, lastEventAt: NOW, now: NOW, coPlayers: 0 }).askCarry).toBe(false);
   });

@@ -101,8 +101,8 @@ export interface CourtTaps {
   onSelectSet: (index: SetIndex) => void;
 }
 
-/** Score first. The tick never blocks the point, and the current set does not tick again. */
-export function bindCourtTaps(activeSet: SetIndex, target: CourtTapTarget, pulse: () => void): CourtTaps {
+/** Score first when a tick is passed in. The court buttons tick on their own gesture. */
+export function bindCourtTaps(activeSet: SetIndex, target: CourtTapTarget, pulse: () => void = () => undefined): CourtTaps {
   return {
     onIncrement: (team) => {
       target.increment(team);
@@ -120,6 +120,119 @@ export function bindCourtTaps(activeSet: SetIndex, target: CourtTapTarget, pulse
       const changed = index !== activeSet;
       target.selectSet(index);
       if (changed) pulse();
+    },
+  };
+}
+
+/** Movement past this many pixels is a scroll, not a tap. */
+export const HAPTIC_SLOP_PX = 12;
+
+export interface HapticPoint {
+  readonly pointerId: number;
+  readonly x: number;
+  readonly y: number;
+  readonly button: number;
+  readonly pointerType: string;
+}
+
+export interface PressHaptic {
+  down(point: HapticPoint, allow: boolean): void;
+  move(point: HapticPoint): void;
+  up(point: HapticPoint, allow: boolean): void;
+  cancel(pointerId: number): void;
+  /** Click ticks only when no pointer gesture already accepted or rejected this tap. */
+  click(): void;
+}
+
+interface ArmedPress {
+  pointerId: number;
+  x: number;
+  y: number;
+  frame: number;
+  fired: boolean;
+  dropped: boolean;
+}
+
+/**
+ * Vibration on pointer down, before the click that counts the point.
+ * A move past the slop, or a cancel, drops the tick. Pointer up ticks at most once
+ * if the frame has not already fired. The click must not tick again.
+ */
+export function createPressHaptic(pulse: () => void): PressHaptic {
+  let pending: ArmedPress | null = null;
+  let suppressClick = false;
+  const schedule = (fn: () => void): number => {
+    if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(fn);
+    fn();
+    return 0;
+  };
+  const cancelFrame = (frame: number) => {
+    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+  };
+  return {
+    down(point, allow) {
+      if (!allow || (point.pointerType === 'mouse' && point.button !== 0)) return;
+      suppressClick = false;
+      if (pending) cancelFrame(pending.frame);
+      const armed: ArmedPress = {
+        pointerId: point.pointerId,
+        x: point.x,
+        y: point.y,
+        frame: 0,
+        fired: false,
+        dropped: false,
+      };
+      pending = armed;
+      armed.frame = schedule(() => {
+        if (pending !== armed || armed.dropped || armed.fired) return;
+        armed.fired = true;
+        try {
+          pulse();
+        } catch {
+          // The score is a later click. A tick must not block it.
+        }
+      });
+    },
+    move(point) {
+      if (!pending || pending.pointerId !== point.pointerId || pending.fired || pending.dropped) return;
+      const dx = point.x - pending.x;
+      const dy = point.y - pending.y;
+      if (dx * dx + dy * dy <= HAPTIC_SLOP_PX * HAPTIC_SLOP_PX) return;
+      pending.dropped = true;
+      suppressClick = true;
+      cancelFrame(pending.frame);
+    },
+    up(point, allow) {
+      if (!pending || pending.pointerId !== point.pointerId) return;
+      const armed = pending;
+      pending = null;
+      cancelFrame(armed.frame);
+      suppressClick = true;
+      if (armed.dropped || armed.fired || !allow) return;
+      armed.fired = true;
+      try {
+        pulse();
+      } catch {
+        // The click still counts the point.
+      }
+    },
+    cancel(pointerId) {
+      if (!pending || pending.pointerId !== pointerId) return;
+      pending.dropped = true;
+      cancelFrame(pending.frame);
+      pending = null;
+      suppressClick = true;
+    },
+    click() {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
+      try {
+        pulse();
+      } catch {
+        // The point is already counted.
+      }
     },
   };
 }

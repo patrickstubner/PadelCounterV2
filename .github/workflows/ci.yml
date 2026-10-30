@@ -37,9 +37,6 @@ jobs:
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
 
-      - name: Install Chrome
-        run: pnpm --filter @padel/web exec playwright install --with-deps chrome
-
       - name: Lint
         run: pnpm lint
 

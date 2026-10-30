@@ -894,6 +894,17 @@ button:disabled { cursor: not-allowed; }
   margin-top: 0.45rem;
 }
 
+.history-continue {
+  margin: 0.8rem 0 0.2rem;
+  min-height: 3rem;
+  padding: 0.55rem 1rem;
+  border: 0;
+  border-radius: 0.8rem;
+  background: #ffffff;
+  color: #0a1a3f;
+  font-weight: 800;
+}
+
 .history-delete {
   align-self: center;
   min-height: 3rem;

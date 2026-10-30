@@ -13,10 +13,14 @@ import type { MatchEvent, SetIndex, TeamId } from '../domain/types';
 export type LiveSend = (event: MatchEvent, claim: ScoreClaim | null) => boolean;
 
 function initialSession(): Session {
-  return {
-    log: loadLog(localStorage) ?? createLog(Date.now(), createMatchId()),
-    archive: loadArchive(localStorage),
-  };
+  try {
+    return {
+      log: loadLog(localStorage) ?? createLog(Date.now(), createMatchId()),
+      archive: loadArchive(localStorage),
+    };
+  } catch {
+    return { log: createLog(Date.now(), createMatchId()), archive: [] };
+  }
 }
 
 export function useMatch() {
@@ -29,9 +33,13 @@ export function useMatch() {
   const state = useMemo(() => replay(log), [log]);
 
   useEffect(() => {
-    const logSaved = saveLog(log, localStorage);
-    const archiveSaved = saveArchive(session.archive, localStorage);
-    setSaveFailed(!logSaved || !archiveSaved);
+    try {
+      const logSaved = saveLog(log, localStorage);
+      const archiveSaved = saveArchive(session.archive, localStorage);
+      setSaveFailed(!logSaved || !archiveSaved);
+    } catch {
+      setSaveFailed(true);
+    }
   }, [log, session.archive]);
 
   const at = () => Date.now();
@@ -74,6 +82,10 @@ export function useMatch() {
     replaceLog: (next: MatchLog) => {
       logRef.current = next;
       dispatch({ type: 'replace', log: next });
+    },
+    continueMatch: (next: MatchLog) => {
+      logRef.current = next;
+      dispatch({ type: 'continue-match', log: next });
     },
     applyLive: (event: MatchEvent) => {
       logRef.current = appendEvent(logRef.current, event);

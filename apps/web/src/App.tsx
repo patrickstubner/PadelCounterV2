@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { isOpenMatch, lastChangeAt, planNewMatch, scoreClaimFor, whoLabel, type NewMatchPlan } from '@padel/core';
+import { isOpenMatch, lastChangeAt, planNewMatch, scoreClaimFor, type NewMatchPlan } from '@padel/core';
 import { detailHistoryState, joinHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
@@ -15,8 +15,9 @@ import { Victory } from './components/Victory';
 import { listMatches } from './domain/archive';
 import { deviceId } from './domain/device';
 import { fanfareEnabled, playFanfare, setFanfareEnabled, shouldPlayFanfare, stopFanfare } from './domain/fanfare';
-import { bindCourtTaps, hapticEnabled, needsIosHapticSwitch, pulseHaptic, setHapticEnabled } from './domain/haptic';
+import { bindCourtTaps, hapticEnabled, needsIosHapticSwitch, pulseHaptic, setHapticEnabled, supportsVibrate } from './domain/haptic';
 import { appendEvent, describeEvent, replay } from './domain/log';
+import { continuationLog, continueCopy, continueDecision, type ContinueKind } from './domain/continue';
 import { commitNewMatch, newMatchCopy } from './domain/newMatch';
 import {
   acknowledgeCelebrated,
@@ -94,6 +95,7 @@ export function App() {
   });
   const fanfarePlayed = useRef<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [continuingId, setContinuingId] = useState<string | null>(null);
   const [screen, setScreen] = useState<ArchiveScreen>(() => {
     if (typeof history === 'undefined') return { view: 'court' };
     return screenFromHistory(history.state);
@@ -293,6 +295,39 @@ export function App() {
           : `Set ${state.activeSet + 1}. ${scoreLine}. ${serve}.${pick ? ` ${pick}.` : ''}${tiebreak ? ` ${tiebreak}.` : ''}`;
   const historyRows = currentHistory(match.log);
   const played = matches.filter((item) => !item.live);
+  const continueActor = (): { id: string; isHost: boolean } => {
+    if (room.status === 'live' && !room.host) {
+      const seat = room.phones.find((phone) => phone.self)?.seat;
+      return { id: seat && seat !== 'host' ? seat : 'guest', isHost: false };
+    }
+    return { id: 'host', isHost: true };
+  };
+  const continuingMatch = continuingId ? match.archive.find((item) => item.id === continuingId) ?? null : null;
+  const continuingKind: ContinueKind | null = continuingMatch ? continueDecision(continuingMatch, continueActor()) : null;
+  const detailMatch = screen.view === 'detail' ? match.archive.find((item) => item.id === screen.id) ?? null : null;
+  const continuingOffer = detailMatch ? continueDecision(detailMatch, continueActor()) : null;
+  const confirmContinue = () => {
+    const archived = continuingMatch;
+    const actor = continueActor();
+    if (!archived || !continueDecision(archived, actor)) {
+      setContinuingId(null);
+      return;
+    }
+    const next = continuationLog(archived, Date.now());
+    if (!next) {
+      setContinuingId(null);
+      return;
+    }
+    if (room.status === 'live') room.disconnect();
+    match.continueMatch(next);
+    setContinuingId(null);
+    setScreen({ view: 'court' });
+    if (typeof history !== 'undefined') {
+      const steps = screen.view === 'detail' ? 2 : screen.view === 'matches' ? 1 : 0;
+      if (steps > 0 && history.length > steps) history.go(-steps);
+      else history.replaceState(null, '');
+    }
+  };
 
   if (screen.view === 'privacy') {
     return (
@@ -323,6 +358,7 @@ export function App() {
           onOpen={openDetail}
           onBack={closeArchive}
           onAskDelete={askDelete}
+          onContinue={screen.view === 'detail' && continuingOffer ? () => setContinuingId(screen.id) : undefined}
         />
         {deletingId ? (
           <ConfirmDialog
@@ -334,6 +370,18 @@ export function App() {
             cancelTestId="cancel-delete"
             onCancel={() => setDeletingId(null)}
             onConfirm={confirmDelete}
+          />
+        ) : null}
+        {continuingKind ? (
+          <ConfirmDialog
+            titleId="continue-match-title"
+            title={continueCopy(continuingKind, room.status === 'live').title}
+            body={continueCopy(continuingKind, room.status === 'live').body}
+            confirmLabel="Continue"
+            confirmTestId="confirm-continue"
+            cancelTestId="cancel-continue"
+            onCancel={() => setContinuingId(null)}
+            onConfirm={confirmContinue}
           />
         ) : null}
         <p className="app-version" data-testid="app-version">{`v${import.meta.env.APP_VERSION}`}</p>
@@ -445,7 +493,8 @@ export function App() {
     }
   };
 
-  const taps = bindCourtTaps(state.activeSet, match, () => pulseHaptic(hapticOn));
+  const taps = bindCourtTaps(state.activeSet, match);
+  const hapticMode = !hapticOn ? 'off' : needsIosHapticSwitch() ? 'ios' : supportsVibrate() ? 'vibrate' : 'off';
 
   return (
     <div className={room.courtTone === 'local' ? 'app' : `app is-${room.courtTone}`}>
@@ -476,6 +525,8 @@ export function App() {
           onRename={match.rename}
           onSelectSet={taps.onSelectSet}
           onServe={taps.onServe}
+          hapticMode={hapticMode}
+          onHaptic={() => pulseHaptic(hapticOn)}
         />
         <div className="mid">
           {result.kind === 'leading' ? (
@@ -506,6 +557,9 @@ export function App() {
           ) : null}
           {room.courtTone === 'offline' ? (
             <p className="offline-label" data-testid="court-offline">Offline</p>
+          ) : null}
+          {room.movedNote ? (
+            <p className="live-error" role="status" data-testid="new-match-notice">New match</p>
           ) : null}
           {room.continued ? (
             <p className="live-error" role="status" data-testid="continued-notice">
@@ -564,6 +618,8 @@ export function App() {
           onRename={match.rename}
           onSelectSet={taps.onSelectSet}
           onServe={taps.onServe}
+          hapticMode={hapticMode}
+          onHaptic={() => pulseHaptic(hapticOn)}
         />
       </main>
       <footer className="foot">
@@ -611,21 +667,6 @@ export function App() {
             setPendingPlan(null);
             commitPlanned(plan, plan.askCarry);
           }}
-        />
-      ) : null}
-      {room.offer ? (
-        <ConfirmDialog
-          titleId="join-new-title"
-          title="Join the new match?"
-          body={room.offer.seat && whoLabel(room.offer.seat)
-            ? `${whoLabel(room.offer.seat)} started a new match. Join it, or stay here.`
-            : 'A phone from this match started a new one. Join it, or stay here.'}
-          confirmLabel="Accept"
-          confirmTestId="join-new-match"
-          cancelLabel="Decline"
-          cancelTestId="dismiss-join"
-          onCancel={room.dismissOffer}
-          onConfirm={room.acceptOffer}
         />
       ) : null}
       {phonesOpen && room.status === 'live' ? (

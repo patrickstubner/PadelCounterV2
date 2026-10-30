@@ -41,7 +41,8 @@ export interface LiveController {
   readonly error: string | null;
   readonly joinError: string | null;
   readonly joining: boolean;
-  readonly offer: { readonly token: string; readonly seat: string | null } | null;
+  /** This phone is following the starter into the new match. */
+  readonly movedNote: boolean;
   /** The old match ended and this phone was not moved into the new one. */
   readonly continued: boolean;
   readonly dismissContinued: () => void;
@@ -54,8 +55,6 @@ export interface LiveController {
   readonly joinByCode: (code: string) => Promise<boolean>;
   readonly rejectToken: () => void;
   readonly disconnect: () => void;
-  readonly acceptOffer: () => void;
-  readonly dismissOffer: () => void;
   /** Sends the end event, then drops this phone's socket. Returns the member token. */
   readonly finishShared: (event: MatchEvent, claim: ScoreClaim | null) => string | null;
 }
@@ -128,7 +127,7 @@ export function useLive(
   const [error, setError] = useState<string | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
-  const [offer, setOffer] = useState<{ token: string; seat: string | null } | null>(null);
+  const [movedNote, setMovedNote] = useState(false);
   const [continued, setContinued] = useState(false);
   const [pendingRestore, setPendingRestore] = useState<readonly { id: string; event: MatchEvent; claim: ScoreClaim | null }[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
@@ -144,7 +143,6 @@ export function useLive(
   const revertRef = useRef(revertLive);
   const readyRef = useRef(false);
   const generation = useRef(0);
-  const offerRef = useRef<{ token: string; seat: string | null } | null>(null);
   const tokenRef = useRef<{ token: string; expiresAt: number } | null>(null);
   const matchRef = useRef('');
   const resumes = useRef(0);
@@ -510,11 +508,6 @@ export function useLive(
     return plan.reason;
   };
 
-  const rememberOffer = (next: { token: string; seat: string | null } | null) => {
-    offerRef.current = next;
-    setOffer(next);
-  };
-
   const disconnect = () => {
     dropToken();
     clearPending();
@@ -535,7 +528,7 @@ export function useLive(
     setPhones([]);
     setError(null);
     setPendingRestore([]);
-    rememberOffer(null);
+    setMovedNote(false);
   };
 
   const open = (token: string, asJoin: boolean, existingTicket?: string) => {
@@ -562,6 +555,7 @@ export function useLive(
     opening.current = true;
     const fail = (message: string) => {
       opening.current = false;
+      setMovedNote(false);
       if (message === ROOM_MESSAGES.slow_down) slowDown.current = true;
       if (isTerminalMessage(message)) {
         dropToken();
@@ -659,13 +653,11 @@ export function useLive(
           return;
         }
         const notice = interpretMessage(parsed);
-        if (notice.kind === 'join_offer') {
-          rememberOffer({ token: notice.token, seat: null });
-          return;
-        }
-        if (notice.kind === 'match_moved') {
+        if (notice.kind === 'join_offer' || notice.kind === 'match_moved') {
           setContinued(false);
-          rememberOffer({ token: notice.token, seat: notice.seat });
+          setMovedNote(true);
+          setJoining(true);
+          open(notice.token, true);
           return;
         }
         if (notice.kind === 'match_notice') {
@@ -736,6 +728,7 @@ export function useLive(
             opening.current = false;
             showLocalCourt();
             setJoining(false);
+            setMovedNote(false);
             setStatus('disconnected');
             noteError(notice.message);
             detachSocket(ws);
@@ -1020,6 +1013,12 @@ export function useLive(
   }, []);
 
   useEffect(() => {
+    if (!movedNote || typeof window === 'undefined') return;
+    const timer = window.setTimeout(() => setMovedNote(false), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [movedNote]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     const timer = window.setInterval(() => {
       const ws = socketRef.current;
@@ -1094,7 +1093,7 @@ export function useLive(
     error,
     joinError,
     joining,
-    offer,
+    movedNote,
     continued,
     dismissContinued: () => setContinued(false),
     pendingRestore,
@@ -1120,24 +1119,6 @@ export function useLive(
       return events;
     },
     disconnect,
-    acceptOffer: () => {
-      const token = offerRef.current?.token ?? null;
-      rememberOffer(null);
-      if (!token) return;
-      setJoining(true);
-      open(token, true);
-    },
-    dismissOffer: () => {
-      const ws = socketRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.send(JSON.stringify({ type: 'decline_move' }));
-        } catch {
-          // The next hello still asks until the seal is gone.
-        }
-      }
-      rememberOffer(null);
-    },
     finishShared: (event, claim) => {
       const previous = tokenRef.current?.token ?? hostRef.current?.token ?? null;
       const ws = socketRef.current;

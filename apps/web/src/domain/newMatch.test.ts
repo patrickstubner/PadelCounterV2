@@ -36,10 +36,11 @@ describe('new match while one is open', () => {
     expect(newMatchCopy(stale).confirmLabel).toBe('Take phones');
   });
 
-  it('lets a non-host leave without ending the host match', () => {
+  it('lets a non-host leave without ending the host match or taking the other phones', () => {
     const plan = planNewMatch({ host: false, open: true, lastEventAt: NOW, now: NOW, coPlayers: 2 });
-    expect(newMatchCopy(plan).confirmTestId).toBe('take-phones');
-    expect(newMatchCopy(plan).body).toContain('leaves the shared match');
+    expect(plan.askCarry).toBe(false);
+    expect(newMatchCopy(plan).confirmTestId).toBe('confirm-leave');
+    expect(newMatchCopy(plan).body).toContain('You leave the shared match');
     const left = commitNewMatch(plan, NOW, 'p2');
     expect(left.endOnServer).toBe(false);
     expect(left.events.map((event) => event.type)).toEqual(['match/new']);

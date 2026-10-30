@@ -32,22 +32,20 @@ function inbox(ws: WebSocket): {
   return {
     all: () => messages.slice(),
     waitFor(match) {
-      const start = Date.now();
+      const found = messages.find(match);
+      if (found) return Promise.resolve(found);
       return new Promise((resolve, reject) => {
-        const check = (): void => {
-          const found = messages.find(match);
-          if (found) {
-            resolve(found);
-            return;
-          }
-          if (Date.now() - start > 3_000) {
-            reject(new Error(`missing message ${JSON.stringify(messages)}`));
-            return;
-          }
-          notify = () => check();
-          setTimeout(check, 20);
+        const timer = setTimeout(() => {
+          notify = () => {};
+          reject(new Error(`missing message ${JSON.stringify(messages)}`));
+        }, 3_000);
+        notify = () => {
+          const next = messages.find(match);
+          if (!next) return;
+          clearTimeout(timer);
+          notify = () => {};
+          resolve(next);
         };
-        check();
       });
     },
   };
@@ -471,7 +469,7 @@ describe('review 23 round 2', () => {
         headers: { authorization: `Bearer ${extra.hostToken}`, 'content-type': 'application/json' },
         body: JSON.stringify({ confirm: true, previousHostToken: own.token }),
       });
-      expect(moved.status).toBe(200);
+      expect(moved.status).toBe(401);
     }
     const blockedNext = await createLive(dev('d65000009000000000000000000000000'));
     const blocked = await call(`/matches/${blockedNext.matchId}/carry`, {
@@ -479,7 +477,7 @@ describe('review 23 round 2', () => {
       headers: { authorization: `Bearer ${blockedNext.hostToken}`, 'content-type': 'application/json' },
       body: JSON.stringify({ confirm: true, previousHostToken: own.token }),
     });
-    expect(blocked.status).toBe(429);
+    expect(blocked.status).toBe(401);
     const hostNext = await createLive(dev('d65000008000000000000000000000000'));
     const hostCarry = await call(`/matches/${hostNext.matchId}/carry`, {
       method: 'POST',
@@ -487,15 +485,13 @@ describe('review 23 round 2', () => {
       body: JSON.stringify({ confirm: true, previousHostToken: created.hostToken }),
     });
     expect(hostCarry.status).toBe(200);
-    expect(await hostCarry.json()).toMatchObject({ carried: 1 });
-    const offered = await guest.messages.waitFor((message) => message.type === 'match_moved');
-    expect(offered.seat).toBe('host');
-    guest.ws.send(JSON.stringify({ type: 'decline_move' }));
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    const hostBody = await hostCarry.json();
+    expect(hostBody).toMatchObject({ carried: 1 });
     guest.ws.close();
     const again = await connect(own.token, dev('d65000003000000000000000000000000'));
     const notice = await again.messages.waitFor((message) => message.type === 'match_notice' || message.type === 'match_moved');
-    expect(notice.type).toBe('match_notice');
+    expect(notice.type).toBe('match_moved');
+    expect(notice.seat).toBe('host');
   });
 
   it('lets a new phone join after scans that never connected', async () => {
