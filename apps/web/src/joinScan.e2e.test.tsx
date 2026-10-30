@@ -120,10 +120,15 @@ describe('scan to the match score', () => {
     });
     expect(getUserMedia).not.toHaveBeenCalled();
 
-    const open = document.querySelector<HTMLButtonElement>('[data-testid="join-open"]');
-    if (!open) throw new Error('missing join');
+    const open = document.querySelector<HTMLButtonElement>('[data-testid="connect-open"]');
+    if (!open) throw new Error('missing connect');
     await act(async () => {
       open.click();
+    });
+    const scanQr = document.querySelector<HTMLButtonElement>('[data-testid="scan-qr"]');
+    if (!scanQr) throw new Error('missing scan');
+    await act(async () => {
+      scanQr.click();
     });
     expect(document.querySelector('[data-testid="join-camera"]')).toBeNull();
 

@@ -219,7 +219,7 @@ describe('live socket reconnect', () => {
       await wait(20);
     }
     expect(document.querySelector('[data-testid="leave-live-menu"]')).not.toBeNull();
-    expect(document.querySelector('[data-testid="connect-open"]')).toBeNull();
+    expect(document.querySelector('[data-testid="connect-open"]')).not.toBeNull();
     expect(court()?.classList.contains('is-online')).toBe(true);
     expect(court()?.classList.contains('is-offline')).toBe(false);
     expect(document.querySelector('[data-testid="court-offline"]')).toBeNull();
@@ -248,12 +248,12 @@ describe('live socket reconnect', () => {
     await act(async () => {
       root.render(<App />);
     });
-    for (let attempt = 0; attempt < 40 && document.querySelector('[data-testid="connect-open"]'); attempt += 1) {
+    for (let attempt = 0; attempt < 40 && !document.querySelector('[data-testid="leave-live-menu"]'); attempt += 1) {
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
       });
     }
-    expect(document.querySelector('[data-testid="connect-open"]')).toBeNull();
+    expect(document.querySelector('[data-testid="connect-open"]')).not.toBeNull();
     const baseline = joins;
     expect(baseline).toBeGreaterThan(0);
     expect(window.location.href).not.toContain(TOKEN);
@@ -1046,8 +1046,8 @@ describe('live socket reconnect', () => {
     }) as typeof fetch;
     await mountJoined();
     await reconnectOffline(ended, ['a']);
-    for (let attempt = 0; attempt < 40 && !scoreLine().includes('Match ended'); attempt += 1) await wait(50);
-    expect(scoreLine()).toContain('Match ended');
+    for (let attempt = 0; attempt < 40 && !scoreLine().includes('Draw'); attempt += 1) await wait(50);
+    expect(scoreLine()).toContain('Draw');
     expect(scoreLine()).toContain('4–1');
     expect(scoreLine()).not.toContain('5–1');
   }, 8_000);

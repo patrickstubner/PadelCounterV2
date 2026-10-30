@@ -24,7 +24,7 @@ import {
   type CelebratedWin,
 } from './domain/celebration';
 import { colonSetScore, currentHistory } from './domain/history';
-import { RULES_SUMMARY, celebrationWinner, matchWinner, serveCourtLabel, servePickPrompt, tiebreakHint } from './domain/rules';
+import { RULES_SUMMARY, celebrationWinner, matchResult, serveCourtLabel, servePickPrompt, tiebreakHint } from './domain/rules';
 import { useInstallOffer } from './hooks/useInstallOffer';
 import { useMatch } from './hooks/useMatch';
 import { forgetJoinToken, heldJoin, readJoinToken, releaseHeldJoin } from './live/protocol';
@@ -89,6 +89,7 @@ export function App() {
     return screenFromHistory(history.state);
   });
   const [connectOpen, setConnectOpen] = useState(false);
+  const [connectMode, setConnectMode] = useState<'choose' | 'show'>('choose');
   const [joinOpen, setJoinOpen] = useState(false);
   const joinStarted = useRef(false);
   const applyJoin = useCallback((attempt: { readonly ok: true; readonly token: string } | { readonly ok: false; readonly invalid: boolean }) => {
@@ -171,6 +172,7 @@ export function App() {
   };
   const openPrivacy = () => openScreen({ view: 'privacy' }, privacyHistoryState());
   const openConnect = () => {
+    setConnectMode('choose');
     setConnectOpen(true);
   };
   const closeJoin = () => {
@@ -209,7 +211,8 @@ export function App() {
     setDeletingId(null);
   };
   const { state } = match;
-  const winner = matchWinner(state.sets);
+  const result = matchResult(state);
+  const winner = result.kind === 'winner' ? result.team : null;
   const celebrated = celebrationWinner(state);
   const reducedMotion = useReducedMotion();
   const [remembered, setRemembered] = useState<CelebratedWin | null>(() => {
@@ -252,13 +255,20 @@ export function App() {
   const serve = serveCourtLabel(state);
   const showFinal = state.ended || winner !== null;
   const finalSets = state.sets.map((set, index) => `Set ${index + 1} ${set.a}–${set.b}`).join(', ');
+  const resultLine = result.kind === 'leading'
+    ? `${state.teams[result.team].name} leading. ${finalSets}.`
+    : result.kind === 'draw'
+      ? `Draw. ${finalSets}.`
+      : null;
   const live = showVictory && celebrated
     ? `${state.teams[celebrated].name} wins!`
     : showFinal && celebrated
       ? `Final score. ${state.teams[celebrated].name} wins. ${finalSets}.`
-      : showFinal
-        ? `Match ended. Final score. ${finalSets}.`
-        : `Set ${state.activeSet + 1}. ${scoreLine}. ${serve}.${pick ? ` ${pick}.` : ''}${tiebreak ? ` ${tiebreak}.` : ''}`;
+      : resultLine
+        ? resultLine
+        : showFinal
+          ? `Match ended. Final score. ${finalSets}.`
+          : `Set ${state.activeSet + 1}. ${scoreLine}. ${serve}.${pick ? ` ${pick}.` : ''}${tiebreak ? ` ${tiebreak}.` : ''}`;
   const historyRows = currentHistory(match.log);
   const played = matches.filter((item) => !item.live);
 
@@ -310,8 +320,6 @@ export function App() {
     );
   }
 
-  const showConnect = !room.joining && (room.status !== 'live' || room.host);
-  const showJoin = !room.joining && room.status !== 'live';
   const leaveLive = () => {
     room.disconnect();
     try {
@@ -321,9 +329,8 @@ export function App() {
     }
   };
   const actions: readonly CourtAction[] = [
-    ...(showConnect ? [{ id: 'connect', label: 'Connect players', testId: 'connect-open', onSelect: openConnect }] : []),
-    ...(showJoin ? [{ id: 'join', label: 'Join match', testId: 'join-open', onSelect: openJoin }] : []),
-    ...(room.status === 'live' && !room.host
+    ...(room.joining ? [] : [{ id: 'connect', label: 'Connect', testId: 'connect-open', onSelect: openConnect }]),
+    ...(room.status === 'live'
       ? [{ id: 'leave', label: 'Leave live match', testId: 'leave-live-menu', onSelect: leaveLive }]
       : []),
     { id: 'history', label: 'History', testId: 'history-open', onSelect: openMatches },
@@ -382,6 +389,26 @@ export function App() {
         : []),
   ];
 
+  const commitPlanned = (plan: NewMatchPlan, takePhones: boolean) => {
+    const acting = takePhones ? { ...plan, kind: 'finish' as const } : plan;
+    const at = Date.now();
+    const by = acting.kind === 'leave' ? deviceId(localStorage) : 'host';
+    const commit = commitNewMatch(acting, at, by);
+    const endEvent = commit.events[0] ?? { type: 'match/end' as const, at, by };
+    const previous = commit.endOnServer && room.status === 'live'
+      ? room.finishShared(endEvent, scoreClaimFor(replay(match.log), endEvent))
+      : null;
+    if (!commit.endOnServer) room.disconnect();
+    let shared = match.log;
+    for (const event of commit.events) shared = appendEvent(shared, event);
+    match.recordAll(commit.events);
+    if (takePhones && previous) {
+      room.share(shared, { previousHostToken: previous, carry: true });
+    } else if (!takePhones && plan.showReconnect && reconnectChoice && previous) {
+      room.share(shared, { previousHostToken: previous, carry: true });
+    }
+  };
+
   return (
     <div className={room.courtTone === 'local' ? 'app' : `app is-${room.courtTone}`}>
       <CourtHeader setLabel={`Set ${state.activeSet + 1}`} onBrand={openMatches} actions={actions} />
@@ -404,7 +431,11 @@ export function App() {
           onServe={match.chooseServe}
         />
         <div className="mid">
-          {state.ended ? (
+          {result.kind === 'leading' ? (
+            <span className={`chip chip-${result.team}`} data-testid="match-result">{`${state.teams[result.team].name} leading`}</span>
+          ) : result.kind === 'draw' ? (
+            <span className="chip chip-ended" data-testid="match-result">Draw</span>
+          ) : state.ended ? (
             <span className="chip chip-ended" data-testid="match-status">
               Ended
             </span>
@@ -428,6 +459,11 @@ export function App() {
           ) : null}
           {room.courtTone === 'offline' ? (
             <p className="offline-label" data-testid="court-offline">Offline</p>
+          ) : null}
+          {room.continued ? (
+            <p className="live-error" role="status" data-testid="continued-notice">
+              This match has ended. The other phones continued in a new match. Scan a new code to join them.
+            </p>
           ) : null}
           {room.joining && room.status === 'connecting' ? (
             <p className="join-status" data-testid="join-status">Connecting to the match…</p>
@@ -510,24 +546,18 @@ export function App() {
             testId: 'reconnect-players',
             onChange: setReconnectChoice,
           } : undefined}
+          alternateLabel={newMatchCopy(pendingPlan).alternateLabel}
+          alternateTestId={newMatchCopy(pendingPlan).alternateTestId}
           onCancel={() => setPendingPlan(null)}
+          onAlternate={() => {
+            const plan = pendingPlan;
+            setPendingPlan(null);
+            commitPlanned(plan, false);
+          }}
           onConfirm={() => {
             const plan = pendingPlan;
-            const at = Date.now();
-            const by = plan.kind === 'leave' ? deviceId(localStorage) : 'host';
-            const commit = commitNewMatch(plan, at, by);
-            const endEvent = commit.events[0] ?? { type: 'match/end' as const, at, by };
-            const previous = commit.endOnServer && room.status === 'live' && room.host
-              ? room.finishShared(endEvent, scoreClaimFor(replay(match.log), endEvent))
-              : null;
-            if (!commit.endOnServer) room.disconnect();
-            let shared = match.log;
-            for (const event of commit.events) shared = appendEvent(shared, event);
-            match.recordAll(commit.events);
-            if (plan.showReconnect && reconnectChoice && previous) {
-              room.share(shared, { previousHostToken: previous, carry: true });
-            }
             setPendingPlan(null);
+            commitPlanned(plan, plan.askCarry);
           }}
         />
       ) : null}
@@ -546,13 +576,20 @@ export function App() {
       {connectOpen ? (
         <ConnectPage
           configured={room.configured}
-          host={room.host}
+          mode={connectMode}
           status={room.status === 'disconnected' ? 'off' : room.status}
           players={room.players}
           qr={room.qr}
           code={room.code}
           error={room.error}
-          onShare={() => room.share(match.log)}
+          onShow={() => {
+            setConnectMode('show');
+            room.share(match.log);
+          }}
+          onScan={() => {
+            setConnectOpen(false);
+            openJoin();
+          }}
           onRotate={room.rotate}
           onLeave={() => {
             room.disconnect();

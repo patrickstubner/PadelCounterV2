@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.6
+
+- Connect is one menu item. Show QR code connects another player, including a code to type. Scan QR code joins. Any phone already in the match can show the same code. The match still stops at 4 phones.
+- New match, while other phones are connected, asks whether to take them along. Yes moves those phones into the new match without a new scan. A phone that is offline joins when it reconnects, while its code is still valid. No starts the new match on this phone only.
+- End match celebrates a winner only when a team has won two sets. Ending early shows “Team A leading” or “Draw”, with no animation and no fanfare. History does not mark a winner for that match.
+
 ## 2.2.5
 
 - Join match opens the camera across the whole screen. Close and Enter code sit on top of the picture.

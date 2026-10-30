@@ -148,16 +148,26 @@ function credentialFor(row: InviteRow): Credential {
   return { role: row.role, host: row.host };
 }
 
+/** The one shared QR. Device-bound seats are not this row. */
+export function currentSharedInvite(record: RoomRecord, now: number): InviteRow | null {
+  let found: InviteRow | null = null;
+  for (const row of record.invites) {
+    if (row.host || row.deviceId || row.role !== 'player' || row.revokedAt !== null || now >= row.expiresAt) continue;
+    found = row;
+  }
+  return found;
+}
+
 export function issueInvite(
   record: RoomRecord,
-  hostHash: string,
+  callerHash: string,
   role: Role,
   inviteHash: string,
   now: number,
 ): { readonly ok: true; readonly record: RoomRecord; readonly expiresAt: number } | RoomFailure {
-  const host = record.invites.find((row) => safeEqualHex(row.tokenHash, hostHash));
-  if (!host || host.revokedAt !== null || now >= host.expiresAt) return fail('bad_token');
-  if (!canPerform(credentialFor(host), 'issue_invite')) return fail('forbidden');
+  const caller = record.invites.find((row) => safeEqualHex(row.tokenHash, callerHash));
+  if (!caller || caller.revokedAt !== null || now >= caller.expiresAt) return fail('bad_token');
+  if (!canPerform(credentialFor(caller), 'issue_invite')) return fail('forbidden');
   if (role !== 'player') return fail('spectator_not_available');
   const expiresAt = now + JOIN_TOKEN_TTL_MS;
   const invites = record.invites.map((row) =>

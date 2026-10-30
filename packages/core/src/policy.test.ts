@@ -14,6 +14,8 @@ import {
   ROOM_CLOSE_MS,
   actorId,
   canReopen,
+  CARRY_LIMIT,
+  carryDeviceIds,
   carryTokenHashes,
   credentialAllowsEvent,
   historyExpired,
@@ -36,34 +38,55 @@ describe('reconnect offer', () => {
     { tokenHash: 'c'.repeat(64), host: true, deviceId: 'd33333333' },
   ];
 
-  it('carries nobody when the host does not confirm', () => {
-    expect(carryTokenHashes({ confirm: false, hostInitiated: true, joinedHashes: [JOINED], invites })).toEqual([]);
+  it('carries nobody when the member does not confirm', () => {
+    expect(carryTokenHashes({ confirm: false, memberInitiated: true, joinedHashes: [JOINED], invites })).toEqual([]);
   });
 
-  it('carries every connected device that shared one code', () => {
+  it('carries every joined device that shared one code, including the old host phone', () => {
     const shared = 'd'.repeat(64);
     const carried = carryTokenHashes({
       confirm: true,
-      hostInitiated: true,
-      joinedHashes: [shared],
+      memberInitiated: true,
+      joinedHashes: [shared, 'c'.repeat(64)],
       invites: [
         { tokenHash: shared, host: false, deviceId: 'd11111111' },
         { tokenHash: shared, host: false, deviceId: 'd22222222' },
         { tokenHash: shared, host: false, deviceId: null },
+        { tokenHash: 'c'.repeat(64), host: true, deviceId: 'd33333333' },
       ],
     });
-    expect(carried.map((row) => row.deviceId)).toEqual(['d11111111', 'd22222222']);
+    expect(carried.map((row) => row.deviceId)).toEqual(['d11111111', 'd22222222', 'd33333333']);
   });
 
-  it('does not carry an outsider or a request that did not come from the host', () => {
+  it('does not carry an outsider or a request that did not come from a member', () => {
     const carried = carryTokenHashes({
       confirm: true,
-      hostInitiated: true,
+      memberInitiated: true,
       joinedHashes: [JOINED],
       invites,
     });
     expect(carried.map((row) => row.tokenHash)).toEqual([JOINED]);
-    expect(carryTokenHashes({ confirm: true, hostInitiated: false, joinedHashes: [JOINED], invites })).toEqual([]);
+    expect(carryTokenHashes({ confirm: true, memberInitiated: false, joinedHashes: [JOINED], invites })).toEqual([]);
+  });
+
+  it('moves connected phones first, skips the starter, and stops at three others', () => {
+    const members = [
+      { deviceId: 'd00000001', connected: false },
+      { deviceId: 'd00000002', connected: true },
+      { deviceId: 'd00000003', connected: true },
+      { deviceId: 'd00000004', connected: false },
+      { deviceId: 'not-a-device', connected: true },
+      { deviceId: 'd00000002', connected: true },
+    ];
+    expect(carryDeviceIds({
+      confirm: true,
+      memberInitiated: true,
+      members,
+      excludeDeviceId: 'd00000003',
+    })).toEqual(['d00000002', 'd00000001', 'd00000004']);
+    expect(CARRY_LIMIT).toBe(3);
+    expect(carryDeviceIds({ confirm: false, memberInitiated: true, members })).toEqual([]);
+    expect(carryDeviceIds({ confirm: true, memberInitiated: false, members })).toEqual([]);
   });
 
   it('is not offered more than an hour after the last change', () => {
@@ -81,10 +104,11 @@ describe('reconnect offer', () => {
 describe('new match while one is open', () => {
   it('asks the host to finish, with the reconnect toggle only inside the hour', () => {
     const recent = planNewMatch({ host: true, open: true, lastEventAt: NOW, now: NOW + 60_000, coPlayers: 2 });
-    expect(recent).toEqual({ kind: 'finish', showReconnect: true, reconnectSelected: true });
+    expect(recent).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false, askCarry: true });
     const alone = planNewMatch({ host: true, open: true, lastEventAt: NOW, now: NOW + 60_000, coPlayers: 0 });
     expect(alone.reconnectSelected).toBe(false);
     expect(alone.showReconnect).toBe(true);
+    expect(alone.askCarry).toBe(false);
     const stale = planNewMatch({
       host: true,
       open: true,
@@ -92,21 +116,26 @@ describe('new match while one is open', () => {
       now: NOW + RECONNECT_WINDOW_MS + 1,
       coPlayers: 2,
     });
-    expect(stale).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false });
+    expect(stale).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false, askCarry: true });
   });
 
-  it('lets a non-host leave without ending the host match', () => {
+  it('lets a non-host leave without ending the shared match, and still ask about the other phones', () => {
     expect(planNewMatch({ host: false, open: true, lastEventAt: NOW, now: NOW, coPlayers: 3 })).toEqual({
       kind: 'leave',
       showReconnect: false,
       reconnectSelected: false,
+      askCarry: true,
     });
+    expect(planNewMatch({ host: false, open: true, lastEventAt: NOW, now: NOW, coPlayers: 0 }).askCarry).toBe(false);
   });
 
   it('does not treat a blank court as an open match', () => {
     const blank = createMatch(NOW);
     expect(isOpenMatch(blank)).toBe(false);
-    expect(planNewMatch({ host: true, open: false, lastEventAt: NOW, now: NOW, coPlayers: 0 }).kind).toBe('reset');
+    expect(planNewMatch({ host: true, open: false, lastEventAt: NOW, now: NOW, coPlayers: 0 })).toMatchObject({
+      kind: 'reset',
+      askCarry: false,
+    });
     const played = matchReducer(blank, { type: 'game/increment', team: 'a', at: NOW + 1 });
     expect(isOpenMatch(played)).toBe(true);
     expect(isOpenMatch({ ...played, ended: true })).toBe(false);

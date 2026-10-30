@@ -16,7 +16,7 @@ The architecture note suggested zod in the core package. This scaffold does not 
 
 ## What this version trusts
 
-There is no account. A phone that holds a valid, unexpired player token can read the match and change games. The match id on its own grants nothing. The creating phone holds a longer player token with `host: true` and is the only one that can mint a QR code.
+There is no account. A phone that holds a valid, unexpired player token can read the match and change games. The match id on its own grants nothing. The creating phone holds a longer player token with `host: true`. Any admitted player can show the current shared code. Review 24 records who may do that, and what New match may move.
 
 The role is `'player' | 'spectator'` and is stored with the token hash. `canPerform` denies every action to a spectator, including a forged `host: true`. `decideJoin` rejects a spectator even when the room is empty. `issueInvite` refuses to create a spectator token. Spectator QR codes are not built. The checks exist so a later read-only code can be added without a new permission model.
 
@@ -46,7 +46,7 @@ At most 4 admitted player sockets are allowed, including the creator. The Durabl
 - `POST /join` reads the credential, and the match row, before it writes. A failed token (missing, invalid, expired, revoked, or a match that is not in D1) writes only the network failure row, one write, and only while the isolate still allows it. The device id is chosen by the client (`d` and 8 hex digits). Nothing ties it to the phone, so the device cap does not stop an attacker who sends a new id. The device counter moves only after a valid token, 20 successful joins per minute, and the 21st is `429 join_device_limit`. One network may record 60 failed attempts per minute. A successful join does not increment that row, so phones on one court Wi-Fi or one CGNAT address are not locked out by playing. A valid token is still admitted when that failure counter is already full. Both keys are an HMAC of `QUOTA_HMAC_KEY` with the minute in the message. The 61st failure from that network is `429 join_network_limit`. The 60th failure still returns the original error and leaves the counter at 60. Inside one isolate, failed joins are throttled earlier than the shared 20: 5 failures per minute per address, then `429 slow_down` with no further D1 write. A missing or malformed `device` is `400 invalid_device` and writes neither row. A new index over the same database still sees the count.
 - Joining phones get `p2`, `p3`, and then higher ids. An id already bound to a device is not given to another phone. When no free id remains, the hello is rejected.
 - A new player code revokes older player codes and inserts the new hash in one D1 batch. A websocket ticket is consumed with one `DELETE ... RETURNING`.
-- A host who starts a new match while one is open must confirm. Finish & new sends `match/end` the same way End match does, so the match stays in history and the creator can reopen it. Inside one hour, and only when the host confirms, previously connected devices are offered `Join new match?`. The invite is bound to those device ids, is host-initiated, and token expiry and revocation are checked on every event. Anyone who does not confirm stays out. After one hour there is no reconnect offer. A non-host who starts a new match leaves the shared match on that phone only and does not send `match/end`.
+- A phone that starts a new match while other phones are connected must confirm. Yes moves only devices that have already joined, at most three besides the phone that starts the new match. The server chooses that list. Connected phones switch immediately. An offline phone is moved when it reconnects, while its old code is still valid. No keeps the previous behaviour: the creating phone ends the shared match and starts alone, and another phone leaves the shared match on that phone only. Review 24 is the current decision. Ending a match early does not record a winner. A winner exists only when a team has two sets.
 - End match is allowed at any score. Reopen is `match/resume`, not a general undo. The creator can always reopen. The person who ended it can reopen too, unless the creator was the one who ended it. The server checks this. Minus can correct a finished set (6:0 back to 5:1). The event log is append-only and keeps `by`.
 - `.dev.vars`, `.env`, and `.env.*` are gitignored. `.dev.vars.example` names `QUOTA_HMAC_KEY` and does not contain a value. Wrangler database ids in the repo are placeholders, not live databases. `env.dev` is named `padel-counter-dev`, so a local deploy cannot overwrite the production worker name.
 - CI runs lint, typecheck, unit tests, the production web build, a wrangler dry-run, and `pnpm audit --audit-level=moderate`. Deploy jobs do nothing until Cloudflare credentials exist, and Pages does not run until the repository variable `DEPLOY_PAGES` is `true`.
@@ -343,6 +343,29 @@ Follow-up on the 2.2.5 scanner, still on the same pull request. No new dependenc
 - A camera attempt reads the centre and one rotating pass, then waits until 120 ms have passed since it started. That is about 8 tries a second. Enter code pauses the loop, so typing is not waiting on a decode. The picture is still not uploaded.
 - `NotAllowedError` and `SecurityError` stop the constraint fallback. The page shows “Allow camera access in Settings, then tap Use camera.” The browser's own message is not shown. `OverconstrainedError`, `NotReadableError`, and `AbortError` still try the next size.
 - A decoded string longer than 2048 characters is still dropped, including one returned by `BarcodeDetector`. An empty native result still falls through to `qr` 0.7.2. Closing the scanner, including while `getUserMedia` has not resolved, stops every track.
+
+## Review 24, 2026-10-30
+
+Version 2.2.6. Pull requests 21 and 22 are already on `main`. This review is who may show the shared code, what New match may move, and when a score is a win. No new dependency, no new host, and no change to the content security policy.
+
+Threats considered:
+
+- A guest shows the QR and invites more phones than the court allowed.
+- A guest rotates the code and disconnects the other phones.
+- Showing the code again mints a second live token, or extends the two-hour life.
+- The raw token is written to a log, a URL query, or D1 so a database read becomes a join.
+- New match accepts a client-supplied list of phones and pulls in someone who never joined.
+- An offline phone is moved with an expired or revoked code, or a stranger who knows the match id follows the move.
+- End match on a partial score is stored as a win and the celebration plays.
+
+Decisions:
+
+- An admitted player may show the current shared invite. The Durable Object checks the bearer hash against this room: role player, not revoked, not expired. A spectator, an unknown token, and a token for another match are refused. The worker also requires the credential row in D1 to name this match before it calls the object. Knowing the match id is not enough.
+- There is one shared invite. Show QR returns that same token and the same short code. It does not revoke, and it does not move the expiry. New code is the explicit rotate. Rotate still revokes every non-host credential, closes the phones that joined with the old code, and mints one replacement. Entropy, the two-hour life, and the invite rate limits are unchanged. A connected player can turn the code off. That is the same effect the creating phone already had, and every player can already score and end the match.
+- The raw token and the short code are sealed with AES-GCM in the Durable Object. The key is a SHA-256 of the worker secret and a fixed label, not the secret used as the key itself. D1 still stores only the token hash and the short-code HMAC. The seal is not a log line. The token still leaves the server only in the invite response (`cache-control: no-store`) and in the QR fragment, which is the existing design. It is not placed in a query string.
+- The cap of 4 admitted sockets is unchanged. Showing or rotating a code does not add a seat. The fifth hello is still `match_full`.
+- Take phones is allowed only for a member of the previous match, and only into a match that member just created. The object builds the device list from phones that have already joined. The client cannot add a device. Connected phones are listed first, then offline phones, and at most three besides the phone that starts the new match. Each of those devices gets its own new token. Connected phones receive `match_moved` on the existing socket and switch. The token is not put in a URL. An offline phone receives the same message when it says hello with its still-valid old code. An expired or revoked code is not moved. A phone that was not carried is told, with a fixed sentence and no token, that the other phones continued. The one-hour reconnect checkbox is not this path. Take phones is an explicit choice about the phones that joined, including when the last point is older than an hour. Just this phone does not move anyone.
+- A winner is two sets. `match/end` stores no winner field. D1 has no winner column. The result is derived from the score. An early end is `leading` or `draw`. The celebration, the fanfare, and the history winner flag stay off.
 
 ## Out of scope
 

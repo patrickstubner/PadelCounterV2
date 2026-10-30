@@ -56,6 +56,9 @@ describe('match archive', () => {
     const names = { a: 'Team A', b: 'Team B' };
     expect(statusLabel('winner-a', names)).toBe('Team A wins');
     expect(statusLabel('winner-b', names)).toBe('Team B wins');
+    expect(statusLabel('leading-a', names)).toBe('Team A leading');
+    expect(statusLabel('leading-b', names)).toBe('Team B leading');
+    expect(statusLabel('draw', names)).toBe('Draw');
     expect(statusLabel('ended-early', names)).toBe('ended early');
     expect(statusLabel('in-progress', names)).toBe('in progress');
     expect(setScoreLine([{ a: 6, b: 0 }, { a: 0, b: 0 }, { a: 0, b: 0 }])).toBe('6–0');
@@ -68,12 +71,12 @@ describe('match archive', () => {
     current = sessionReducer(current, { type: 'record', event: { type: 'match/end', at: T0 + 20 } });
     current = sessionReducer(current, { type: 'record', event: { type: 'match/reset', matchId: NEXT, at: T0 + 30 } });
     expect(current.archive).toHaveLength(1);
-    expect(current.archive[0]?.status).toBe('winner-a');
+    expect(current.archive[0]?.status).toBe('leading-a');
     expect(current.archive[0]?.sets[0]).toEqual({ a: 6, b: 0 });
     expect(current.log.events.at(-1)?.type).toBe('match/reset');
 
     const listed = listMatches(current.log, current.archive);
-    expect(listed.map((match) => match.status)).toEqual(['in progress', 'Team A wins']);
+    expect(listed.map((match) => match.status)).toEqual(['in progress', 'Team A leading']);
     expect(listed[0]?.score).toBe('0–0');
     expect(listed[1]?.score).toBe('6–0');
     expect(listed[1]?.events.map((event) => event.type)).toEqual(['game/increment', 'game/increment', 'game/increment', 'game/increment', 'game/increment', 'game/increment', 'match/end']);
@@ -81,7 +84,8 @@ describe('match archive', () => {
     const undone = sessionReducer(current, { type: 'undo' });
     expect(undone.archive).toHaveLength(0);
     expect(listMatches(undone.log, undone.archive)).toHaveLength(1);
-    expect(listMatches(undone.log, undone.archive)[0]?.status).toBe('Team A wins');
+    expect(listMatches(undone.log, undone.archive)[0]?.status).toBe('Team A leading');
+    expect(listMatches(undone.log, undone.archive)[0]?.statusKind).not.toBe('winner-a');
   });
 
   it('lists past matches newest first', () => {

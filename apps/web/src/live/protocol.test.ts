@@ -79,6 +79,10 @@ describe('join links', () => {
   it('accepts a one-tap reconnect offer and ignores a forged token', () => {
     expect(interpretMessage({ type: 'join_offer', token: TOKEN })).toEqual({ kind: 'join_offer', token: TOKEN });
     expect(interpretMessage({ type: 'join_offer', token: 'short' })).toEqual({ kind: 'ignore' });
+    expect(interpretMessage({ type: 'match_moved', token: TOKEN })).toEqual({ kind: 'match_moved', token: TOKEN });
+    expect(interpretMessage({ type: 'match_moved', token: 'short' })).toEqual({ kind: 'ignore' });
+    expect(interpretMessage({ type: 'match_notice', code: 'continued' })).toEqual({ kind: 'match_notice' });
+    expect(interpretMessage({ type: 'match_notice', code: 'other', token: TOKEN })).toEqual({ kind: 'ignore' });
   });
 
   it('shows the fixed full-match sentence and ignores a forged message', () => {

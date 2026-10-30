@@ -16,9 +16,10 @@ describe('role checks', () => {
     expect(canPerform(player, 'resume_match')).toBe(true);
   });
 
-  it('lets only the host issue an invite', () => {
+  it('lets any player show an invite and still refuses a spectator', () => {
     expect(canPerform(host, 'issue_invite')).toBe(true);
-    expect(canPerform(player, 'issue_invite')).toBe(false);
+    expect(canPerform(player, 'issue_invite')).toBe(true);
+    expect(canPerform(spectator, 'issue_invite')).toBe(false);
   });
 
   it('denies every action to a spectator, including a forged host flag', () => {

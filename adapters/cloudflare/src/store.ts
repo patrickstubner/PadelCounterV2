@@ -39,12 +39,26 @@ const CREATE_EVENTS = `CREATE TABLE IF NOT EXISTS events (
   payload TEXT NOT NULL
 )`;
 
+/** Ciphertext only. `id` is `invite` or `move:<device>`. */
+const CREATE_SEALED = `CREATE TABLE IF NOT EXISTS sealed (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+)`;
+
 export function migrate(sql: RoomSql): void {
   sql.exec(CREATE_META);
   sql.exec(CREATE_INVITES);
   sql.exec(CREATE_EVENTS);
   sql.exec(CREATE_JOINED);
+  sql.exec(CREATE_SEALED);
   ensureActivityColumn(sql);
+}
+
+/** Rooms created before the seal table still accept a later invite. */
+export function ensureSealedTable(sql: RoomSql): void {
+  sql.exec(CREATE_SEALED);
 }
 
 /** Older rooms predate the activity column. Create already includes it. */
@@ -240,6 +254,44 @@ export function revokeInviteHash(sql: RoomSql, tokenHash: string, now: number): 
 
 export function revokePlayerInvites(sql: RoomSql, now: number): void {
   sql.exec('UPDATE invites SET revoked_at = ? WHERE host = 0 AND revoked_at IS NULL', now);
+}
+
+export interface SealRow {
+  readonly tokenHash: string;
+  readonly payload: string;
+  readonly expiresAt: number;
+}
+
+export function writeSeal(sql: RoomSql, id: string, tokenHash: string, payload: string, expiresAt: number): void {
+  sql.exec(
+    `INSERT INTO sealed (id, token_hash, payload, expires_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET token_hash = excluded.token_hash, payload = excluded.payload, expires_at = excluded.expires_at`,
+    id,
+    tokenHash,
+    payload,
+    expiresAt,
+  );
+}
+
+export function readSeal(sql: RoomSql, id: string): SealRow | null {
+  try {
+    const row = sql.exec('SELECT token_hash, payload, expires_at FROM sealed WHERE id = ?', id).toArray()[0];
+    const tokenHash = text(row?.token_hash);
+    const payload = text(row?.payload);
+    const expiresAt = integer(row?.expires_at);
+    if (!tokenHash || !payload || expiresAt === null) return null;
+    return { tokenHash, payload, expiresAt };
+  } catch {
+    return null;
+  }
+}
+
+export function hasMoveSeal(sql: RoomSql): boolean {
+  try {
+    return sql.exec("SELECT id FROM sealed WHERE id LIKE 'move:%' LIMIT 1").toArray().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 export function insertEvent(sql: RoomSql, event: StoredEvent): void {

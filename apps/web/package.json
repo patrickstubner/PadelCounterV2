@@ -1,6 +1,6 @@
 {
   "name": "@padel/web",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "private": true,
   "description": "Padel Counter v2 court. Offline on this device, with a live QR share.",
   "license": "UNLICENSED",

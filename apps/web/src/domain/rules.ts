@@ -4,6 +4,7 @@ export {
   canIncrement,
   canTakeGame,
   celebrationWinner,
+  matchResult,
   displayGames,
   gamesPlayed,
   inferServeStart,

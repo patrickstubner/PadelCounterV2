@@ -291,7 +291,7 @@ describe('court screen lock', () => {
     await click('end-match');
     await click('confirm-end');
     await flush();
-    expect(document.querySelector('[data-testid="match-status"]')?.textContent).toContain('Ended');
+    expect(document.querySelector('[data-testid="match-result"]')?.textContent).toContain('Draw');
     expect(sentinels[0]?.releaseCalls).toBe(1);
 
     await act(async () => {

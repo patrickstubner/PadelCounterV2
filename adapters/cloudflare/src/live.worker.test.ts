@@ -327,11 +327,11 @@ describe('live match in workerd', () => {
     const carry = await call(`/matches/${second.matchId}/carry`, {
       method: 'POST',
       headers: { authorization: `Bearer ${second.hostToken}` },
-      body: JSON.stringify({ confirm: true, previousHostToken: first.hostToken }),
+      body: JSON.stringify({ confirm: true, previousHostToken: first.hostToken, device: HOST_DEVICE }),
     });
     expect(carry.status).toBe(200);
     expect(await carry.json()).toEqual({ carried: 1, offered: true });
-    const offer = await player.messages.waitFor((message) => message.type === 'join_offer');
+    const offer = await player.messages.waitFor((message) => message.type === 'match_moved');
     expect(typeof offer.token).toBe('string');
 
     const carried = await connect(offer.token as string, PLAYER_DEVICE);
@@ -456,7 +456,7 @@ describe('short match codes', () => {
     const again = await call(`/matches/${invited.matchId}/invites`, {
       method: 'POST',
       headers: { authorization: `Bearer ${invited.hostToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ role: 'player' }),
+      body: JSON.stringify({ role: 'player', rotate: true }),
     });
     const next = (await again.json()) as { code: string; token: string };
     expect(next.code).not.toBe(invited.code);
@@ -1048,7 +1048,7 @@ describe('offline score reconcile in the durable object', () => {
     const rotated = await call(`/matches/${created.matchId}/invites`, {
       method: 'POST',
       headers: { authorization: `Bearer ${created.hostToken}` },
-      body: JSON.stringify({ role: 'player' }),
+      body: JSON.stringify({ role: 'player', rotate: true }),
     });
     expect(rotated.status).toBe(201);
     const notice = await phone.messages.waitFor((message) => message.type === 'error');

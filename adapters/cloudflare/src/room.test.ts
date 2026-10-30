@@ -1,6 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { createMatch, matchReducer, MAX_PLAYERS, MAX_PLAYER_ACTOR, replayScore, ROOM_CLOSE_MS, ROOM_MESSAGES, scoreBoard, scoreClaimFor, type MatchEvent, type MatchState, type ScoreClaim, type TeamId } from '@padel/core';
-import { admit, applyLiveEvent, applyPlay, chooseActor, createRoom, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange, type InviteRow, type RoomRecord } from './room';
+import { createMatch, matchReducer, matchResult, MAX_PLAYERS, MAX_PLAYER_ACTOR, replayScore, ROOM_CLOSE_MS, ROOM_MESSAGES, scoreBoard, scoreClaimFor, type MatchEvent, type MatchState, type ScoreClaim, type TeamId } from '@padel/core';
+import { admit, applyLiveEvent, applyPlay, chooseActor, createRoom, currentSharedInvite, eventDelta, helloPayload, invitesForCarry, issueInvite, serverLastChange, type InviteRow, type RoomRecord } from './room';
 
 const NOW = 1_700_000_000_000;
 const HOST = 'a'.repeat(64);
@@ -88,7 +89,7 @@ describe('role checks', () => {
     if (!denied.ok) expect(denied.message).toBe('You cannot change the score from this connection.');
   });
 
-  it('refuses undo and does not let a joiner mint a code', () => {
+  it('refuses undo and lets a joined player replace the shared code', () => {
     const record = withInvite(started());
     const undo = applyPlay(
       record,
@@ -99,8 +100,50 @@ describe('role checks', () => {
     );
     expect(undo.ok).toBe(false);
     const minted = issueInvite(record, INVITE, 'player', 'd'.repeat(64), NOW);
-    expect(minted.ok).toBe(false);
-    if (!minted.ok) expect(minted.code).toBe('forbidden');
+    expect(minted.ok).toBe(true);
+    if (!minted.ok) return;
+    expect(currentSharedInvite(minted.record, NOW)?.tokenHash).toBe('d'.repeat(64));
+    expect(currentSharedInvite(minted.record, NOW + 1)?.tokenHash).toBe('d'.repeat(64));
+    const previous = minted.record.invites.find((row) => row.tokenHash === INVITE);
+    expect(previous?.revokedAt).toBe(NOW);
+    expect(issueInvite(record, 'e'.repeat(64), 'player', 'f'.repeat(64), NOW).ok).toBe(false);
+    expect(issueInvite(record, INVITE, 'player', 'f'.repeat(64), NOW + 9_000_000_000).ok).toBe(false);
+    expect(currentSharedInvite(record, NOW + 9_000_000_000)).toBeNull();
+  });
+
+  it('stores no winner flag when End match leaves one set unfinished', () => {
+    let record = started();
+    const point: MatchEvent = { type: 'game/increment', team: 'a', at: NOW + 1 };
+    for (let index = 0; index < 6; index += 1) {
+      const played = applyLiveEvent(
+        record,
+        record.invites[0]!,
+        'host',
+        `00000000-0000-4000-8000-00000000010${index}`,
+        { ...point, at: NOW + 1 + index },
+        NOW + 1 + index,
+        scoreClaimFor(replayScore(record.base, record.events.map((item) => item.event)), { ...point, at: NOW + 1 + index }),
+      );
+      expect(played.ok).toBe(true);
+      if (played.ok) record = played.record;
+    }
+    const end: MatchEvent = { type: 'match/end', at: NOW + 20 };
+    const ended = applyLiveEvent(
+      record,
+      record.invites[0]!,
+      'host',
+      '00000000-0000-4000-8000-0000000001aa',
+      end,
+      NOW + 20,
+      scoreClaimFor(replayScore(record.base, record.events.map((item) => item.event)), end),
+    );
+    expect(ended.ok).toBe(true);
+    if (!ended.ok) return;
+    expect(JSON.stringify(ended.record.events)).not.toContain('winner');
+    const state = replayScore(ended.record.base, ended.record.events.map((item) => item.event));
+    expect(matchResult(state)).toEqual({ kind: 'leading', team: 'a' });
+    const sql = readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8');
+    expect(sql.toLowerCase()).not.toContain('winner');
   });
 
   it('stores only the token hash that the caller already hashed', () => {

@@ -86,23 +86,60 @@ export interface CarryInvite {
   readonly deviceId?: string | null;
 }
 
-/** Previously connected non-host devices, and only after the host confirmed. */
+/** Other phones moved with the starter. The starter is the fourth seat. */
+export const CARRY_LIMIT = 3;
+
+export interface CarryMember {
+  readonly deviceId: string;
+  readonly connected: boolean;
+}
+
+/**
+ * Devices that may enter the next match.
+ * The caller must be a member. The list itself comes from the room, not from the client.
+ * Connected phones come first, then phones that joined and are offline. At most three.
+ */
+export function carryDeviceIds(input: {
+  readonly confirm: boolean;
+  readonly memberInitiated: boolean;
+  readonly members: readonly CarryMember[];
+  readonly excludeDeviceId?: string | null;
+  readonly limit?: number;
+}): readonly string[] {
+  if (input.confirm !== true || input.memberInitiated !== true) return [];
+  const limit = input.limit ?? CARRY_LIMIT;
+  const exclude = input.excludeDeviceId ?? null;
+  const seen = new Set<string>();
+  const connected: string[] = [];
+  const offline: string[] = [];
+  for (const member of input.members) {
+    if (!/^d[a-f0-9]{8}$/.test(member.deviceId)) continue;
+    if (member.deviceId === exclude || seen.has(member.deviceId)) continue;
+    seen.add(member.deviceId);
+    if (member.connected) connected.push(member.deviceId);
+    else offline.push(member.deviceId);
+  }
+  return [...connected, ...offline].slice(0, limit);
+}
+
+/** Previously joined devices, and only after a member confirmed. */
 export function carryTokenHashes(input: {
   readonly confirm: boolean;
-  readonly hostInitiated: boolean;
+  readonly memberInitiated: boolean;
   readonly joinedHashes: readonly string[];
   readonly invites: readonly CarryInvite[];
+  readonly excludeDeviceId?: string | null;
 }): readonly CarryInvite[] {
-  if (input.confirm !== true || input.hostInitiated !== true) return [];
+  if (input.confirm !== true || input.memberInitiated !== true) return [];
   const joined = new Set(input.joinedHashes);
   const carried: CarryInvite[] = [];
   for (const invite of input.invites) {
-    if (invite.host || !invite.deviceId) continue;
+    if (!invite.deviceId || invite.deviceId === input.excludeDeviceId) continue;
     if (!joined.has(invite.tokenHash)) continue;
     if (carried.some((row) => row.deviceId === invite.deviceId)) continue;
     carried.push(invite);
   }
-  return carried;
+  return carried.slice(0, CARRY_LIMIT);
 }
 
 export function credentialAllowsEvent(input: {
@@ -167,6 +204,8 @@ export interface NewMatchPlan {
   readonly kind: 'finish' | 'leave' | 'reset';
   readonly showReconnect: boolean;
   readonly reconnectSelected: boolean;
+  /** A live match with other phones asks whether to take them along. */
+  readonly askCarry: boolean;
 }
 
 export function planNewMatch(input: {
@@ -176,13 +215,15 @@ export function planNewMatch(input: {
   readonly now: number;
   readonly coPlayers: number;
 }): NewMatchPlan {
-  if (!input.host) return { kind: 'leave', showReconnect: false, reconnectSelected: false };
-  if (!input.open) return { kind: 'reset', showReconnect: false, reconnectSelected: false };
+  const askCarry = input.open && input.coPlayers > 0;
+  if (!input.host) return { kind: 'leave', showReconnect: false, reconnectSelected: false, askCarry };
+  if (!input.open) return { kind: 'reset', showReconnect: false, reconnectSelected: false, askCarry: false };
   const recent = offerReconnect(input.lastEventAt, input.now);
   const coPlayers = input.coPlayers > 0;
   return {
     kind: 'finish',
-    showReconnect: recent,
-    reconnectSelected: recent && coPlayers,
+    showReconnect: recent && !askCarry,
+    reconnectSelected: recent && coPlayers && !askCarry,
+    askCarry,
   };
 }

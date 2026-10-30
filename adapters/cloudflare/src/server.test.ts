@@ -27,8 +27,7 @@ interface TicketRow {
 
 interface RoomInfo {
   lastChangeAt: number;
-  joinedHashes: readonly string[];
-  invites: readonly { tokenHash: string; host: boolean; deviceId?: string | null }[];
+  members: readonly { deviceId: string; connected: boolean }[];
 }
 
 function harness(options?: {
@@ -85,7 +84,7 @@ function harness(options?: {
             return Response.json({ ok: true });
           } else if (request.url.endsWith('/reconnect-info')) {
             return Response.json(
-              options?.roomInfo ?? { lastChangeAt: 0, joinedHashes: [], invites: [] },
+              options?.roomInfo ?? { lastChangeAt: 0, members: [] },
             );
           } else if (request.url.endsWith('/carry-invite')) {
             ops.push('do-carry');
@@ -666,16 +665,13 @@ describe('match index gate', () => {
     expect(found.size).toBe(1);
   });
 
-  it('reconnects only joined devices, and only when the host confirms inside the hour', async () => {
-    const joined = 'a'.repeat(64);
-    const outsider = 'b'.repeat(64);
+  it('moves only phones the room already lists, and only when a member confirms', async () => {
     const { env, ops, calls } = harness({
       roomInfo: {
         lastChangeAt: Date.now(),
-        joinedHashes: [joined],
-        invites: [
-          { tokenHash: joined, host: false, deviceId: 'd11111111' },
-          { tokenHash: outsider, host: false, deviceId: 'd22222222' },
+        members: [
+          { deviceId: 'd11111111', connected: true },
+          { deviceId: 'not-a-phone', connected: true },
         ],
       },
     });
@@ -732,12 +728,11 @@ describe('match index gate', () => {
     expect(notify?.offers?.map((offer) => offer.deviceId)).toEqual(['d11111111']);
   });
 
-  it('does not invite anyone when the previous match is older than an hour', async () => {
+  it('still moves joined phones when the last point is older than an hour', async () => {
     const { env, ops } = harness({
       roomInfo: {
         lastChangeAt: Date.now() - 2 * 60 * 60 * 1000,
-        joinedHashes: ['a'.repeat(64)],
-        invites: [{ tokenHash: 'a'.repeat(64), host: false, deviceId: 'd11111111' }],
+        members: [{ deviceId: 'd11111111', connected: false }],
       },
     });
     const previousResponse = await handleFetch(postMatch('203.0.113.96'), env);
@@ -748,10 +743,10 @@ describe('match index gate', () => {
       carryRequest(next.matchId, next.hostToken, previous.hostToken, true, '203.0.113.98'),
       env,
     );
-    expect(stale.status).toBe(409);
-    expect(((await stale.json()) as { error: string }).error).toBe('reconnect_unavailable');
-    expect(ops).not.toContain('do-carry');
-    expect(ops).not.toContain('do-notify');
+    expect(stale.status).toBe(200);
+    expect(await stale.json()).toMatchObject({ carried: 1, offered: true });
+    expect(ops).toContain('do-carry');
+    expect(ops).toContain('do-notify');
   });
 
   it('names the dev worker apart from production and looks up the ticket before get', () => {

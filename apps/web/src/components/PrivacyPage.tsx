@@ -18,13 +18,13 @@ export function PrivacyPage({ onBack }: PrivacyPageProps) {
           That data stays in this browser. There is no account and no password in this version.
         </p>
         <p>
-          Connect players can share the open match with a QR code or a short code. Anyone who scans that
-          code, or types the short code, can see the score and change the games, until the code expires or
-          the match already has 4 players. The code is not an account. Do not show it to people who should
-          not score. Join match can use the camera on this phone. The camera fills the screen. It starts only
-          after you tap Use camera, and it stops as soon as a code is read, when you close Join match, or
-          when you leave the app. The picture stays on this phone. The short code is kept in this tab so you can send it. It is not
-          written to local storage.
+          Connect can show the same QR code and short code from any phone already in the match, or scan a
+          code to join. Anyone who scans that code, or types the short code, can see the score and change
+          the games, until the code expires or the match already has 4 players. The code is not an account.
+          Do not show it to people who should not score. Scan QR code can use the camera on this phone. The
+          camera fills the screen. It starts only after you tap Use camera, and it stops as soon as a code
+          is read, when you close the scanner, or when you leave the app. The picture stays on this phone.
+          The short code is kept in this tab so you can send it. It is not written to local storage.
         </p>
         <p>
           A shared match is processed by Cloudflare (Workers and Durable Objects) so the phones can stay in

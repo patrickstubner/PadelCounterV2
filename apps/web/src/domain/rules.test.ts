@@ -9,6 +9,7 @@ import {
   isPlausibleSetScore,
   isTiebreak,
   celebrationWinner,
+  matchResult,
   matchWinner,
   gamesPlayed,
   inferServeStart,
@@ -98,64 +99,59 @@ describe('celebrationWinner', () => {
     return { ...createMatch(at, id), sets, ended };
   }
 
-  it('celebrates two sets, and a lead after End match', () => {
+  it('celebrates two sets and does not treat an early lead as a win', () => {
     const twoSets = match([
       { a: 6, b: 4 },
       { a: 6, b: 3 },
       { a: 0, b: 0 },
     ]);
     expect(celebrationWinner(twoSets)).toBe('a');
+    expect(matchResult(twoSets)).toEqual({ kind: 'winner', team: 'a' });
     expect(celebrationWinner({ ...twoSets, ended: true })).toBe('a');
+    expect(matchResult({ ...twoSets, ended: true })).toEqual({ kind: 'winner', team: 'a' });
 
-    expect(
-      celebrationWinner(
-        match([
-          { a: 4, b: 6 },
-          { a: 0, b: 0 },
-          { a: 0, b: 0 },
-        ]),
-      ),
-    ).toBeNull();
-    expect(
-      celebrationWinner(
-        match(
-          [
-            { a: 4, b: 6 },
-            { a: 0, b: 0 },
-            { a: 0, b: 0 },
-          ],
-          true,
-        ),
-      ),
-    ).toBe('b');
+    const earlyLead = match(
+      [
+        { a: 6, b: 3 },
+        { a: 5, b: 2 },
+        { a: 0, b: 0 },
+      ],
+      true,
+    );
+    expect(celebrationWinner(earlyLead)).toBeNull();
+    expect(matchResult(earlyLead)).toEqual({ kind: 'leading', team: 'a' });
+    expect(celebrationWinner(match([{ a: 4, b: 6 }, { a: 0, b: 0 }, { a: 0, b: 0 }]))).toBeNull();
+    expect(matchResult(match([{ a: 4, b: 6 }, { a: 0, b: 0 }, { a: 0, b: 0 }], true))).toEqual({
+      kind: 'leading',
+      team: 'b',
+    });
   });
 
-  it('stays quiet on a tie, an unfinished set, or an abandoned 0:0', () => {
-    expect(
-      celebrationWinner(
-        match(
-          [
-            { a: 6, b: 4 },
-            { a: 3, b: 6 },
-            { a: 0, b: 0 },
-          ],
-          true,
-        ),
-      ),
-    ).toBeNull();
-    expect(
-      celebrationWinner(
-        match(
-          [
-            { a: 6, b: 5 },
-            { a: 0, b: 0 },
-            { a: 0, b: 0 },
-          ],
-          true,
-        ),
-      ),
-    ).toBeNull();
-    expect(celebrationWinner(match([{ a: 0, b: 0 }, { a: 0, b: 0 }, { a: 0, b: 0 }], true))).toBeNull();
+  it('calls an early tie a draw and stays quiet', () => {
+    const split = match(
+      [
+        { a: 6, b: 4 },
+        { a: 3, b: 6 },
+        { a: 0, b: 0 },
+      ],
+      true,
+    );
+    expect(celebrationWinner(split)).toBeNull();
+    expect(matchResult(split)).toEqual({ kind: 'draw' });
+    const levelGames = match(
+      [
+        { a: 6, b: 5 },
+        { a: 0, b: 0 },
+        { a: 0, b: 0 },
+      ],
+      true,
+    );
+    expect(celebrationWinner(levelGames)).toBeNull();
+    expect(matchResult(levelGames)).toEqual({ kind: 'draw' });
+    const blank = match([{ a: 0, b: 0 }, { a: 0, b: 0 }, { a: 0, b: 0 }], true);
+    expect(celebrationWinner(blank)).toBeNull();
+    expect(matchResult(blank)).toEqual({ kind: 'draw' });
+    expect(matchResult(match([{ a: 1, b: 1 }, { a: 0, b: 0 }, { a: 0, b: 0 }]))).toEqual({ kind: 'playing' });
   });
 
   it('drops the celebration when the winning game is undone', () => {

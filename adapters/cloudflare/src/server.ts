@@ -10,12 +10,11 @@ import {
   parseLiveTeamName,
   prepareLiveLog,
   replayScore,
-  carryTokenHashes,
+  carryDeviceIds,
   createMatchId,
   isJoinToken,
   isRoomCode,
   normalizeJoinCode,
-  offerReconnect,
   parseMatchLog,
   quotaDay,
   randomJoinCode,
@@ -243,16 +242,15 @@ async function reconnectOffer(
   if (!isJoinToken(previousHostToken)) return { offered: false, players: 0 };
   try {
     const previous = await index.findCredential(await sha256Hex(previousHostToken));
-    if (!previous || !previous.host || previous.revokedAt !== null || now >= previous.expiresAt) {
+    if (!previous || previous.revokedAt !== null || now >= previous.expiresAt) {
       return { offered: false, players: 0 };
     }
     const info = await roomInfo(env, previous.matchId, previousHostToken);
-    if (!info || !offerReconnect(info.lastChangeAt, now)) return { offered: false, players: 0 };
-    const players = carryTokenHashes({
+    if (!info) return { offered: false, players: 0 };
+    const players = carryDeviceIds({
       confirm: true,
-      hostInitiated: true,
-      joinedHashes: info.joinedHashes,
-      invites: info.invites,
+      memberInitiated: true,
+      members: info.members,
     });
     return { offered: players.length > 0, players: players.length };
   } catch {
@@ -282,26 +280,45 @@ async function discardMatch(
 
 async function createInvite(request: Request, env: ServerEnv, pathname: string): Promise<Response> {
   const matchId = matchIdFrom(pathname);
-  const hostToken = bearer(request);
-  if (!matchId || !hostToken) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
-  if (!(await d1MatchIndex(env.DB).find(matchId))) return Response.json({ error: 'not_found' }, { status: 404 });
+  const memberToken = bearer(request);
+  if (!matchId || !memberToken) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
+  const index = d1MatchIndex(env.DB);
+  if (!(await index.find(matchId))) return Response.json({ error: 'not_found' }, { status: 404 });
   const body = await readJson(request, 1000);
   const role = body && typeof body === 'object' && (body as { role?: unknown }).role;
+  const rotate = Boolean(body && typeof body === 'object' && (body as { rotate?: unknown }).rotate === true);
   if (role !== 'player' && role !== 'spectator') return Response.json({ error: 'invalid_match' }, { status: 400 });
+  const now = Date.now();
+  const credential = await index.findCredential(await sha256Hex(memberToken));
+  if (!credential || credential.matchId !== matchId || credential.revokedAt !== null || now >= credential.expiresAt) {
+    return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
+  }
+  const secret = quotaSecret(env.QUOTA_HMAC_KEY);
+  if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
   const inviteToken = randomToken();
+  const code = randomJoinCode();
   const stub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(matchId));
   const stored = await stub.fetch('https://match.internal/invite', {
     method: 'POST',
-    body: JSON.stringify({ hostToken, inviteToken, role: role satisfies Role }),
+    body: JSON.stringify({ memberToken, inviteToken, role: role satisfies Role, rotate, code }),
   });
   if (!stored.ok) return pass(stored);
-  const payload = (await stored.json()) as { expiresAt?: number };
-  const expiresAt = payload.expiresAt ?? Date.now() + JOIN_TOKEN_TTL_MS;
-  const index = d1MatchIndex(env.DB);
+  const payload = (await stored.json()) as { expiresAt?: number; reuse?: unknown; token?: unknown; code?: unknown };
+  if (payload.reuse === true && isJoinToken(payload.token)) {
+    const reusedCode = typeof payload.code === 'string' ? payload.code : null;
+    return Response.json(
+      {
+        matchId,
+        token: payload.token,
+        role: 'player',
+        expiresAt: payload.expiresAt ?? now + JOIN_TOKEN_TTL_MS,
+        ...(reusedCode ? { code: reusedCode } : {}),
+      },
+      { status: 200, headers: { 'cache-control': 'no-store' } },
+    );
+  }
+  const expiresAt = payload.expiresAt ?? now + JOIN_TOKEN_TTL_MS;
   const inviteHash = await sha256Hex(inviteToken);
-  const now = Date.now();
-  const secret = quotaSecret(env.QUOTA_HMAC_KEY);
-  if (!secret) return Response.json({ error: 'not_configured', message: ROOM_MESSAGES.not_configured }, { status: 503 });
   await index.replacePlayerCredential(matchId, now, {
     tokenHash: inviteHash,
     matchId,
@@ -309,9 +326,9 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
     expiresAt,
     revokedAt: null,
   });
-  let code: string | null = null;
+  let savedCode: string | null = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const next = randomJoinCode();
+    const next = attempt === 0 ? code : randomJoinCode();
     try {
       await index.putJoinCode(matchId, now, {
         codeHash: await quotaMac(secret, 'join-code', joinCodeCompact(next), 'code'),
@@ -320,31 +337,27 @@ async function createInvite(request: Request, env: ServerEnv, pathname: string):
         expiresAt,
         revokedAt: null,
       });
-      code = next;
+      savedCode = next;
       break;
     } catch (error) {
       if (!isIdConflict(error) || attempt === 4) throw error;
     }
   }
+  if (savedCode && savedCode !== code) {
+    await stub.fetch('https://match.internal/invite', {
+      method: 'POST',
+      body: JSON.stringify({ memberToken: inviteToken, inviteToken, role: 'player', reseal: true, code: savedCode }),
+    });
+  }
   return Response.json(
-    { matchId, token: inviteToken, role: 'player', expiresAt, ...(code ? { code } : {}) },
+    { matchId, token: inviteToken, role: 'player', expiresAt, ...(savedCode ? { code: savedCode } : {}) },
     { status: 201, headers: { 'cache-control': 'no-store' } },
   );
 }
 
-interface RoomInvite {
-  readonly tokenHash: string;
-  readonly host: boolean;
-  readonly deviceId?: string | null;
-  readonly expiresAt: number;
-  readonly revokedAt: number | null;
-  readonly role: Role;
-}
-
 interface RoomInfo {
   readonly lastChangeAt: number;
-  readonly joinedHashes: readonly string[];
-  readonly invites: readonly RoomInvite[];
+  readonly members: readonly { readonly deviceId: string; readonly connected: boolean }[];
 }
 
 async function roomInfo(env: ServerEnv, matchId: string, hostToken: string): Promise<RoomInfo | null> {
@@ -355,14 +368,14 @@ async function roomInfo(env: ServerEnv, matchId: string, hostToken: string): Pro
   });
   if (!response.ok) return null;
   const body = (await response.json()) as Partial<RoomInfo>;
-  if (typeof body.lastChangeAt !== 'number' || !Array.isArray(body.joinedHashes) || !Array.isArray(body.invites)) return null;
+  if (typeof body.lastChangeAt !== 'number' || !Array.isArray(body.members)) return null;
   return {
     lastChangeAt: body.lastChangeAt,
-    joinedHashes: body.joinedHashes.filter((hash): hash is string => typeof hash === 'string'),
-    invites: body.invites.filter((row): row is RoomInvite => {
-      if (!row || typeof row !== 'object') return false;
-      const invite = row as RoomInvite;
-      return typeof invite.tokenHash === 'string' && typeof invite.host === 'boolean';
+    members: body.members.flatMap((row) => {
+      if (!row || typeof row !== 'object') return [];
+      const member = row as { deviceId?: unknown; connected?: unknown };
+      if (typeof member.deviceId !== 'string' || typeof member.connected !== 'boolean') return [];
+      return [{ deviceId: member.deviceId, connected: member.connected }];
     }),
   };
 }
@@ -543,6 +556,7 @@ async function carryPlayers(request: Request, env: ServerEnv, pathname: string):
   const body = await readJson(request, 2000);
   const confirm = Boolean(body && typeof body === 'object' && (body as { confirm?: unknown }).confirm === true);
   const previousHostToken = body && typeof body === 'object' ? (body as { previousHostToken?: unknown }).previousHostToken : undefined;
+  const starterDevice = body && typeof body === 'object' ? (body as { device?: unknown }).device : undefined;
   if (!isJoinToken(previousHostToken)) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
   const index = d1MatchIndex(env.DB);
   const now = Date.now();
@@ -551,26 +565,20 @@ async function carryPlayers(request: Request, env: ServerEnv, pathname: string):
     return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
   }
   const previous = await index.findCredential(await sha256Hex(previousHostToken));
-  if (!previous || !previous.host || previous.revokedAt !== null || now >= previous.expiresAt) {
+  if (!previous || previous.revokedAt !== null || now >= previous.expiresAt || previous.matchId === matchId) {
     return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
   }
   const info = await roomInfo(env, previous.matchId, previousHostToken);
-  if (!info || !offerReconnect(info.lastChangeAt, now)) {
-    return Response.json(
-      { error: 'reconnect_unavailable', message: ROOM_MESSAGES.reconnect_unavailable, carried: 0 },
-      { status: 409 },
-    );
-  }
-  const players = carryTokenHashes({
+  if (!info) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
+  const players = carryDeviceIds({
     confirm,
-    hostInitiated: true,
-    joinedHashes: info.joinedHashes,
-    invites: info.invites,
+    memberInitiated: true,
+    members: info.members,
+    excludeDeviceId: typeof starterDevice === 'string' ? starterDevice : null,
   });
   if (!confirm || players.length === 0) return Response.json({ carried: 0, offered: true }, { status: 200 });
   const offers: { deviceId: string; token: string }[] = [];
-  for (const player of players) {
-    if (!player.deviceId) continue;
+  for (const deviceId of players) {
     const token = randomToken();
     const expiresAt = now + JOIN_TOKEN_TTL_MS;
     await index.insertCredential({
@@ -579,13 +587,14 @@ async function carryPlayers(request: Request, env: ServerEnv, pathname: string):
       host: false,
       expiresAt,
       revokedAt: null,
+      deviceId,
     });
     const stub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(matchId));
     await stub.fetch('https://match.internal/carry-invite', {
       method: 'POST',
-      body: JSON.stringify({ hostToken, token, deviceId: player.deviceId, expiresAt }),
+      body: JSON.stringify({ hostToken, token, deviceId, expiresAt }),
     });
-    offers.push({ deviceId: player.deviceId, token });
+    offers.push({ deviceId, token });
   }
   const previousStub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(previous.matchId));
   await previousStub.fetch('https://match.internal/notify', {

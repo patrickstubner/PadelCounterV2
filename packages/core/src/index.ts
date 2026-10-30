@@ -40,6 +40,7 @@ export {
   canIncrement,
   canTakeGame,
   celebrationWinner,
+  matchResult,
   displayGames,
   gamesPlayed,
   inferServeStart,
@@ -58,6 +59,7 @@ export {
   setWinner,
   tiebreakHint,
 } from './rules';
+export type { MatchResult } from './rules';
 export { assignMatchId, createMatch, matchReducer, prepareLiveLog, replayScore } from './reducer';
 export {
   FUTURE_SLACK_MS,
@@ -117,6 +119,8 @@ export {
   ROOM_CLOSE_MS,
   actorId,
   canReopen,
+  CARRY_LIMIT,
+  carryDeviceIds,
   carryTokenHashes,
   credentialAllowsEvent,
   historyExpired,

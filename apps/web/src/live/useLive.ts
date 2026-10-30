@@ -41,6 +41,9 @@ export interface LiveController {
   readonly joinError: string | null;
   readonly joining: boolean;
   readonly offer: string | null;
+  /** The old match ended and this phone was not moved into the new one. */
+  readonly continued: boolean;
+  readonly dismissContinued: () => void;
   readonly pendingRestore: readonly { readonly id: string; readonly event: MatchEvent; readonly claim: ScoreClaim | null }[];
   readonly clearRestore: () => void;
   readonly commitRestore: () => MatchEvent[];
@@ -52,7 +55,7 @@ export interface LiveController {
   readonly disconnect: () => void;
   readonly acceptOffer: () => void;
   readonly dismissOffer: () => void;
-  /** Sends the end event, then drops this phone's socket. Returns the host token when this phone created the match. */
+  /** Sends the end event, then drops this phone's socket. Returns the member token. */
   readonly finishShared: (event: MatchEvent, claim: ScoreClaim | null) => string | null;
 }
 
@@ -112,6 +115,7 @@ export function useLive(
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [offer, setOffer] = useState<string | null>(null);
+  const [continued, setContinued] = useState(false);
   const [pendingRestore, setPendingRestore] = useState<readonly { id: string; event: MatchEvent; claim: ScoreClaim | null }[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
   const hostRef = useRef<{
@@ -241,6 +245,30 @@ export function useLive(
     }
   };
 
+  const persistMember = (matchId: string, held: { token: string; expiresAt: number }) => {
+    const same = hostRef.current?.matchId === matchId ? hostRef.current : null;
+    const next = {
+      matchId,
+      token: held.token,
+      inviteToken: same?.inviteToken ?? null,
+      inviteExpiresAt: same?.inviteExpiresAt ?? 0,
+      inviteCode: same?.inviteCode ?? null,
+    };
+    hostRef.current = next;
+    try {
+      sessionStorage.setItem(JOIN_KEY, JSON.stringify({
+        token: held.token,
+        expiresAt: held.expiresAt,
+        host: false,
+        matchId,
+        ...(next.inviteToken ? { inviteToken: next.inviteToken, inviteExpiresAt: next.inviteExpiresAt } : {}),
+        ...(next.inviteCode ? { inviteCode: next.inviteCode } : {}),
+      }));
+    } catch {
+      // The ref still shows the code until this tab closes.
+    }
+  };
+
   const persistHost = (matchId: string, held: { token: string; expiresAt: number }) => {
     const same = hostRef.current?.matchId === matchId ? hostRef.current : null;
     hostRef.current = {
@@ -285,6 +313,7 @@ export function useLive(
     tokenRef.current = next;
     try {
       let matchId = '';
+      let hostFlag = false;
       let inviteToken: string | null = null;
       let inviteExpiresAt = 0;
       let inviteCode: string | null = null;
@@ -298,8 +327,9 @@ export function useLive(
           inviteExpiresAt?: unknown;
           inviteCode?: unknown;
         };
-        if (parsed.token === token && parsed.host === true && isUuid(parsed.matchId)) {
+        if (parsed.token === token && isUuid(parsed.matchId) && (parsed.host === true || parsed.host === false)) {
           matchId = parsed.matchId.toLowerCase();
+          hostFlag = parsed.host === true;
           if (isJoinToken(parsed.inviteToken) && typeof parsed.inviteExpiresAt === 'number') {
             inviteToken = parsed.inviteToken;
             inviteExpiresAt = parsed.inviteExpiresAt;
@@ -312,7 +342,7 @@ export function useLive(
         token: next.token,
         expiresAt: next.expiresAt,
         ...(matchId ? {
-          host: true,
+          host: hostFlag,
           matchId,
           ...(inviteToken ? { inviteToken, inviteExpiresAt } : {}),
           ...(inviteCode ? { inviteCode } : {}),
@@ -602,6 +632,16 @@ export function useLive(
           rememberOffer(notice.token);
           return;
         }
+        if (notice.kind === 'match_moved') {
+          setContinued(false);
+          setJoining(true);
+          open(notice.token, true);
+          return;
+        }
+        if (notice.kind === 'match_notice') {
+          setContinued(true);
+          return;
+        }
         if (notice.kind === 'pong') return;
         if (notice.kind === 'error') {
           if (notice.code === 'score_kept') {
@@ -651,6 +691,12 @@ export function useLive(
               if (logIdsRef.current.at(-1) === notice.eventId) logIdsRef.current.pop();
               revertRef.current(failed.event);
             }
+          }
+          if (notice.code === 'revoked' || notice.code === 'expired') {
+            const current = hostRef.current;
+            if (current) hostRef.current = { ...current, inviteToken: null, inviteExpiresAt: 0, inviteCode: null };
+            setQr(null);
+            setMatchCode(null);
           }
           if (notice.code && isTerminalCode(notice.code)) {
             dropToken();
@@ -749,20 +795,8 @@ export function useLive(
           clearSlowTimer();
           setError(null);
           if (notice.host && tokenRef.current) persistHost(matchId, tokenRef.current);
-          else {
-            hostRef.current = null;
-            try {
-              const raw = sessionStorage.getItem(JOIN_KEY);
-              if (raw) {
-                const parsed = JSON.parse(raw) as { token?: unknown; expiresAt?: unknown; host?: unknown };
-                if (parsed.host === true && parsed.token === tokenRef.current?.token && typeof parsed.expiresAt === 'number' && isJoinToken(parsed.token)) {
-                  sessionStorage.setItem(JOIN_KEY, JSON.stringify({ token: parsed.token, expiresAt: parsed.expiresAt }));
-                }
-              }
-            } catch {
-              // The in-memory host ref is already clear.
-            }
-          }
+          else if (tokenRef.current) persistMember(matchId, tokenRef.current);
+          setContinued(false);
           setStatus('live');
           resumes.current = 0;
           slowDown.current = false;
@@ -847,7 +881,7 @@ export function useLive(
         inviteExpiresAt?: unknown;
         inviteCode?: unknown;
       };
-      if (parsed.host !== true || !isJoinToken(parsed.token) || !isUuid(parsed.matchId)) return;
+      if ((parsed.host !== true && parsed.host !== false) || !isJoinToken(parsed.token) || !isUuid(parsed.matchId)) return;
       if (typeof parsed.expiresAt === 'number' && parsed.expiresAt <= Date.now()) return;
       const inviteToken = isJoinToken(parsed.inviteToken) ? parsed.inviteToken : null;
       const inviteExpiresAt = typeof parsed.inviteExpiresAt === 'number' ? parsed.inviteExpiresAt : 0;
@@ -976,14 +1010,14 @@ export function useLive(
     return () => window.clearInterval(timer);
   }, []);
 
-  const publishQr = async (matchId: string, hostToken: string) => {
+  const publishQr = async (matchId: string, memberToken: string, rotate = false) => {
     const response = await fetch(`${api}/matches/${matchId}/invites`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${hostToken}`,
+        authorization: `Bearer ${memberToken}`,
       },
-      body: JSON.stringify({ role: 'player' }),
+      body: JSON.stringify({ role: 'player', ...(rotate ? { rotate: true } : {}) }),
     });
     if (!response.ok) {
       setError(await errorText(response));
@@ -1016,6 +1050,8 @@ export function useLive(
     joinError,
     joining,
     offer,
+    continued,
+    dismissContinued: () => setContinued(false),
     pendingRestore,
     clearRestore: () => setPendingRestore([]),
     commitRestore: () => {
@@ -1048,7 +1084,7 @@ export function useLive(
     },
     dismissOffer: () => rememberOffer(null),
     finishShared: (event, claim) => {
-      const previous = hostRef.current?.token ?? null;
+      const previous = tokenRef.current?.token ?? hostRef.current?.token ?? null;
       const ws = socketRef.current;
       dropToken();
       clearPending();
@@ -1174,7 +1210,11 @@ export function useLive(
                   'content-type': 'application/json',
                   authorization: `Bearer ${body.hostToken}`,
                 },
-                body: JSON.stringify({ confirm: true, previousHostToken: options.previousHostToken }),
+                body: JSON.stringify({
+                  confirm: true,
+                  previousHostToken: options.previousHostToken,
+                  device: thisDevice(),
+                }),
               });
               if (!carried.ok) setError(await errorText(carried));
             } catch {
@@ -1191,7 +1231,7 @@ export function useLive(
     rotate: () => {
       const current = hostRef.current;
       if (!current) return;
-      void publishQr(current.matchId, current.token);
+      void publishQr(current.matchId, current.token, true);
     },
   };
 }

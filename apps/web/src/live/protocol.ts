@@ -345,6 +345,8 @@ export type LiveNotice =
   | { readonly kind: 'rename'; readonly eventId: string; readonly team: 'a' | 'b'; readonly name: string; readonly seq: number }
   | { readonly kind: 'presence'; readonly players: number }
   | { readonly kind: 'join_offer'; readonly token: string }
+  | { readonly kind: 'match_moved'; readonly token: string }
+  | { readonly kind: 'match_notice' }
   | { readonly kind: 'error'; readonly message: string; readonly close: boolean; readonly code: RoomCode | null; readonly eventId: string | null }
   | { readonly kind: 'pong' }
   | { readonly kind: 'ignore' };
@@ -432,6 +434,12 @@ export function interpretMessage(data: unknown): LiveNotice {
   }
   if (record.type === 'join_offer' && isJoinToken(record.token)) {
     return { kind: 'join_offer', token: record.token };
+  }
+  if (record.type === 'match_moved' && isJoinToken(record.token)) {
+    return { kind: 'match_moved', token: record.token };
+  }
+  if (record.type === 'match_notice' && record.code === 'continued') {
+    return { kind: 'match_notice' };
   }
   return { kind: 'ignore' };
 }

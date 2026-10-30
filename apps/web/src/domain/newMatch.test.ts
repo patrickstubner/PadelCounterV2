@@ -8,12 +8,13 @@ describe('new match while one is open', () => {
   it('asks the host to finish and keeps reconnect inside the hour', () => {
     const recent = planNewMatch({ host: true, open: true, lastEventAt: NOW, now: NOW + 1_000, coPlayers: 2 });
     expect(newMatchCopy(recent)).toMatchObject({
-      title: 'Finish current match and start a new one?',
-      confirmLabel: 'Finish & new',
-      confirmTestId: 'finish-and-new',
+      title: 'Take the connected phones into the new match?',
+      confirmLabel: 'Take phones',
+      confirmTestId: 'take-phones',
+      alternateLabel: 'Just this phone',
     });
-    expect(recent.showReconnect).toBe(true);
-    expect(recent.reconnectSelected).toBe(true);
+    expect(recent.askCarry).toBe(true);
+    expect(recent.showReconnect).toBe(false);
     const alone = planNewMatch({ host: true, open: true, lastEventAt: NOW, now: NOW + 1_000, coPlayers: 0 });
     expect(alone.showReconnect).toBe(true);
     expect(alone.reconnectSelected).toBe(false);
@@ -31,12 +32,14 @@ describe('new match while one is open', () => {
       coPlayers: 2,
     });
     expect(stale.showReconnect).toBe(false);
-    expect(newMatchCopy(stale).confirmLabel).toBe('Finish & new');
+    expect(stale.askCarry).toBe(true);
+    expect(newMatchCopy(stale).confirmLabel).toBe('Take phones');
   });
 
   it('lets a non-host leave without ending the host match', () => {
     const plan = planNewMatch({ host: false, open: true, lastEventAt: NOW, now: NOW, coPlayers: 2 });
-    expect(newMatchCopy(plan).confirmTestId).toBe('confirm-leave');
+    expect(newMatchCopy(plan).confirmTestId).toBe('take-phones');
+    expect(newMatchCopy(plan).body).toContain('leaves the shared match');
     const left = commitNewMatch(plan, NOW, 'p2');
     expect(left.endOnServer).toBe(false);
     expect(left.events.map((event) => event.type)).toEqual(['match/new']);

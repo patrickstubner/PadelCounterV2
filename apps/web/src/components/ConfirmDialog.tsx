@@ -6,6 +6,8 @@ interface ConfirmDialogProps {
   confirmLabel: string;
   confirmTestId: string;
   cancelTestId?: string;
+  alternateLabel?: string;
+  alternateTestId?: string;
   titleId: string;
   check?: {
     readonly label: string;
@@ -14,6 +16,7 @@ interface ConfirmDialogProps {
     readonly onChange: (checked: boolean) => void;
   };
   onConfirm: () => void;
+  onAlternate?: () => void;
   onCancel: () => void;
 }
 
@@ -23,9 +26,12 @@ export function ConfirmDialog({
   confirmLabel,
   confirmTestId,
   cancelTestId,
+  alternateLabel,
+  alternateTestId,
   titleId,
   check,
   onConfirm,
+  onAlternate,
   onCancel,
 }: ConfirmDialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -70,6 +76,11 @@ export function ConfirmDialog({
         <button type="button" className="btn btn-ghost" data-testid={cancelTestId} autoFocus onClick={onCancel}>
           Cancel
         </button>
+        {alternateLabel && onAlternate ? (
+          <button type="button" className="btn btn-ghost" data-testid={alternateTestId} onClick={onAlternate}>
+            {alternateLabel}
+          </button>
+        ) : null}
         <button type="button" className="btn btn-solid" data-testid={confirmTestId} onClick={onConfirm}>
           {confirmLabel}
         </button>

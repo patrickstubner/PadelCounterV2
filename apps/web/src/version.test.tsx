@@ -37,7 +37,9 @@ describe('app version', () => {
     const html = renderToStaticMarkup(<App />);
     expect(html).toContain(`class="app-version"`);
     expect(html).toContain(`>v${version}<`);
-    expect(html).toContain('>Connect players<');
+    expect(html).toContain('>Connect<');
+    expect(html).not.toContain('>Connect players<');
+    expect(html).not.toContain('>Join match<');
     expect(html).toContain('>Privacy<');
     expect(html).not.toContain('>Undo<');
     expect(html).toContain('Team A');

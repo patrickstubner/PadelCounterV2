@@ -4,13 +4,14 @@ import { QrCode } from './QrCode';
 
 interface ConnectPageProps {
   readonly configured: boolean;
-  readonly host: boolean;
+  readonly mode: 'choose' | 'show';
   readonly status: 'off' | 'connecting' | 'live';
   readonly players: number;
   readonly qr: string | null;
   readonly code: string | null;
   readonly error: string | null;
-  readonly onShare: () => void;
+  readonly onShow: () => void;
+  readonly onScan: () => void;
   readonly onRotate: () => void;
   readonly onLeave: () => void;
   readonly onClose: () => void;
@@ -24,13 +25,14 @@ function focusable(root: HTMLElement): HTMLElement[] {
 
 export function ConnectPage({
   configured,
-  host,
+  mode,
   status,
   players,
   qr,
   code,
   error,
-  onShare,
+  onShow,
+  onScan,
   onRotate,
   onLeave,
   onClose,
@@ -94,7 +96,7 @@ export function ConnectPage({
     >
       <div
         ref={panelRef}
-        className={qr ? 'connect-dialog connect-bright' : 'connect-dialog'}
+        className={mode === 'show' && qr ? 'connect-dialog connect-bright' : 'connect-dialog'}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -113,17 +115,21 @@ export function ConnectPage({
             X
           </button>
         </div>
-        <h2 id={titleId}>Connect players</h2>
-        <p>Players who scan this code see the match and can change the games. Up to 4 phones.</p>
+        <h2 id={titleId}>Connect</h2>
+        {mode === 'choose' ? (
+          <p>Show the code for another phone, or scan a code to join. Up to 4 phones.</p>
+        ) : (
+          <p>Players who scan this code see the match and can change the games. Up to 4 phones.</p>
+        )}
         {configured ? null : (
           <p data-testid="connect-unconfigured">
             Live sharing is not configured in this build. The score stays on this device.
           </p>
         )}
-        {error ? <p data-testid="connect-error">{error}</p> : null}
-        {status === 'connecting' ? <p data-testid="connect-waiting">Connecting…</p> : null}
-        {status === 'live' ? <p data-testid="player-count">{`Live · ${players} of 4 players`}</p> : null}
-        {qr ? (
+        {mode === 'show' && error ? <p data-testid="connect-error">{error}</p> : null}
+        {mode === 'show' && status === 'connecting' ? <p data-testid="connect-waiting">Connecting…</p> : null}
+        {mode === 'show' && status === 'live' ? <p data-testid="player-count">{`Live · ${players} of 4 players`}</p> : null}
+        {mode === 'show' && qr ? (
           <div className="qr-stage" data-testid="qr-stage">
             <QrCode text={qr} />
             <p data-testid="qr-brightness">Turn this screen to full brightness, then hold it flat toward the other phone.</p>
@@ -152,18 +158,25 @@ export function ConnectPage({
             ) : null}
           </div>
         ) : null}
-        <div className="connect-actions">
-          {configured && host && !qr && status !== 'connecting' ? (
-            <button type="button" className="text-btn" data-testid="share-match" onClick={onShare}>
+        {mode === 'choose' ? (
+          <div className="connect-choices">
+            <button type="button" className="connect-choice" data-testid="show-qr" onClick={onShow}>
               Show QR code
+              <small>Connect another player. Includes a code to type.</small>
             </button>
-          ) : null}
-          {qr ? (
+            <button type="button" className="connect-choice" data-testid="scan-qr" onClick={onScan}>
+              Scan QR code
+              <small>Join a match with the camera or a typed code.</small>
+            </button>
+          </div>
+        ) : null}
+        <div className="connect-actions">
+          {mode === 'show' && qr ? (
             <button type="button" className="text-btn" data-testid="rotate-code" onClick={onRotate}>
               New code
             </button>
           ) : null}
-          {status === 'live' ? (
+          {mode === 'show' && status === 'live' ? (
             <button type="button" className="text-btn" data-testid="leave-live" onClick={onLeave}>
               Leave live match
             </button>
