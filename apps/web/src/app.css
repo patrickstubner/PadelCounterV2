@@ -1172,11 +1172,18 @@ button:disabled { cursor: not-allowed; }
 
 .privacy-copy p { margin: 0; }
 
+.qr-stage {
+  display: grid;
+  justify-items: center;
+  gap: 0.45rem;
+}
+
 .qr {
-  width: min(16rem, 70vw);
+  width: 100%;
+  max-width: min(92vw, 76dvh);
   height: auto;
   background: #ffffff;
-  border-radius: 0.75rem;
+  border-radius: 0;
 }
 
 .match-code {
@@ -1185,11 +1192,97 @@ button:disabled { cursor: not-allowed; }
   letter-spacing: 0.12em;
 }
 
-.join-camera {
+.join-scanning {
+  position: relative;
   width: 100%;
-  max-height: 16rem;
+  height: 100%;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
   background: #000000;
-  border-radius: 0.75rem;
+}
+
+.connect-overlay:has(.join-scanning) {
+  padding: 0;
+  align-items: stretch;
+  background: #000000;
+}
+
+.join-camera {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: cover;
+  border-radius: 0;
+  background: #000000;
+}
+
+.scan-target {
+  position: absolute;
+  inset: 0.7rem;
+  z-index: 1;
+  border: 3px solid #ffffff;
+  border-radius: 0.9rem;
+  box-shadow: 0 0 0 1px #000000;
+  pointer-events: none;
+}
+
+.join-scan-ui {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+  padding:
+    calc(0.75rem + env(safe-area-inset-top))
+    calc(0.75rem + env(safe-area-inset-right))
+    calc(0.75rem + env(safe-area-inset-bottom))
+    calc(0.75rem + env(safe-area-inset-left));
+}
+
+.join-scan-ui button,
+.join-scan-ui form,
+.join-scan-ui p,
+.join-scan-ui label,
+.join-scan-ui input,
+.join-scan-ui h2 {
+  pointer-events: auto;
+}
+
+.join-scan-title {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.join-scan-bottom {
+  display: grid;
+  gap: 0.45rem;
+  justify-items: start;
+}
+
+.join-scan-hint {
+  margin: 0;
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.5rem;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.join-scanning .connect-dialog-bar {
+  align-items: center;
+}
+
+.join-scanning .text-btn,
+.join-scanning .connect-x,
+.join-scanning .join-scan-title {
+  background: rgba(0, 0, 0, 0.72);
+  color: #ffffff;
+  border-color: #ffffff;
 }
 
 .join-code-form {
@@ -1237,6 +1330,40 @@ button:disabled { cursor: not-allowed; }
   color: #ffffff;
 }
 
+.connect-dialog.join-scanning {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.connect-bright {
+  width: min(42rem, 100%);
+  max-height: 100dvh;
+  background: #ffffff;
+  color: #000000;
+  border-color: #111111;
+}
+
+.connect-overlay:has(.connect-bright) {
+  background: #ffffff;
+  padding: 0.4rem;
+}
+
+.connect-bright .text-btn,
+.connect-bright .connect-x {
+  color: #000000;
+  border-color: #000000;
+  background: #ffffff;
+}
+
+.connect-bright :focus-visible {
+  outline-color: #000000;
+}
+
 .connect-dialog h2 { margin: 0 0 0.45rem; font-size: 1.4rem; }
 
 .connect-dialog p { margin: 0; line-height: 1.4; }
@@ -1260,4 +1387,12 @@ button:disabled { cursor: not-allowed; }
   .num,
   .team-name,
   .app-version { color: CanvasText; }
+  .connect-bright,
+  .connect-bright .text-btn,
+  .connect-bright .connect-x,
+  .qr {
+    background: Canvas;
+    color: CanvasText;
+    border-color: CanvasText;
+  }
 }

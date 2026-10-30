@@ -273,6 +273,9 @@ describe('connect overlay and scanned join', () => {
     await press('share-match');
     await waitFor(() => document.querySelector('.qr') !== null);
     expect(document.querySelector('[data-testid="connect-dialog"] .qr')).not.toBeNull();
+    expect(document.querySelector('[data-testid="connect-dialog"]')?.classList.contains('connect-bright')).toBe(true);
+    expect(document.querySelector('[data-testid="qr-brightness"]')?.textContent).toContain('full brightness');
+    expect(document.querySelector('[data-testid="match-qr"]')?.getAttribute('aria-label')).toBe('QR code for players');
     expect(document.querySelector('[data-testid="current-a"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain(INVITE);
     expect(document.body.textContent).not.toContain(HOST);

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ROOM_MESSAGES, normalizeJoinCode } from '@padel/core';
+import { openScanCamera, preferContinuousFocus, scheduleScanFrame } from '../live/camera';
 import { tokenFromJoinQr } from '../live/protocol';
 import { DECODE_WAIT_MS, readQrVideo } from '../live/readQr';
 
@@ -28,7 +29,12 @@ function stopStream(stream: MediaStream | null): void {
 /** The camera preview stops on its own so an old phone is not left capturing. */
 export const CAMERA_LIMIT_MS = 90_000;
 
+/** At most about 8 scans a second. A faster loop keeps the main thread busy. */
+const SCAN_GAP_MS = 120;
+
 const CAMERA_STOPPED = 'Camera stopped. Tap Use camera to try again.';
+
+const CAMERA_BLOCKED = 'Allow camera access in Settings, then tap Use camera.';
 
 /** Safari will not show the camera unless the video is inline, muted, and play() is awaited. */
 function prepareVideo(video: HTMLVideoElement): void {
@@ -85,6 +91,42 @@ function scanWithin(
   });
 }
 
+function CodeForm({
+  draft,
+  onDraft,
+  onSubmit,
+}: {
+  readonly draft: string;
+  readonly onDraft: (value: string) => void;
+  readonly onSubmit: () => void;
+}) {
+  return (
+    <form
+      className="join-code-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+      }}
+    >
+      <label htmlFor="match-code-input">Match code</label>
+      <input
+        id="match-code-input"
+        data-testid="match-code-input"
+        value={draft}
+        autoCapitalize="characters"
+        autoComplete="off"
+        spellCheck={false}
+        maxLength={16}
+        inputMode="text"
+        onChange={(event) => onDraft(event.target.value)}
+      />
+      <button type="submit" className="text-btn" data-testid="join-by-code">
+        Join
+      </button>
+    </form>
+  );
+}
+
 export function JoinMatchPage({
   configured,
   error,
@@ -99,13 +141,18 @@ export function JoinMatchPage({
   const closeRef = useRef<HTMLButtonElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [camera, setCamera] = useState(false);
+  const [entering, setEntering] = useState(false);
   const [draft, setDraft] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
   const [cameraHint, setCameraHint] = useState<string | null>(null);
   const onTokenRef = useRef(onToken);
   const onCloseRef = useRef(onClose);
+  const enteringRef = useRef(false);
+  const pauseScanRef = useRef<(() => void) | null>(null);
+  const resumeScanRef = useRef<(() => void) | null>(null);
   onTokenRef.current = onToken;
   onCloseRef.current = onClose;
+  enteringRef.current = entering;
 
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -141,26 +188,49 @@ export function JoinMatchPage({
 
   useEffect(() => {
     if (!camera) return;
+    if (entering) pauseScanRef.current?.();
+    else resumeScanRef.current?.();
+  }, [camera, entering]);
+
+  useEffect(() => {
+    if (!camera) return;
     const video = videoRef.current;
     let stream: MediaStream | null = null;
     let stopped = false;
     let scanning = false;
-    let timer = 0;
+    let waiting = false;
     let limit = 0;
+    let gapTimer = 0;
+    let cancelFrame: (() => void) | null = null;
     const stop = () => {
       stopped = true;
-      window.clearTimeout(timer);
+      waiting = false;
       window.clearTimeout(limit);
+      window.clearTimeout(gapTimer);
+      cancelFrame?.();
+      cancelFrame = null;
+      pauseScanRef.current = null;
+      resumeScanRef.current = null;
       const current = stream;
       stream = null;
       releaseVideo(video);
       stopStream(current);
+    };
+    pauseScanRef.current = () => {
+      window.clearTimeout(gapTimer);
+      waiting = true;
+    };
+    resumeScanRef.current = () => {
+      if (stopped || scanning || !waiting) return;
+      waiting = false;
+      void run();
     };
     limit = window.setTimeout(() => {
       if (stopped) return;
       stop();
       setLocalError(null);
       setCameraHint(CAMERA_STOPPED);
+      setEntering(false);
       setCamera(false);
     }, CAMERA_LIMIT_MS);
     const onHide = () => {
@@ -170,19 +240,68 @@ export function JoinMatchPage({
       }
     };
     document.addEventListener('visibilitychange', onHide);
-    void (async () => {
+    const run = async () => {
+      if (stopped || scanning || !video || enteringRef.current) return;
+      const started = performance.now();
+      scanning = true;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: { facingMode: { ideal: 'environment' } },
-        });
+        const text = await scanWithin(scanFrame ?? readQrVideo, video);
+        if (stopped) return;
+        if (text) {
+          stop();
+          setCamera(false);
+          setEntering(false);
+          const token = tokenFromJoinQr(text, pageHref);
+          if (token) onTokenRef.current(token);
+          else setLocalError(ROOM_MESSAGES.join_code);
+          return;
+        }
       } catch {
+        if (stopped) return;
+      } finally {
+        scanning = false;
+      }
+      if (stopped || !video) return;
+      if (enteringRef.current) {
+        waiting = true;
+        return;
+      }
+      const used = performance.now() - started;
+      waiting = false;
+      gapTimer = window.setTimeout(() => {
+        void run();
+      }, Math.max(0, SCAN_GAP_MS - used));
+    };
+    void (async () => {
+      const devices = navigator.mediaDevices;
+      if (!devices || typeof devices.getUserMedia !== 'function') {
         if (stopped) return;
         setLocalError('The camera did not start.');
         setCamera(false);
         return;
       }
+      try {
+        stream = await openScanCamera((constraints) => devices.getUserMedia(constraints));
+      } catch (error) {
+        if (stopped) return;
+        const name = error instanceof Error ? error.name : '';
+        if (name === 'NotAllowedError' || name === 'SecurityError') {
+          setLocalError(null);
+          setCameraHint(CAMERA_BLOCKED);
+        } else {
+          setLocalError('The camera did not start.');
+        }
+        setCamera(false);
+        return;
+      }
       if (stopped || !video) {
+        stopStream(stream);
+        stream = null;
+        return;
+      }
+      const track = stream.getVideoTracks()[0];
+      if (track) await preferContinuousFocus(track);
+      if (stopped) {
         stopStream(stream);
         stream = null;
         return;
@@ -198,37 +317,31 @@ export function JoinMatchPage({
         setCamera(false);
         return;
       }
-      const look = async () => {
-        if (stopped || scanning) return;
-        scanning = true;
-        try {
-          const text = await scanWithin(scanFrame ?? readQrVideo, video);
-          if (stopped) return;
-          if (text) {
-            const token = tokenFromJoinQr(text, pageHref);
-            stop();
-            setCamera(false);
-            if (token) onTokenRef.current(token);
-            else setLocalError(ROOM_MESSAGES.join_code);
-            return;
-          }
-        } catch {
-          if (stopped) return;
-        } finally {
-          scanning = false;
-        }
-        if (stopped) return;
-        timer = window.setTimeout(() => {
-          void look();
-        }, 200);
-      };
-      void look();
+      if (stopped) return;
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        cancelFrame = scheduleScanFrame(video, () => {
+          void run();
+        });
+        return;
+      }
+      void run();
     })();
     return () => {
       document.removeEventListener('visibilitychange', onHide);
       stop();
     };
   }, [camera, pageHref, scanFrame]);
+
+  const submitCode = () => {
+    const code = normalizeJoinCode(draft);
+    if (!code) {
+      setLocalError(ROOM_MESSAGES.join_code);
+      return;
+    }
+    setLocalError(null);
+    setCamera(false);
+    onCode(code);
+  };
 
   const shown = localError ?? error;
 
@@ -238,68 +351,91 @@ export function JoinMatchPage({
     }}>
       <div
         ref={panelRef}
-        className="connect-dialog"
+        className={camera ? 'connect-dialog join-scanning' : 'connect-dialog'}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         data-testid="join-match-dialog"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="connect-dialog-bar">
-          <button ref={closeRef} type="button" className="connect-x" data-testid="join-match-close" aria-label="Close" onClick={onClose}>
-            X
-          </button>
-        </div>
-        <h2 id={titleId}>Join match</h2>
-        <p>Scan the QR code with this phone, or type the short code. A link in the browser still works.</p>
-        {configured ? null : (
-          <p data-testid="join-unconfigured">Live sharing is not configured in this build.</p>
-        )}
-        {shown ? <p data-testid="join-match-error">{shown}</p> : null}
-        {cameraHint ? <p data-testid="join-camera-hint">{cameraHint}</p> : null}
         {camera ? (
-          <video ref={videoRef} className="join-camera" data-testid="join-camera" muted playsInline autoPlay />
-        ) : (
-          <button type="button" className="text-btn" data-testid="use-camera" onClick={() => {
-            setLocalError(null);
-            setCameraHint(null);
-            setCamera(true);
-          }}>
-            Use camera
-          </button>
-        )}
-        <form
-          className="join-code-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const code = normalizeJoinCode(draft);
-            if (!code) {
-              setLocalError(ROOM_MESSAGES.join_code);
-              return;
-            }
-            setLocalError(null);
-            onCode(code);
-          }}
-        >
-          <label htmlFor="match-code-input">Match code</label>
-          <input
-            id="match-code-input"
-            data-testid="match-code-input"
-            value={draft}
-            autoCapitalize="characters"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={16}
-            inputMode="text"
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          <button type="submit" className="text-btn" data-testid="join-by-code">
-            Join
-          </button>
-        </form>
-        <button type="button" className="text-btn" data-testid="join-match-dismiss" onClick={onClose}>
-          Close
-        </button>
+          <>
+            <video
+              ref={videoRef}
+              className="join-camera"
+              data-testid="join-camera"
+              muted
+              playsInline
+              autoPlay
+              width={1920}
+              height={1080}
+            />
+            <div className="scan-target" data-testid="scan-target" aria-hidden="true" />
+          </>
+        ) : null}
+        <div className={camera ? 'join-scan-ui' : undefined}>
+          <div className="connect-dialog-bar">
+            {camera ? <h2 id={titleId} className="join-scan-title">Join match</h2> : null}
+            <button ref={closeRef} type="button" className="connect-x" data-testid="join-match-close" aria-label="Close" onClick={onClose}>
+              X
+            </button>
+          </div>
+          {camera ? (
+            <div className="join-scan-bottom">
+              <p className="join-scan-hint" data-testid="scan-hint">Hold the code inside the white frame.</p>
+              {configured ? null : (
+                <p data-testid="join-unconfigured">Live sharing is not configured in this build.</p>
+              )}
+              {shown ? <p data-testid="join-match-error">{shown}</p> : null}
+              {cameraHint ? <p data-testid="join-camera-hint">{cameraHint}</p> : null}
+              {entering ? (
+                <CodeForm draft={draft} onDraft={setDraft} onSubmit={submitCode} />
+              ) : (
+                <button
+                  type="button"
+                  className="text-btn"
+                  data-testid="enter-code"
+                  onClick={() => {
+                    setLocalError(null);
+                    setEntering(true);
+                  }}
+                >
+                  Enter code
+                </button>
+              )}
+              <button type="button" className="text-btn" data-testid="join-match-dismiss" onClick={onClose}>
+                Close
+              </button>
+            </div>
+          ) : (
+            <>
+              <h2 id={titleId}>Join match</h2>
+              <p>Scan the QR code with this phone, or type the short code. A link in the browser still works.</p>
+              {configured ? null : (
+                <p data-testid="join-unconfigured">Live sharing is not configured in this build.</p>
+              )}
+              {shown ? <p data-testid="join-match-error">{shown}</p> : null}
+              {cameraHint ? <p data-testid="join-camera-hint">{cameraHint}</p> : null}
+              <button
+                type="button"
+                className="text-btn"
+                data-testid="use-camera"
+                onClick={() => {
+                  setLocalError(null);
+                  setCameraHint(null);
+                  setEntering(false);
+                  setCamera(true);
+                }}
+              >
+                Use camera
+              </button>
+              <CodeForm draft={draft} onDraft={setDraft} onSubmit={submitCode} />
+              <button type="button" className="text-btn" data-testid="join-match-dismiss" onClick={onClose}>
+                Close
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

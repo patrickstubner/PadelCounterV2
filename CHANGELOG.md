@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.5
+
+- Join match opens the camera across the whole screen. Close and Enter code sit on top of the picture.
+- An iPhone can read a code shown on another phone. The scan keeps trying contrast, glare, and a smaller crop, and it does not need the browser's barcode detector.
+- As soon as a code is read, the camera turns off and the match score is shown.
+- The phone that shows the code draws it large, with a white margin, and asks for full brightness.
+- A code at the top or bottom of the picture is read, and a white frame shows the area. The scan rests between tries, and it pauses while Enter code is open.
+- If the camera is blocked, the page asks you to allow it in Settings and does not ask again.
+
 ## 2.2.4
 
 - A live point names the server point it was scored on, and the score before and after. Two phones that both move 4:1 to 4:3 stay at 4:3. Points only one phone recorded are added, including a correction. An offline plus and minus of the same game do not undo the other phone's point. History shows when the point was tapped, in this phone's local time.
