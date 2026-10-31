@@ -141,8 +141,7 @@ test('tie-break and the next set explain the serve, then the hint goes away', as
   const tiebreak = page.getByTestId('tiebreak-hint');
   await expect(tiebreak).toBeVisible();
   await expect(tiebreak).toContainText('Team A player 1 serves 1 point, from the right');
-  await expect(tiebreak).toContainText('Then each player serves 2 points in a row');
-  await expect(tiebreak).toContainText('The next 2 points are from the left');
+  await expect(tiebreak).toContainText('Then each player serves 2 points in a row, starting from the left');
   await expect(tiebreak).toContainText('Change ends every 6 points');
   await expect(tiebreak).not.toContainText('then from the right');
   await expect(tiebreak).not.toContainText('player 2');
