@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.3
+
+- At 6–6 the note names the player whose turn it is. They serve 1 point from the right. Then each player serves 2 points in a row, starting from the left. The players change ends every 6 points. The FIP tie-break says those next two points are from the left, and it does not say the second one is from the right, so the note does not add that. After a normal rotation the named player is the one who opened the set. If the court is already showing player 2, the note names player 2.
+- In landscape the rules leave the bottom of the court, as they do in portrait. The version stays at the bottom of the menu.
+- In landscape the menu button is at the top right. Connect sits immediately to its left, in the same shape as the menu button. While phones are connected, the phone button sits there instead, and Connect stays in the menu.
+- On iPhone the status bar and the home indicator use the same colour as the header. A live match is blue. Playing alone is black. Offline is the same dark red as the header. The colour changes with the connection.
+
 ## 2.3.2
 
 - A phone that is removed sees “You were removed from this match. Ask the others for a new code.” That message is final. Joining again with the current code, from the link or the short code, says “This phone was removed from this match. Ask the others for a new code.” A phone that was offline when it was removed hears the same sentence when it connects with its own token. A wrong code, an expired code, another phone, and a code after New code stay the same as before.

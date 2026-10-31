@@ -145,7 +145,7 @@ describe('shipped source stays local and text-only', () => {
     expect(fanfare).not.toContain('https://');
     const buildConfig = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');
     expect(buildConfig).toContain("'**/icon-1024-v231.png'");
-    expect(html).toContain('content="#0a1a3f"');
+    expect(html).toContain('name="theme-color" content="#000000"');
   });
 
   it('allows only the same-origin stay-awake clip as media', () => {
