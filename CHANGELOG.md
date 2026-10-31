@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.3.5
+
+- The serve ball is a yellow-green padel ball with a curved seam.
+- When a ball lights up, the glow is a little stronger. The ring around it shrinks slightly, then grows, in time with that glow. When the phone asks for less motion, the glow stays bright and still.
+
 ## 2.3.4
 
 - At 6–6 the last sentence of the note is “Teams switch sides every 6 points.”
