@@ -130,8 +130,8 @@ function applyGame(state: MatchState, team: TeamId, at: number, delta: 1 | -1): 
  * A tiebreak with a known server preselects the other team.
  * While that choice is still only a team, every game won moves the preselection
  * to the other team. Who won the game does not matter.
- * This one step clears that preselection. Replaying the log puts the server
- * and the preselection back to the moment before the removed game.
+ * This one step clears that preselection. Replaying a Minus of the latest game
+ * puts the server and the preselection back to the moment before that game.
  */
 function serveAskAfterGame(
   state: MatchState,
@@ -251,10 +251,10 @@ function scoredSet(before: MatchState, after: MatchState): 0 | 1 | 2 | null {
 
 /**
  * Replay stays lenient: an event the court ignores leaves the score as it was.
- * Minus is a correction. It puts the server, the team that still has to choose,
- * and a pending choice back to the moment before the game it removes. That
- * includes a game that closed a set. A minus whose game is not in this log
- * keeps the single-step result.
+ * Minus of the latest open game puts the server, the choosing team, and a
+ * pending choice back to the moment before that game, including across a set.
+ * Minus of an older game keeps the single step, so later games stay in rotation.
+ * A minus whose game is not in this log keeps the single step as well.
  */
 export function replayScore(base: MatchState, events: readonly MatchEvent[]): MatchState {
   const open: OpenGame[] = [];
@@ -285,17 +285,25 @@ export function replayScore(base: MatchState, events: readonly MatchEvent[]): Ma
       const set = scoredSet(state, next);
       let restored = next;
       if (set !== null) {
+        let matched = -1;
         for (let index = open.length - 1; index >= 0; index -= 1) {
           const prior = open[index];
           if (!prior || prior.set !== set || prior.team !== event.team) continue;
-          open.splice(index, 1);
-          restored = {
-            ...next,
-            serve: prior.serve,
-            serveAsk: prior.serveAsk,
-            servePrompt: prior.servePrompt,
-          };
+          matched = index;
           break;
+        }
+        if (matched >= 0) {
+          const prior = open[matched];
+          const latest = matched === open.length - 1;
+          open.splice(matched, 1);
+          if (latest && prior) {
+            restored = {
+              ...next,
+              serve: prior.serve,
+              serveAsk: prior.serveAsk,
+              servePrompt: prior.servePrompt,
+            };
+          }
         }
       }
       state = restored;

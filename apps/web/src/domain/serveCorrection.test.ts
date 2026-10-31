@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appendEvent, createLog, replay } from './log';
+import { MAX_EVENTS, appendEvent, createLog, replay } from './log';
 import { replayScore } from './reducer';
 import { tiebreakHint } from './rules';
 import type { MatchEvent, TeamId } from './types';
@@ -78,5 +78,32 @@ describe('court log minus', () => {
     expect(replay(log).serve).toEqual({ team: 'a', player: 1 });
     expect(replay(log).serveAsk).toBeNull();
     expect(replay(log).servePrompt).toBe(false);
+  });
+
+  it('keeps the restored server when older events are folded into the base', () => {
+    let at = T0;
+    const correction: MatchEvent[] = [{ type: 'serve/set', team: 'a', player: 1, at: ++at }];
+    for (let i = 0; i < 6; i += 1) {
+      correction.push(point('game/increment', 'a', ++at));
+      correction.push(point('game/increment', 'b', ++at));
+    }
+    correction.push(point('game/increment', 'b', ++at));
+    correction.push(point('game/decrement', 'b', ++at));
+    const selects: MatchEvent[] = [];
+    for (let i = 0; i < MAX_EVENTS; i += 1) {
+      selects.push({ type: 'set/select', index: i % 2 === 0 ? 1 : 0, at: ++at });
+    }
+    const oversized = {
+      schemaVersion: 2 as const,
+      base: createLog(T0, ID).base,
+      events: [...correction, ...selects],
+    };
+    const folded = appendEvent(oversized, { type: 'set/select', index: 1, at: at + 1 });
+    expect(folded.events).toHaveLength(MAX_EVENTS);
+    expect(folded.base.serve).toEqual({ team: 'a', player: 1 });
+    expect(folded.base.sets[0]).toEqual({ a: 6, b: 6 });
+    expect(replay(folded).serve).toEqual({ team: 'a', player: 1 });
+    expect(replay(folded).serveAsk).toBeNull();
+    expect(replay(folded).sets[0]).toEqual({ a: 6, b: 6 });
   });
 });

@@ -208,6 +208,96 @@ describe('minus rebuilds the serve from the log', () => {
     expect(restarted.serve).toBeNull();
   });
 
+  it('keeps the rotation when Minus removes an older game', () => {
+    const start = { type: 'serve/set' as const, team: 'a' as const, player: 1 as const, at: T0 + 1 };
+    const abab = replayScore(createMatch(T0), [
+      start,
+      point('game/increment', 'a', T0 + 2),
+      point('game/increment', 'b', T0 + 3),
+      point('game/decrement', 'a', T0 + 4),
+      point('game/increment', 'b', T0 + 5),
+    ]);
+    expect(abab.sets[0]).toEqual({ a: 0, b: 2 });
+    expect(abab.serve).toEqual({ team: 'a', player: 2 });
+
+    const aaba = replayScore(createMatch(T0), [
+      start,
+      point('game/increment', 'a', T0 + 2),
+      point('game/increment', 'a', T0 + 3),
+      point('game/increment', 'b', T0 + 4),
+      point('game/decrement', 'a', T0 + 5),
+    ]);
+    expect(aaba.sets[0]).toEqual({ a: 1, b: 1 });
+    expect(aaba.serve).toEqual({ team: 'a', player: 2 });
+
+    const events = [...sixAll(), point('game/increment', 'a', T0 + 80)];
+    const sevenSix = replayScore(createMatch(T0), events);
+    expect(sevenSix.sets[0]).toEqual({ a: 7, b: 6 });
+    expect(sevenSix.serve).toBeNull();
+    const taken = [...events, point('game/decrement', 'b', T0 + 81)];
+    const back = replayScore(createMatch(T0), taken);
+    const stepped = fold(taken);
+    expect(back.sets[0]).toEqual({ a: 7, b: 5 });
+    expect(back.serve).toEqual(stepped.serve);
+    expect(back.serveAsk).toEqual(stepped.serveAsk);
+    expect(back.servePrompt).toEqual(stepped.servePrompt);
+    expect(back.serve).not.toEqual({ team: 'b', player: 2 });
+    expect(back.serve).not.toEqual({ team: 'a', player: 1 });
+  });
+
+  it('does not restore a different team, a different set, or the previous match', () => {
+    const won = [...sixAll(), point('game/increment', 'a', T0 + 40)];
+    const otherTeam = [...won, point('game/decrement', 'b', T0 + 41)];
+    expect(replayScore(createMatch(T0), otherTeam).serve).toBeNull();
+    expect(replayScore(createMatch(T0), otherTeam).serveAsk).toBeNull();
+
+    let at = T0 + 1;
+    const across: MatchEvent[] = [{ type: 'serve/set', team: 'a', player: 1, at: at++ }];
+    for (let i = 0; i < 6; i += 1) across.push(point('game/increment', 'a', at++));
+    across.push(point('game/increment', 'a', at++));
+    across.push({ type: 'serve/set', team: 'a', player: 1, at: at++ });
+    across.push({ type: 'set/select', index: 0, at: at++ });
+    across.push(point('game/decrement', 'a', at));
+    const base = createMatch(T0);
+    const corrected = replayScore(base, across);
+    const stepped = fold(across, base);
+    expect(corrected.sets[0]).toEqual({ a: 5, b: 0 });
+    expect(corrected.sets[1]).toEqual({ a: 1, b: 0 });
+    expect(corrected.serve).toEqual(stepped.serve);
+    expect(corrected.serve).toEqual({ team: 'b', player: 1 });
+    expect(corrected.serve).not.toEqual({ team: 'a', player: 2 });
+
+    const fresh = [
+      { type: 'serve/set' as const, team: 'a' as const, player: 1 as const, at: T0 + 1 },
+      point('game/increment', 'a', T0 + 2),
+      point('game/increment', 'b', T0 + 3),
+      { type: 'match/new' as const, matchId: NEXT, at: T0 + 4 },
+      { type: 'serve/set' as const, team: 'b' as const, player: 2 as const, at: T0 + 5 },
+      point('game/increment', 'b', T0 + 6),
+      point('game/decrement', 'a', T0 + 7),
+      point('game/decrement', 'b', T0 + 8),
+    ];
+    const restarted = replayScore(createMatch(T0), fresh);
+    expect(restarted.matchId).toBe(NEXT);
+    expect(restarted.sets[0]).toEqual({ a: 0, b: 0 });
+    expect(restarted.serve).toEqual({ team: 'b', player: 2 });
+    expect(restarted.serveAsk).toBeNull();
+  });
+
+  it('drops a serve chosen after the game that Minus removes', () => {
+    const events = [
+      ...sixAll(),
+      point('game/increment', 'b', T0 + 90),
+      { type: 'serve/set' as const, team: 'b' as const, player: 2 as const, at: T0 + 91 },
+      point('game/decrement', 'b', T0 + 92),
+    ];
+    const back = replayScore(createMatch(T0), events);
+    expect(back.sets[0]).toEqual({ a: 6, b: 6 });
+    expect(back.serve).toEqual({ team: 'a', player: 1 });
+    expect(back.serve).not.toEqual({ team: 'b', player: 2 });
+    expect(tiebreakHint(back)).toContain('Team A player 1 serves 1 point, from the right');
+  });
+
   it('replays a stored log the same way twice', () => {
     const events = [...sixAll(), point('game/increment', 'b', T0 + 100), point('game/decrement', 'b', T0 + 101)];
     const base = createMatch(T0);
