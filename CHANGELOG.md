@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.4
+
+- At 6–6 the last sentence of the note is “Teams switch sides every 6 points.”
+- On a wide window the serve ball stays tappable. The score digits no longer cover it. In landscape the page does not scroll, and the digits stay whole.
+- Installing the app uses black, the same colour as a court played alone.
+- The serve balls are a little larger. Until a serving team is chosen, both balls show a spotlight that grows and shrinks. After a tie-break, and whenever one team still has to choose player 1 or player 2, only that team’s ball glows, and the glow is stronger, until the player is chosen. When the phone asks for less motion, the glow stays bright and still.
+
 ## 2.3.3
 
 - At 6–6 the note names the player whose turn it is. They serve 1 point from the right. Then each player serves 2 points in a row, starting from the left. The players change ends every 6 points. The FIP tie-break says those next two points are from the left, and it does not say the second one is from the right, so the note does not add that. After a normal rotation the named player is the one who opened the set. If the court is already showing player 2, the note names player 2.

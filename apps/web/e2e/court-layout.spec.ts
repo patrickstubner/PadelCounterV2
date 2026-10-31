@@ -64,7 +64,7 @@ test('portrait uses the full height and keeps the version in the menu', async ({
   await page.getByTestId('menu-toggle').click();
   const version = page.getByTestId('app-version');
   await expect(version).toBeVisible();
-  await expect(version).toHaveText(/^v2\.3\.3$/);
+  await expect(version).toHaveText(/^v2\.3\.4$/);
   const size = await version.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
   expect(size).toBeGreaterThanOrEqual(16);
 });
@@ -115,7 +115,7 @@ test('landscape shows the menu, hides the footer, and keeps Connect beside the m
   await page.getByTestId('menu-toggle').click();
   const version = page.getByTestId('app-version');
   await expect(version).toBeVisible();
-  await expect(version).toHaveText(/^v2\.3\.3$/);
+  await expect(version).toHaveText(/^v2\.3\.4$/);
   const size = await version.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
   expect(size).toBeGreaterThanOrEqual(16);
   await expect(page.getByTestId('fanfare-toggle')).toBeVisible();
@@ -126,8 +126,42 @@ test('reduced motion does not pulse the serve balls', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 780 });
   await page.reload();
   await page.getByTestId('serve-cue').waitFor();
-  const name = await page.getByTestId('serve-a').evaluate((node) => getComputedStyle(node).animationName);
-  expect(name).toBe('none');
+  const cue = await page.getByTestId('serve-a').evaluate((node) => {
+    const style = getComputedStyle(node);
+    return { name: style.animationName, shadow: style.boxShadow, transform: style.transform };
+  });
+  expect(cue.name).toBe('none');
+  expect(cue.shadow).not.toBe('none');
+  expect(cue.transform).toBe('none');
+});
+
+const largeWindows = [
+  { width: 960, height: 540 },
+  { width: 960, height: 600 },
+  { width: 1000, height: 560 },
+  { width: 1080, height: 540 },
+  { width: 1280, height: 720 },
+  { width: 1366, height: 768 },
+  { width: 1440, height: 900 },
+  { width: 1600, height: 900 },
+  { width: 1920, height: 1080 },
+];
+
+test('the serve ball accepts a click on a large window', async ({ page }) => {
+  test.setTimeout(60_000);
+  for (const size of largeWindows) {
+    await page.setViewportSize(size);
+    for (const side of ['a', 'b'] as const) {
+      await page.evaluate(() => {
+        localStorage.clear();
+        sessionStorage.clear();
+      });
+      await page.reload();
+      await page.getByTestId('serve-cue').waitFor();
+      await page.getByTestId(`serve-${side}`).click();
+      await expect(page.getByTestId(`serve-player-${side}`)).toHaveText('1');
+    }
+  }
 });
 
 test('tie-break and the next set explain the serve, then the hint goes away', async ({ page }) => {
@@ -142,7 +176,7 @@ test('tie-break and the next set explain the serve, then the hint goes away', as
   await expect(tiebreak).toBeVisible();
   await expect(tiebreak).toContainText('Team A player 1 serves 1 point, from the right');
   await expect(tiebreak).toContainText('Then each player serves 2 points in a row, starting from the left');
-  await expect(tiebreak).toContainText('Change ends every 6 points');
+  await expect(tiebreak).toContainText('Teams switch sides every 6 points');
   await expect(tiebreak).not.toContainText('then from the right');
   await expect(tiebreak).not.toContainText('player 2');
   await page.getByTestId('increment-a').click();

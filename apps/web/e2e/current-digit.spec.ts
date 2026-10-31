@@ -117,6 +117,45 @@ test('portrait current-set digits are fully inside their column', async ({ page 
   }
 });
 
+const landscapes = [
+  { width: 844, height: 390 },
+  { width: 932, height: 430 },
+  { width: 960, height: 540 },
+  { width: 960, height: 600 },
+  { width: 1000, height: 560 },
+  { width: 1080, height: 540 },
+  { width: 1100, height: 700 },
+  { width: 1280, height: 720 },
+  { width: 1366, height: 768 },
+  { width: 1440, height: 900 },
+  { width: 1600, height: 900 },
+  { width: 1920, height: 1080 },
+];
+
+test('landscape does not scroll and does not clip the set digits', async ({ page }) => {
+  for (const size of landscapes) {
+    await page.setViewportSize(size);
+    const scroll = await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight);
+    expect(scroll, `${size.width}x${size.height}`).toBeLessThanOrEqual(0);
+    for (const glyph of glyphs) {
+      await page.evaluate((next) => {
+        for (const id of ['set-a-1', 'set-b-1']) {
+          const node = document.querySelector(`[data-testid="${id}"] .flap-current`);
+          if (node) node.textContent = next;
+        }
+      }, glyph);
+      for (const id of ['set-a-1', 'set-b-1'] as const) {
+        const fit = await page.evaluate(readDigit, `[data-testid="${id}"]`);
+        expect(fit, `${size.width}x${size.height} ${id} ${glyph}`).not.toBeNull();
+        if (!fit) continue;
+        expect(fit.text, id).toBe(glyph);
+        expect(fit.inside, `${size.width}x${size.height} ${id} ${glyph}`).toBe(true);
+        expect(fit.clippers, `${size.width}x${size.height} ${id} ${glyph}`).toEqual([]);
+      }
+    }
+  }
+});
+
 test('landscape set digits stay fully inside the cell', async ({ page }) => {
   await page.setViewportSize({ width: 844, height: 390 });
   for (const glyph of glyphs) {

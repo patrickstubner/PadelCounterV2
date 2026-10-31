@@ -11,6 +11,13 @@ const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../app.c
 
 const noop = () => undefined;
 
+function classOf(html: string, id: string): string {
+  const at = html.indexOf(`data-testid="${id}"`);
+  const start = html.lastIndexOf('<', at);
+  const tag = html.slice(start, html.indexOf('>', at));
+  return /class="([^"]*)"/.exec(tag)?.[1] ?? '';
+}
+
 describe('serve marker', () => {
   it('shows the server number beside the ball and not in the middle', () => {
     const state = {
@@ -26,6 +33,20 @@ describe('serve marker', () => {
     expect(html).toContain('data-testid="serve-player-b"');
     expect(html).toContain('>2<');
     expect(html).not.toContain('data-testid="serve-player-a"');
+    expect(html).not.toContain('is-cue');
+    expect(html).not.toContain('is-ask');
+  });
+
+  it('glows both balls while no server is set', () => {
+    const state = createMatch(1_700_000_000_000, '00000000-0000-4000-8000-000000000001');
+    const html = renderToStaticMarkup(
+      <>
+        <TeamPanel team="a" state={state} onIncrement={noop} onDecrement={noop} onRename={noop} onSelectSet={noop} onServe={noop} />
+        <TeamPanel team="b" state={state} onIncrement={noop} onDecrement={noop} onRename={noop} onSelectSet={noop} onServe={noop} />
+      </>,
+    );
+    expect(classOf(html, 'serve-a')).toBe('ball is-cue');
+    expect(classOf(html, 'serve-b')).toBe('ball is-cue');
   });
 
   it('highlights the tiebreak team without a player number', () => {
@@ -43,7 +64,8 @@ describe('serve marker', () => {
     expect(html).toContain('Choose the player for Team B');
     expect(html).not.toContain('data-testid="serve-player-b"');
     expect(html).not.toContain('data-testid="serve-player-a"');
-    expect(html).toContain('class="ball is-on"');
+    expect(classOf(html, 'serve-b')).toBe('ball is-on is-ask');
+    expect(classOf(html, 'serve-a')).toBe('ball');
   });
 });
 
@@ -123,7 +145,7 @@ describe('plus and minus controls', () => {
     expect(name).toContain('white-space: nowrap');
     const portrait = css.slice(css.indexOf('@media (orientation: portrait)'), css.indexOf('.victory {'));
     expect(portrait).toContain('font-size: clamp(1.2rem, 3vh, 1.75rem)');
-    expect(portrait).toContain('.team-head { height: 2.75rem; }');
+    expect(portrait).toContain('.team-head { height: 3.15rem; }');
     expect(portrait).not.toContain('2.5vh');
   });
 });

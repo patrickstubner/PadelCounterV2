@@ -100,8 +100,8 @@ describe('shipped source stays local and text-only', () => {
     expect(manifest.name).toBe('Padel Counter V2');
     expect(manifest.short_name).toBe('Padel Counter V2');
     expect(manifest.display).toBe('standalone');
-    expect(manifest.theme_color).toBe('#0a1a3f');
-    expect(manifest.background_color).toBe('#0a1a3f');
+    expect(manifest.theme_color).toBe('#000000');
+    expect(manifest.background_color).toBe('#000000');
     expect(manifest.icons).toEqual([
       { src: 'icons/icon-192-v231.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
       { src: 'icons/icon-512-v231.png', sizes: '512x512', type: 'image/png', purpose: 'any' },

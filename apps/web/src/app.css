@@ -453,7 +453,7 @@ button:disabled { cursor: not-allowed; }
 
 .team-head {
   width: 100%;
-  min-height: 2.75rem;
+  min-height: 3.15rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -467,9 +467,11 @@ button:disabled { cursor: not-allowed; }
 }
 
 .ball {
+  position: relative;
+  z-index: 2;
   flex: 0 0 auto;
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 3.15rem;
+  height: 3.15rem;
   border-radius: 999px;
   border: 3px solid var(--accent);
   background: transparent;
@@ -483,15 +485,15 @@ button:disabled { cursor: not-allowed; }
 
 .ball.is-on {
   width: auto;
-  min-width: 2.75rem;
+  min-width: 3.15rem;
   padding: 0 0.5rem 0 0.35rem;
   background: var(--accent);
   color: #000000;
 }
 
 .ball-icon {
-  width: 1.45rem;
-  height: 1.45rem;
+  width: 1.65rem;
+  height: 1.65rem;
   flex: 0 0 auto;
 }
 
@@ -555,6 +557,8 @@ button:disabled { cursor: not-allowed; }
   place-items: center;
   container-type: size;
   padding: 0;
+  /* The glyph stays inside. The font's extra line box must not cover the ball or grow the page. */
+  overflow: hidden;
 }
 
 .current-set { display: none; }
@@ -596,6 +600,11 @@ button:disabled { cursor: not-allowed; }
   overflow: hidden;
   perspective: 700px;
 }
+
+.flap,
+.flap-current,
+.flap-leave,
+.flap-enter { pointer-events: none; }
 
 .flap-current,
 .flap-leave,
@@ -748,13 +757,42 @@ button:disabled { cursor: not-allowed; }
   color: #ffffff;
 }
 
-.ball.is-cue {
-  animation: serve-cue 1.15s ease-in-out infinite;
+/* Spotlight on the ball. The shadow grows and shrinks. The ball itself does not. */
+.ball.is-cue,
+.ball.is-ask {
+  --glow-reach: 2.5rem;
+  animation: serve-glow 1.4s ease-in-out infinite;
 }
 
-@keyframes serve-cue {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.12); }
+.ball.is-ask {
+  --glow-reach: 2.9rem;
+  animation-name: serve-glow-strong;
+}
+
+@keyframes serve-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 0.45rem 0.08rem color-mix(in srgb, var(--accent) 72%, transparent),
+      0 0 1rem 0.28rem color-mix(in srgb, var(--accent) 34%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 1.05rem 0.4rem color-mix(in srgb, var(--accent) 78%, transparent),
+      0 0 1.7rem 0.8rem color-mix(in srgb, var(--accent) 36%, transparent);
+  }
+}
+
+@keyframes serve-glow-strong {
+  0%, 100% {
+    box-shadow:
+      0 0 0.7rem 0.18rem color-mix(in srgb, var(--accent) 88%, transparent),
+      0 0 1.35rem 0.45rem color-mix(in srgb, var(--accent) 46%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 1.25rem 0.55rem color-mix(in srgb, var(--accent) 92%, transparent),
+      0 0 1.9rem 1rem color-mix(in srgb, var(--accent) 48%, transparent);
+  }
 }
 
 .update-ready {
@@ -1117,11 +1155,6 @@ button:disabled { cursor: not-allowed; }
 .btn-solid { background: #ffffff; color: #000000; border: 2px solid #ffffff; }
 
 @media (orientation: portrait) {
-  .board,
-  .team {
-    overflow: hidden;
-  }
-
   .team {
     /* The extra 0.7rem is the old side padding plus the column gap, so the number column stays put.
        The 3px edge and the side safe area come out of the button columns. */
@@ -1165,6 +1198,8 @@ button:disabled { cursor: not-allowed; }
     width: 100%;
     place-items: center;
     container-type: size;
+    /* The drawn digit stays in this box. The font's extra line box must not scroll the page. */
+    overflow: hidden;
   }
 
   .current-set .num {
@@ -1196,7 +1231,7 @@ button:disabled { cursor: not-allowed; }
   .current-set .flap { pointer-events: none; }
   .current-set .flap { overflow: visible; line-height: 1; }
 
-  .team-head { height: 2.75rem; }
+  .team-head { height: 3.15rem; }
 
   .team-name,
   .team-name-input {
@@ -1299,7 +1334,19 @@ button:disabled { cursor: not-allowed; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ball.is-cue { animation: none; }
+  .ball.is-cue,
+  .ball.is-ask {
+    animation: none;
+    box-shadow:
+      0 0 1.05rem 0.4rem color-mix(in srgb, var(--accent) 82%, transparent),
+      0 0 1.7rem 0.8rem color-mix(in srgb, var(--accent) 42%, transparent);
+  }
+
+  .ball.is-ask {
+    box-shadow:
+      0 0 1.25rem 0.55rem color-mix(in srgb, var(--accent) 92%, transparent),
+      0 0 1.9rem 1rem color-mix(in srgb, var(--accent) 50%, transparent);
+  }
   .flap-leave,
   .flap-enter {
     display: none !important;

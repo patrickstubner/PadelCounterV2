@@ -290,7 +290,7 @@ describe('serve rotation', () => {
     };
     expect(isTiebreak(tied)).toBe(true);
     expect(tiebreakHint(tied)).toBe(
-      'Team B player 2 serves 1 point, from the right. Then each player serves 2 points in a row, starting from the left. Change ends every 6 points.',
+      'Team B player 2 serves 1 point, from the right. Then each player serves 2 points in a row, starting from the left. Teams switch sides every 6 points.',
     );
     expect(tiebreakHint(tied)).not.toContain('then from the right');
     expect(tiebreakHint({ ...tied, serve: null })).toContain('The player whose turn it is');

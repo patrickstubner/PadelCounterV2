@@ -246,7 +246,7 @@ export function tiebreakCueText(state: MatchState): string {
   const who = state.serve
     ? `${state.teams[state.serve.team].name} player ${state.serve.player}`
     : 'The player whose turn it is';
-  return `${who} serves 1 point, from the right. Then each player serves 2 points in a row, starting from the left. Change ends every 6 points.`;
+  return `${who} serves 1 point, from the right. Then each player serves 2 points in a row, starting from the left. Teams switch sides every 6 points.`;
 }
 
 /**
