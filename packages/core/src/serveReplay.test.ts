@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseMatchLog } from './parse';
 import { createMatch, matchReducer, replayScore } from './reducer';
-import { tiebreakHint } from './rules';
+import { isPlausibleSetScore, serveCycle, setWinner, tiebreakHint } from './rules';
 import type { MatchEvent, MatchState, TeamId } from './types';
 
 const T0 = 1_700_000_000_000;
@@ -220,6 +220,28 @@ describe('minus rebuilds the serve from the log', () => {
     expect(abab.sets[0]).toEqual({ a: 0, b: 2 });
     expect(abab.serve).toEqual({ team: 'a', player: 2 });
 
+    const undone = replayScore(createMatch(T0), [
+      start,
+      point('game/increment', 'a', T0 + 2),
+      point('game/increment', 'b', T0 + 3),
+      point('game/decrement', 'a', T0 + 4),
+      point('game/decrement', 'b', T0 + 5),
+    ]);
+    expect(undone.sets[0]).toEqual({ a: 0, b: 0 });
+    expect(undone.serve).toEqual({ team: 'a', player: 1 });
+    expect(undone.serveAsk).toBeNull();
+
+    const kept = replayScore(createMatch(T0), [
+      start,
+      point('game/increment', 'a', T0 + 2),
+      point('game/increment', 'a', T0 + 3),
+      point('game/increment', 'b', T0 + 4),
+      point('game/decrement', 'a', T0 + 5),
+      point('game/decrement', 'a', T0 + 6),
+    ]);
+    expect(kept.sets[0]).toEqual({ a: 0, b: 1 });
+    expect(kept.serve).toEqual({ team: 'b', player: 1 });
+
     const aaba = replayScore(createMatch(T0), [
       start,
       point('game/increment', 'a', T0 + 2),
@@ -296,6 +318,64 @@ describe('minus rebuilds the serve from the log', () => {
     expect(back.serve).toEqual({ team: 'a', player: 1 });
     expect(back.serve).not.toEqual({ team: 'b', player: 2 });
     expect(tiebreakHint(back)).toContain('Team A player 1 serves 1 point, from the right');
+  });
+
+  it('matches the rotation when Minus is not the latest game', () => {
+    const stillOpen = (a: number, b: number) => isPlausibleSetScore(a, b) && setWinner(a, b) === null;
+    for (const start of ['a', 'b'] as const) {
+      let nonLifo = 0;
+      for (let seed = 1; seed <= 80; seed += 1) {
+        let n = seed * 17 + (start === 'a' ? 3 : 9);
+        const next = () => {
+          n = (n * 1103515245 + 12345) % 2147483648;
+          return n;
+        };
+        const events: MatchEvent[] = [{ type: 'serve/set', team: start, player: 1, at: T0 + 1 }];
+        let at = T0 + 2;
+        let a = 0;
+        let b = 0;
+        let last: TeamId | null = null;
+        for (let step = 0; step < 24; step += 1) {
+          const minus = next() % 3 === 0 && (a > 0 || b > 0);
+          if (minus) {
+            const other: TeamId | null = last === 'a' ? 'b' : last === 'b' ? 'a' : null;
+            let team: TeamId = a > 0 && (b === 0 || next() % 2 === 0) ? 'a' : 'b';
+            if (other && next() % 2 === 0 && (other === 'a' ? a : b) > 0) team = other;
+            if ((team === 'a' ? a : b) <= 0) team = team === 'a' ? 'b' : 'a';
+            const na = team === 'a' ? a - 1 : a;
+            const nb = team === 'b' ? b - 1 : b;
+            if ((team === 'a' ? a : b) > 0 && stillOpen(na, nb)) {
+              if (last && team !== last) nonLifo += 1;
+              events.push(point('game/decrement', team, at++));
+              a = na;
+              b = nb;
+              last = null;
+            }
+            continue;
+          }
+          const team: TeamId = next() % 2 === 0 ? 'a' : 'b';
+          const na = team === 'a' ? a + 1 : a;
+          const nb = team === 'b' ? b + 1 : b;
+          if (!stillOpen(na, nb)) continue;
+          events.push(point('game/increment', team, at++));
+          a = na;
+          b = nb;
+          last = team;
+        }
+        const base = createMatch(T0);
+        const played = replayScore(base, events);
+        const games = played.sets[0].a + played.sets[0].b;
+        expect(played.activeSet, `${start}:${seed}`).toBe(0);
+        expect(played.sets[0], `${start}:${seed}`).toEqual({ a, b });
+        expect(played.serve, `${start}:${seed}`).toEqual(serveCycle(start)[games % 4]);
+        expect(played.serveAsk, `${start}:${seed}`).toBeNull();
+        expect(replayScore(base, events), `${start}:${seed}`).toEqual(played);
+        const stored = parseMatchLog({ schemaVersion: 2, base, events });
+        expect(stored, `${start}:${seed}`).not.toBeNull();
+        expect(replayScore(stored!.base, stored!.events), `${start}:${seed}`).toEqual(played);
+      }
+      expect(nonLifo).toBeGreaterThan(0);
+    }
   });
 
   it('replays a stored log the same way twice', () => {

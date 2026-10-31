@@ -2,7 +2,7 @@
 
 ## 2.3.6
 
-- Minus puts the server back when it takes away the last game. At 6–6 the note names the server. Plus to 7–6 asks the other team who serves. Minus returns to 6–6 and that same server, including a step back into the previous set. Both phones of a live match show that same server. Minus on an earlier game, while a later game stays, keeps the usual serve step so the rotation does not jump.
+- Minus puts the server back when it takes away the last game. At 6–6 the note names the server. Plus to 7–6 asks the other team who serves. Minus returns to 6–6 and that same server, including a step back into the previous set. Both phones of a live match show that same server. Minus on an earlier game, while a later game stays, keeps the usual serve step. A later Minus does not put back the server from before that earlier game.
 - A serve chosen after a game is dropped when Minus takes that game back. The server is again whoever it was before that game.
 
 ## 2.3.5

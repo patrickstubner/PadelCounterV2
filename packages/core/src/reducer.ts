@@ -232,6 +232,8 @@ interface OpenGame {
   readonly serve: Server | null;
   readonly serveAsk: TeamId | null;
   readonly servePrompt: boolean;
+  /** Set when an earlier game was removed after this one. Its snapshot is no longer the server to restore. */
+  stale?: boolean;
 }
 
 /** The one set whose games changed. A no-op, or a step that touches none, is null. */
@@ -253,7 +255,8 @@ function scoredSet(before: MatchState, after: MatchState): 0 | 1 | 2 | null {
  * Replay stays lenient: an event the court ignores leaves the score as it was.
  * Minus of the latest open game puts the server, the choosing team, and a
  * pending choice back to the moment before that game, including across a set.
- * Minus of an older game keeps the single step, so later games stay in rotation.
+ * Minus of an older game keeps the single step and marks every later game stale,
+ * so a following Minus does not restore the server from before the removed game.
  * A minus whose game is not in this log keeps the single step as well.
  */
 export function replayScore(base: MatchState, events: readonly MatchEvent[]): MatchState {
@@ -295,8 +298,14 @@ export function replayScore(base: MatchState, events: readonly MatchEvent[]): Ma
         if (matched >= 0) {
           const prior = open[matched];
           const latest = matched === open.length - 1;
+          if (!latest) {
+            for (let later = matched + 1; later < open.length; later += 1) {
+              const entry = open[later];
+              if (entry) entry.stale = true;
+            }
+          }
           open.splice(matched, 1);
-          if (latest && prior) {
+          if (latest && prior && !prior.stale) {
             restored = {
               ...next,
               serve: prior.serve,

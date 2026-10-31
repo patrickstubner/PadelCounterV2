@@ -78,6 +78,27 @@ describe('court log minus', () => {
     expect(replay(log).serve).toEqual({ team: 'a', player: 1 });
     expect(replay(log).serveAsk).toBeNull();
     expect(replay(log).servePrompt).toBe(false);
+
+    const backToStart = replay(play([
+      { type: 'serve/set', team: 'a', player: 1, at: T0 + 1 },
+      point('game/increment', 'a', T0 + 2),
+      point('game/increment', 'b', T0 + 3),
+      point('game/decrement', 'a', T0 + 4),
+      point('game/decrement', 'b', T0 + 5),
+    ]));
+    expect(backToStart.sets[0]).toEqual({ a: 0, b: 0 });
+    expect(backToStart.serve).toEqual({ team: 'a', player: 1 });
+
+    const oneLeft = replay(play([
+      { type: 'serve/set', team: 'a', player: 1, at: T0 + 1 },
+      point('game/increment', 'a', T0 + 2),
+      point('game/increment', 'a', T0 + 3),
+      point('game/increment', 'b', T0 + 4),
+      point('game/decrement', 'a', T0 + 5),
+      point('game/decrement', 'a', T0 + 6),
+    ]));
+    expect(oneLeft.sets[0]).toEqual({ a: 0, b: 1 });
+    expect(oneLeft.serve).toEqual({ team: 'b', player: 1 });
   });
 
   it('keeps the restored server when older events are folded into the base', () => {
