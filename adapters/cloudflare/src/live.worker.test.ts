@@ -1,4 +1,4 @@
-import { CODE_ALARM_GLOBAL, CODE_ATTEMPTS_PER_PREFIX, LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, joinWindow, matchReducer, parseLiveTeamName, replayScore, scoreBoard, scoreClaimFor, type MatchEvent, type MatchState, type ScoreBoard, type ScoreClaim, type TeamId } from '@padel/core';
+import { CODE_ALARM_GLOBAL, CODE_ATTEMPTS_PER_PREFIX, LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, joinWindow, matchReducer, parseLiveTeamName, parseMatchLog, replayScore, scoreBoard, scoreClaimFor, type MatchEvent, type MatchState, type ScoreBoard, type ScoreClaim, type TeamId } from '@padel/core';
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
@@ -1205,6 +1205,81 @@ describe('offline score reconcile in the durable object', () => {
     const board = await storedBoard(created.hostToken, device);
     expect(board.ended).toBe(true);
     expect(board.sets[0]).toEqual({ a: 1, b: 0 });
+  });
+
+  it('keeps the 6:6 server on both phones after Plus to 7:6 and Minus', async () => {
+    const hostDevice = 'd0e360001000000000000000000000000';
+    const guestDevice = 'd0e360002000000000000000000000000';
+    const base = createMatch(T0);
+    const events: MatchEvent[] = [{ type: 'serve/set', team: 'a', player: 1, at: T0 + 1 }];
+    for (let i = 0; i < 6; i += 1) {
+      events.push({ type: 'game/increment', team: 'a', at: T0 + 2 + i * 2 });
+      events.push({ type: 'game/increment', team: 'b', at: T0 + 3 + i * 2 });
+    }
+    const response = await call('/matches', {
+      method: 'POST',
+      body: JSON.stringify({ device: hostDevice, log: { schemaVersion: 2, base, events } }),
+    });
+    expect(response.status).toBe(201);
+    const created = (await response.json()) as { matchId: string; hostToken: string };
+    const host = await connect(created.hostToken, hostDevice);
+    const guest = await invitePlayer(created.matchId, created.hostToken, guestDevice);
+    const hostLog = parseMatchLog(host.messages.all().find((message) => message.type === 'snapshot')?.log);
+    const guestLog = parseMatchLog(guest.messages.all().find((message) => message.type === 'snapshot')?.log);
+    if (!hostLog || !guestLog) throw new Error('snapshot');
+    const tiedHost = replayScore(hostLog.base, hostLog.events);
+    const tiedGuest = replayScore(guestLog.base, guestLog.events);
+    expect(tiedHost.sets[0]).toEqual({ a: 6, b: 6 });
+    expect(tiedHost.serve).toEqual({ team: 'a', player: 1 });
+    expect(tiedGuest.serve).toEqual(tiedHost.serve);
+    expect(tiedGuest.serveAsk).toEqual(tiedHost.serveAsk);
+
+    const plus: MatchEvent = { type: 'game/increment', team: 'b', at: tiedHost.updatedAt + 1 };
+    const plusAck = await push(host.ws, host.messages, stepId(360), plus, scoreClaimFor(tiedHost, plus));
+    expect(plusAck.type).toBe('event');
+    const plusOnGuest = await guest.messages.waitFor((message) => message.eventId === stepId(360));
+    const hostPlus = plusAck.event as MatchEvent;
+    const guestPlus = plusOnGuest.event as MatchEvent;
+    const leadHost = replayScore(hostLog.base, [...hostLog.events, hostPlus]);
+    const leadGuest = replayScore(guestLog.base, [...guestLog.events, guestPlus]);
+    expect(leadHost.sets[0]).toEqual({ a: 6, b: 7 });
+    expect(leadHost.activeSet).toBe(1);
+    expect(leadHost.serve).toBeNull();
+    expect(leadHost.serveAsk).toBe('b');
+    expect(leadGuest.serve).toEqual(leadHost.serve);
+    expect(leadGuest.serveAsk).toEqual(leadHost.serveAsk);
+    expect(leadGuest.sets).toEqual(leadHost.sets);
+
+    const minus: MatchEvent = { type: 'game/decrement', team: 'b', at: leadHost.updatedAt + 1 };
+    const minusAck = await push(host.ws, host.messages, stepId(361), minus, scoreClaimFor(leadHost, minus));
+    expect(minusAck.type).toBe('event');
+    const minusOnGuest = await guest.messages.waitFor((message) => message.eventId === stepId(361));
+    const restoredHost = replayScore(hostLog.base, [...hostLog.events, hostPlus, minusAck.event as MatchEvent]);
+    const restoredGuest = replayScore(guestLog.base, [...guestLog.events, guestPlus, minusOnGuest.event as MatchEvent]);
+    expect(restoredHost.sets[0]).toEqual({ a: 6, b: 6 });
+    expect(restoredHost.activeSet).toBe(0);
+    expect(restoredHost.serve).toEqual({ team: 'a', player: 1 });
+    expect(restoredHost.serveAsk).toBeNull();
+    expect(restoredHost.servePrompt).toBe(false);
+    expect(restoredGuest.serve).toEqual(restoredHost.serve);
+    expect(restoredGuest.serveAsk).toEqual(restoredHost.serveAsk);
+    expect(restoredGuest.servePrompt).toEqual(restoredHost.servePrompt);
+    expect(restoredGuest.sets).toEqual(restoredHost.sets);
+    expect(restoredGuest.activeSet).toEqual(restoredHost.activeSet);
+
+    const again = await connect(created.hostToken, hostDevice);
+    const stored = parseMatchLog(again.messages.all().find((message) => message.type === 'snapshot')?.log);
+    if (!stored) throw new Error('stored snapshot');
+    const replayed = replayScore(stored.base, stored.events);
+    expect(replayed.serve).toEqual(restoredHost.serve);
+    expect(replayed.serveAsk).toBeNull();
+    expect(replayed.servePrompt).toBe(false);
+    expect(replayed.sets[0]).toEqual({ a: 6, b: 6 });
+    expect(replayed.activeSet).toBe(0);
+    expect(replayScore(stored.base, stored.events)).toEqual(replayed);
+    again.ws.close();
+    host.ws.close();
+    guest.ws.close();
   });
 
   it('closes a protocol 1 hello and asks for an update', async () => {

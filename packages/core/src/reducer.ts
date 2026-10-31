@@ -129,7 +129,9 @@ function applyGame(state: MatchState, team: TeamId, at: number, delta: 1 | -1): 
 /**
  * A tiebreak with a known server preselects the other team.
  * While that choice is still only a team, every game won moves the preselection
- * to the other team. Who won the game does not matter. Minus clears it.
+ * to the other team. Who won the game does not matter.
+ * This one step clears that preselection. Replaying a Minus of the latest game
+ * puts the server and the preselection back to the moment before that game.
  */
 function serveAskAfterGame(
   state: MatchState,
@@ -224,8 +226,101 @@ export function matchReducer(state: MatchState, event: MatchEvent): MatchState {
   }
 }
 
+interface OpenGame {
+  readonly set: 0 | 1 | 2;
+  readonly team: TeamId;
+  readonly serve: Server | null;
+  readonly serveAsk: TeamId | null;
+  readonly servePrompt: boolean;
+  /** Set when an earlier game was removed after this one. Its snapshot is no longer the server to restore. */
+  stale?: boolean;
+}
+
+/** The one set whose games changed. A no-op, or a step that touches none, is null. */
+function scoredSet(before: MatchState, after: MatchState): 0 | 1 | 2 | null {
+  for (let index = 0; index < 3; index += 1) {
+    const left = before.sets[index];
+    const right = after.sets[index];
+    if (!left || !right) return null;
+    if (left.a !== right.a || left.b !== right.b) {
+      if (index === 1) return 1;
+      if (index === 2) return 2;
+      return 0;
+    }
+  }
+  return null;
+}
+
+/**
+ * Replay stays lenient: an event the court ignores leaves the score as it was.
+ * Minus of the latest open game puts the server, the choosing team, and a
+ * pending choice back to the moment before that game, including across a set.
+ * Minus of an older game keeps the single step and marks every later game stale,
+ * so a following Minus does not restore the server from before the removed game.
+ * A minus whose game is not in this log keeps the single step as well.
+ */
 export function replayScore(base: MatchState, events: readonly MatchEvent[]): MatchState {
-  return events.reduce(matchReducer, base);
+  const open: OpenGame[] = [];
+  let state = base;
+  for (const event of events) {
+    const next = matchReducer(state, event);
+    if (next === state) continue;
+    if (isNewMatchEvent(event)) {
+      open.length = 0;
+      state = next;
+      continue;
+    }
+    if (event.type === 'game/increment' && isTeamId(event.team)) {
+      const set = scoredSet(state, next);
+      if (set !== null) {
+        open.push({
+          set,
+          team: event.team,
+          serve: state.serve,
+          serveAsk: state.serveAsk,
+          servePrompt: state.servePrompt,
+        });
+      }
+      state = next;
+      continue;
+    }
+    if (event.type === 'game/decrement' && isTeamId(event.team)) {
+      const set = scoredSet(state, next);
+      let restored = next;
+      if (set !== null) {
+        let matched = -1;
+        for (let index = open.length - 1; index >= 0; index -= 1) {
+          const prior = open[index];
+          if (!prior || prior.set !== set || prior.team !== event.team) continue;
+          matched = index;
+          break;
+        }
+        if (matched >= 0) {
+          const prior = open[matched];
+          const latest = matched === open.length - 1;
+          if (!latest) {
+            for (let later = matched + 1; later < open.length; later += 1) {
+              const entry = open[later];
+              if (entry) entry.stale = true;
+            }
+          }
+          open.splice(matched, 1);
+          if (latest && prior && !prior.stale) {
+            restored = {
+              ...next,
+              serve: prior.serve,
+              serveAsk: prior.serveAsk,
+              servePrompt: prior.servePrompt,
+            };
+          }
+        }
+      }
+      state = restored;
+      continue;
+    }
+    state = next;
+  }
+  return state;
 }
 
 /** The worker picks the id. The client id is not a capability and is not kept. */
