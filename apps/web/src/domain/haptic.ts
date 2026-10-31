@@ -127,6 +127,16 @@ export function bindCourtTaps(activeSet: SetIndex, target: CourtTapTarget, pulse
 /** Movement past this many pixels is a scroll, not a tap. */
 export const HAPTIC_SLOP_PX = 12;
 
+/** True when the pointer is inside the control. A zero-size box has no layout yet, so the click stands. */
+export function releaseInside(
+  rect: { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number },
+  x: number,
+  y: number,
+): boolean {
+  if (rect.right <= rect.left || rect.bottom <= rect.top) return true;
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
 export interface HapticPoint {
   readonly pointerId: number;
   readonly x: number;
@@ -142,6 +152,8 @@ export interface PressHaptic {
   cancel(pointerId: number): void;
   /** Click ticks only when no pointer gesture already accepted or rejected this tap. */
   click(): void;
+  /** Drop a suppressed tick without vibrating. Used when the click is outside the control. */
+  forget(): void;
 }
 
 interface ArmedPress {
@@ -173,7 +185,10 @@ export function createPressHaptic(pulse: () => void): PressHaptic {
     down(point, allow) {
       if (!allow || (point.pointerType === 'mouse' && point.button !== 0)) return;
       suppressClick = false;
-      if (pending) cancelFrame(pending.frame);
+      if (pending) {
+        pending.dropped = true;
+        cancelFrame(pending.frame);
+      }
       const armed: ArmedPress = {
         pointerId: point.pointerId,
         x: point.x,
@@ -184,7 +199,7 @@ export function createPressHaptic(pulse: () => void): PressHaptic {
       };
       pending = armed;
       armed.frame = schedule(() => {
-        if (pending !== armed || armed.dropped || armed.fired) return;
+        if (armed.dropped || armed.fired) return;
         armed.fired = true;
         try {
           pulse();
@@ -199,15 +214,18 @@ export function createPressHaptic(pulse: () => void): PressHaptic {
       const dy = point.y - pending.y;
       if (dx * dx + dy * dy <= HAPTIC_SLOP_PX * HAPTIC_SLOP_PX) return;
       pending.dropped = true;
-      suppressClick = true;
       cancelFrame(pending.frame);
+      // Touch does not synthesize a click after a drag. Leave the flag clear
+      // so the next keyboard tick is not swallowed. A mouse click still follows.
+      suppressClick = point.pointerType === 'mouse';
     },
     up(point, allow) {
       if (!pending || pending.pointerId !== point.pointerId) return;
       const armed = pending;
       pending = null;
       cancelFrame(armed.frame);
-      suppressClick = true;
+      const mouse = point.pointerType === 'mouse';
+      suppressClick = mouse || (!armed.dropped && allow);
       if (armed.dropped || armed.fired || !allow) return;
       armed.fired = true;
       try {
@@ -221,7 +239,7 @@ export function createPressHaptic(pulse: () => void): PressHaptic {
       pending.dropped = true;
       cancelFrame(pending.frame);
       pending = null;
-      suppressClick = true;
+      suppressClick = false;
     },
     click() {
       if (suppressClick) {
@@ -233,6 +251,9 @@ export function createPressHaptic(pulse: () => void): PressHaptic {
       } catch {
         // The point is already counted.
       }
+    },
+    forget() {
+      suppressClick = false;
     },
   };
 }

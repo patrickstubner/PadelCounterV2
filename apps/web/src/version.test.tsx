@@ -35,8 +35,11 @@ describe('app version', () => {
   it('shows the package.json version without taking space from the board', () => {
     const version = packageVersion();
     const html = renderToStaticMarkup(<App />);
-    expect(html).toContain(`class="app-version"`);
+    expect(html).toContain(`class="menu-version"`);
+    expect(html).toContain(`data-testid="app-version"`);
     expect(html).toContain(`>v${version}<`);
+    expect(html).toContain('court-foot');
+    expect(html).toContain('Please choose the serving team');
     expect(html).toContain('>Connect<');
     expect(html).not.toContain('>Connect players<');
     expect(html).not.toContain('>Join match<');
@@ -54,8 +57,17 @@ describe('app version', () => {
     expect(rsbuild).toContain("new URL('./package.json', import.meta.url)");
 
     const css = readFileSync(join(root, 'src/app.css'), 'utf8');
-    const rule = css.slice(css.indexOf('.app-version {'));
-    expect(rule.startsWith('.app-version {')).toBe(true);
-    expect(rule.slice(0, rule.indexOf('}'))).toContain('position: absolute');
+    const rule = css.slice(css.indexOf('.menu-version {'));
+    expect(rule.startsWith('.menu-version {')).toBe(true);
+    const block = rule.slice(0, rule.indexOf('}'));
+    expect(block).toContain('font-size: 1.05rem');
+    expect(block).not.toContain('position: absolute');
+    expect(css).toContain('.court-foot:not(:has(.save-note))');
+    expect(css).toContain('.phone-count');
+    const phone = css.slice(css.indexOf('.phone-count {'), css.indexOf('.phone-icon'));
+    const burger = css.slice(css.indexOf('.menu-toggle {'), css.indexOf('.burger-line'));
+    expect(phone).toContain('border-radius: 0.7rem');
+    expect(burger).toContain('border-radius: 0.7rem');
+    expect(phone).not.toContain('999px');
   });
 });

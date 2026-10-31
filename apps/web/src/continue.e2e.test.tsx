@@ -123,4 +123,28 @@ describe('continue from history', () => {
     await press('match-row');
     expect(document.querySelector('[data-testid="continue-match"]')).toBeNull();
   });
+
+  it('does not show the celebration again after continue', async () => {
+    let log = createLog(T0, PAST, { a: 'Lobos', b: 'Team B' });
+    const sides: TeamId[] = [...six('a'), 'a', 'a', 'a', 'a', 'a'];
+    for (const team of sides) {
+      log = appendEvent(log, { type: 'game/increment', team, at: T0 + log.events.length + 1 });
+    }
+    localStorage.setItem(STORAGE_KEY, serializeLog(log));
+    const view = await mount();
+    mounted.push(view);
+    expect(document.querySelector('[data-testid="victory"]')).toBeNull();
+    await press('increment-a');
+    expect(document.querySelector('[data-testid="victory"]')).not.toBeNull();
+    await press('new-match');
+    await press('finish-and-new');
+    expect(document.querySelector('[data-testid="victory"]')).toBeNull();
+    await press('history-open');
+    await press('match-row');
+    await press('continue-match');
+    await press('confirm-continue');
+    expect(document.querySelector('[data-testid="victory"]')).toBeNull();
+    await press('increment-b');
+    expect(document.querySelector('[data-testid="current-b"]')?.textContent).toContain('1');
+  });
 });

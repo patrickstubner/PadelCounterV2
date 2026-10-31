@@ -63,6 +63,20 @@ export const GUEST_ROTATE_PER_DEVICE = 2;
 /** Times one phone may move the court. Another phone keeps its own count. */
 export const CARRY_PER_DEVICE = 3;
 
+/** Successful removals one credential may make in {@link KICK_WINDOW_MS}. */
+export const KICK_PER_ACTOR = 3;
+
+/** Successful removals one match may absorb in the same window. */
+export const KICK_PER_MATCH = 8;
+
+/** Kick-war window. A new code does not reset a credential that is still in the match. */
+export const KICK_WINDOW_MS = 10 * 60 * 1000;
+
+/** Times one credential may call Leave in {@link LEAVE_WINDOW_MS}. */
+export const LEAVE_PER_ACTOR = 5;
+
+export const LEAVE_WINDOW_MS = 10 * 60 * 1000;
+
 /** Same number as {@link CARRY_PER_DEVICE}. The cap is per starter phone, not per match. */
 export const CARRY_PER_MATCH = CARRY_PER_DEVICE;
 
@@ -246,6 +260,19 @@ export interface NewMatchPlan {
    * A guest leaves on this phone only. They cannot move the court.
    */
   readonly askCarry: boolean;
+}
+
+/**
+ * Phones already in the match, including ones that are offline right now.
+ * An empty roster falls back to the connected count minus this phone.
+ */
+export function otherPhones(input: {
+  readonly phones: readonly { readonly self: boolean }[];
+  readonly onlinePlayers: number;
+}): number {
+  if (input.phones.length > 0) return input.phones.filter((phone) => !phone.self).length;
+  if (!Number.isInteger(input.onlinePlayers) || input.onlinePlayers <= 0) return 0;
+  return input.onlinePlayers - 1;
 }
 
 export function planNewMatch(input: {

@@ -4,7 +4,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
-import { ARCHIVE_KEY } from './domain/archive';
+import { ARCHIVE_KEY, saveArchive, type ArchivedMatch } from './domain/archive';
+import { appendEvent, createLog, replay } from './domain/log';
 import { JOIN_KEY } from './live/protocol';
 
 const TOKEN = 'abcdefghijklmnopqrstuv';
@@ -13,6 +14,7 @@ const HOST = 'hhhhhhhhhhhhhhhhhhhhhh';
 const INVITE = 'iiiiiiiiiiiiiiiiiiiiii';
 const MATCH = '11111111-1111-4111-8111-111111111111';
 const API = 'https://padel-counter.example.workers.dev';
+let createdMatchId = MATCH;
 
 interface FetchCall {
   readonly url: string;
@@ -103,7 +105,7 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     if (createMode === 'down') {
       return Response.json({ error: 'not_configured', message: '<script>alert(1)</script>' }, { status: 503 });
     }
-    return Response.json({ matchId: MATCH, hostToken: HOST }, { status: 201 });
+    return Response.json({ matchId: createdMatchId, hostToken: HOST }, { status: 201 });
   }
   if (url.endsWith('/invites')) {
     if (inviteFails > 0) {
@@ -177,6 +179,7 @@ describe('connect overlay and scanned join', () => {
     snapshot = null;
     snapshotHost = false;
     inviteFails = 0;
+    createdMatchId = MATCH;
     localStorage.clear();
     sessionStorage.clear();
     window.history.replaceState(null, '', '/');
@@ -410,6 +413,38 @@ describe('connect overlay and scanned join', () => {
     expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(true);
   });
 
+  it('stores the replay id from a chained log and asks that room for a new code', async () => {
+    const first = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const room = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const base = createMatch(1_700_000_000_000, first);
+    createdMatchId = room;
+    snapshotHost = true;
+    snapshot = {
+      schemaVersion: 2,
+      base,
+      events: [
+        { type: 'match/end', at: 1_700_000_000_010, by: 'host' },
+        { type: 'match/new', matchId: room, at: 1_700_000_000_020, by: 'host' },
+        { type: 'team/rename', team: 'a', name: 'Chainroom', at: 1_700_000_000_030, by: 'host' },
+      ],
+    };
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('show-qr');
+    await waitFor(() => document.querySelector('.team-a .team-name')?.textContent === 'Chainroom');
+    const stored = JSON.parse(sessionStorage.getItem(JOIN_KEY) ?? '{}') as { matchId?: string };
+    expect(stored.matchId).toBe(room);
+    expect(stored.matchId).not.toBe(first);
+    await press('rotate-code');
+    await waitFor(() => fetchCalls.some((item) => item.url.endsWith('/invites')));
+    expect(fetchCalls.some((item) => item.url === `${API}/matches/${room}/invites`)).toBe(true);
+    expect(fetchCalls.some((item) => item.url === `${API}/matches/${first}/invites`)).toBe(false);
+  });
+
   it('rotates the same match after the host reloads', async () => {
     (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
     globalThis.fetch = fakeFetch as typeof fetch;
@@ -564,6 +599,100 @@ describe('connect overlay and scanned join', () => {
     expect(String(joins.at(-1)?.init?.headers && new Headers(joins.at(-1)?.init?.headers).get('authorization'))).toContain(moved);
   });
 
+  it('follows a join offer the same way as a move', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('scan-qr');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => sockets.length > 0);
+    const joinsBefore = fetchCalls.filter((call) => call.url.endsWith('/join')).length;
+    await act(async () => {
+      sockets[0]?.onmessage?.({ data: JSON.stringify({ type: 'join_offer', token: 'bbbbbbbbbbbbbbbbbbbbbb' }) });
+    });
+    await waitFor(() => fetchCalls.filter((call) => call.url.endsWith('/join')).length === joinsBefore + 1);
+    expect(document.querySelector('[data-testid="new-match-notice"]')?.textContent).toBe('New match');
+  });
+
+  it('clears the new-match note after a few seconds', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('scan-qr');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => sockets.length > 0);
+    await act(async () => {
+      sockets[0]?.onmessage?.({ data: JSON.stringify({ type: 'match_moved', token: 'bbbbbbbbbbbbbbbbbbbbbb', seat: 'p2' }) });
+    });
+    expect(document.querySelector('[data-testid="new-match-notice"]')).not.toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 4_100));
+    });
+    expect(document.querySelector('[data-testid="new-match-notice"]')).toBeNull();
+  }, 8_000);
+
+  it('leaves the live match when history continues on this phone', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    snapshotHost = true;
+    let past = createLog(1_700_000_000_000, '00000000-0000-4000-8000-0000000000c2');
+    past = appendEvent(past, { type: 'game/increment', team: 'a', at: 1_700_000_000_010 });
+    past = appendEvent(past, { type: 'match/end', at: 1_700_000_000_020, by: 'host' });
+    const state = replay(past);
+    const archived: ArchivedMatch = {
+      id: state.matchId,
+      at: state.updatedAt,
+      teams: { a: state.teams.a.name, b: state.teams.b.name },
+      sets: [state.sets[0], state.sets[1], state.sets[2]],
+      status: 'ended-early',
+      events: past.events,
+    };
+    saveArchive([archived], localStorage);
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('scan-qr');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => document.querySelector('[data-testid="court-connection"]')?.textContent?.includes('connected') === true);
+    const liveSocket = sockets.at(-1);
+    await press('history-open');
+    await press('match-row');
+    await press('continue-match');
+    await press('confirm-continue');
+    expect(liveSocket?.readyState).toBe(FakeSocket.CLOSED);
+  });
+
   it('joins a fragment code the same way as a typed code, then strips it', async () => {
     (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
     globalThis.fetch = fakeFetch as typeof fetch;
@@ -690,6 +819,27 @@ describe('connect overlay and scanned join', () => {
     await waitFor(() => copied.length === 1);
     expect(copied[0]).toBe(text);
     expect(document.querySelector('[data-testid="code-copied"]')?.textContent).toBe('Copied.');
+    copied.length = 0;
+    await press('copy-code');
+    await waitFor(() => copied.length === 1);
+    expect(copied[0]).toBe('K7M4-2QAB');
+    expect(copied[0]).not.toContain('http');
+    expect(copied[0]).not.toContain('#');
+    expect(document.querySelector('[data-testid="code-only-copied"]')?.textContent).toBe('Copied.');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: () => Promise.reject(new Error('denied')) },
+    });
+    const fallback: string[] = [];
+    document.execCommand = ((command: string) => {
+      if (command !== 'copy') return false;
+      const field = document.activeElement;
+      if (field instanceof HTMLTextAreaElement) fallback.push(field.value);
+      return true;
+    }) as typeof document.execCommand;
+    await press('copy-code');
+    await waitFor(() => fallback.length === 1);
+    expect(fallback[0]).toBe('K7M4-2QAB');
     Reflect.deleteProperty(navigator, 'clipboard');
   });
 

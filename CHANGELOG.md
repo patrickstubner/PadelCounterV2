@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.3.0
+
+- The phone button in the top bar is a rounded rectangle, the same shape as the menu button.
+- Connected phones are two lines. A green dot means connected and a red-orange dot means not. Remove asks first. That phone is removed. Others can still join with this code until you tap New code. You cannot remove this phone. A guest cannot remove the phone that started the match, and does not see that button. The starter can remove the others. Too many removals wait.
+- In portrait the rules and the version leave the bottom of the court, so the score uses the height. The version is at the bottom of the menu, larger.
+- Share link still sends the link. Copy code copies only the code, then says Copied.
+- At 0–0 the court asks you to choose the serving team, and the two balls pulse. At 6–6 it explains the tie-break. After 7–6 it says who serves the next set. The note goes away once that choice is made. The wording follows the FIP Rules of Padel, review of application 1 January 2026 (`docs/fip-serve.md`).
+- A mouse release outside plus, minus, serve, or a set does not count. Dragging a finger away no longer swallows the next keyboard tick.
+- Continue does not show the win celebration again. Points entered offline before a follow are kept in History, with a short note.
+- Take phones is offered when another phone has joined, even if that phone is offline. Carry is not counted in the shared per-address limit.
+- Removing a phone revokes that credential only for this room’s id, not for a match id stored in the score log.
+- Leave live match revokes this phone’s own credential. The shared code stays valid, and the other phones stay connected.
+- Ending a match still turns the code off when the room’s name is missing. The room keeps its id from when it was created. If that id is missing too, the ending is not saved, so a retry can still turn the code off.
+
 ## 2.2.10
 
 - Ending a match invalidates its join code, including a match that was started by taking the other phones along. Asking for a new code does the same. Leaving the match on this phone does not.

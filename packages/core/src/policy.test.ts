@@ -13,6 +13,7 @@ import {
   RECONNECT_WINDOW_MS,
   ROOM_CLOSE_MS,
   actorId,
+  otherPhones,
   canReopen,
   isDeviceId,
   CARRY_LIMIT,
@@ -143,6 +144,16 @@ describe('new match while one is open', () => {
   it('does not treat a blank court as an open match', () => {
     const blank = createMatch(NOW);
     expect(isOpenMatch(blank)).toBe(false);
+    expect(otherPhones({ phones: [{ self: true }, { self: false }], onlinePlayers: 1 })).toBe(1);
+    expect(otherPhones({ phones: [], onlinePlayers: 1 })).toBe(0);
+    expect(otherPhones({ phones: [], onlinePlayers: 3 })).toBe(2);
+    expect(planNewMatch({
+      host: true,
+      open: true,
+      lastEventAt: NOW,
+      now: NOW,
+      coPlayers: otherPhones({ phones: [{ self: true }, { self: false }], onlinePlayers: 1 }),
+    }).askCarry).toBe(true);
     expect(planNewMatch({ host: true, open: false, lastEventAt: NOW, now: NOW, coPlayers: 0 })).toMatchObject({
       kind: 'reset',
       askCarry: false,

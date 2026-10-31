@@ -30,6 +30,8 @@ const DELETE_OLD_JOIN = 'DELETE FROM join_quota WHERE window < ?';
 const INSERT_CREDENTIAL =
   'INSERT INTO credentials (token_hash, match_id, host, expires_at, revoked_at, device_id) VALUES (?, ?, ?, ?, ?, ?)';
 const REVOKE_CREDENTIAL = 'UPDATE credentials SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL';
+const REVOKE_CREDENTIAL_IN_MATCH =
+  'UPDATE credentials SET revoked_at = ? WHERE token_hash = ? AND match_id = ? AND revoked_at IS NULL';
 const FIND_MINTED =
   'SELECT token_hash, expires_at FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL AND expires_at > ?';
 const COUNT_MINTED =
@@ -127,6 +129,8 @@ export interface MatchIndex {
   countMinted(matchId: string, now: number): Promise<number>;
   findMinted(matchId: string, deviceId: string, now: number): Promise<{ tokenHash: string } | null>;
   revokeCredential(tokenHash: string, now: number): Promise<void>;
+  /** Revoke one credential only inside this durable object's match. */
+  revokeCredentialInMatch(tokenHash: string, matchId: string, now: number): Promise<void>;
   revokeSharedAccess(matchId: string, now: number, keepHashes?: readonly string[]): Promise<void>;
   putJoinCode(matchId: string, now: number, row: JoinCodeRow): Promise<void>;
   insertCredential(row: CredentialRow): Promise<void>;
@@ -309,6 +313,9 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
     },
     async revokeCredential(tokenHash, now) {
       await db.prepare(REVOKE_CREDENTIAL).bind(now, tokenHash).run();
+    },
+    async revokeCredentialInMatch(tokenHash, matchId, now) {
+      await db.prepare(REVOKE_CREDENTIAL_IN_MATCH).bind(now, tokenHash, matchId).run();
     },
     async revokeSharedAccess(matchId, now, keepHashes = []) {
       const statements = [

@@ -33,6 +33,7 @@ interface CourtHeaderProps {
   readonly layout?: 'menu' | 'bar';
   readonly phoneCount?: number | null;
   readonly onPhones?: () => void;
+  readonly version?: string;
 }
 
 const WIDE_BAR = '(orientation: landscape) and (min-width: 900px)';
@@ -70,7 +71,7 @@ function useWideBar(): boolean {
   return wide;
 }
 
-export function CourtHeader({ setLabel, onBrand, actions, layout, phoneCount, onPhones }: CourtHeaderProps) {
+export function CourtHeader({ setLabel, onBrand, actions, layout, phoneCount, onPhones, version }: CourtHeaderProps) {
   const wide = useWideBar();
   const mode = layout ?? (wide ? 'bar' : 'menu');
   const shown = useMemo(() => menuActions(actions, mode), [actions, mode]);
@@ -145,6 +146,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout, phoneCount, on
               {action.label}
             </button>
           ))}
+          {version ? <p className="menu-version bar-version" data-testid="app-version">{`v${version}`}</p> : null}
         </div>
       ) : (
         <div className="top-end">
@@ -199,6 +201,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout, phoneCount, on
                 {action.detail ? <span className="menu-hint">{action.detail}</span> : null}
               </p>
             ))}
+            {version ? <p className="menu-version" data-testid="app-version">{`v${version}`}</p> : null}
           </div>
         </div>
       )}

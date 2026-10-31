@@ -11,11 +11,18 @@ export type SessionAction =
   | LogAction
   | { readonly type: 'delete-match'; readonly id: string }
   | { readonly type: 'replace'; readonly log: MatchLog }
+  | { readonly type: 'archive-log'; readonly log: MatchLog }
   | { readonly type: 'continue-match'; readonly log: MatchLog }
   | { readonly type: 'record-all'; readonly events: readonly MatchEvent[] }
   | { readonly type: 'revert'; readonly event: MatchEvent };
 
 export function sessionReducer(session: Session, action: SessionAction): Session {
+  if (action.type === 'archive-log') {
+    const snap = snapshotMatch(action.log);
+    if (!snap) return session;
+    return { log: session.log, archive: rememberMatch(session.archive, snap) };
+  }
+
   if (action.type === 'replace') {
     const current = replay(session.log);
     const snap = current.matchId === replay(action.log).matchId ? null : snapshotMatch(session.log);

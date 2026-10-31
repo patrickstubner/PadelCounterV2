@@ -55,6 +55,12 @@ describe('continue a match from history', () => {
     expect(continuationLog(twoOne, T0 + 600)).not.toBeNull();
   });
 
+  it('does not let a guest continue a match that has not ended', () => {
+    const playing = played(PAST, ['a', 'a'], null);
+    expect(continueDecision(playing, GUEST)).toBeNull();
+    expect(continueDecision(playing, HOST)).toBe('until-winner');
+  });
+
   it('lets the phone that ended it continue when that phone is not the creator', () => {
     const early = played(PAST, ['b'], 'p2');
     expect(continueDecision(early, GUEST)).toBe('until-winner');

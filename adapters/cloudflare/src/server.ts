@@ -117,6 +117,7 @@ export async function handleFetch(request: Request, env: ServerEnv): Promise<Res
     if (kind === 'create') return withCors(await createMatch(request, env), origin, environment);
     if (kind === 'invite') return withCors(await createInvite(request, env, url.pathname), origin, environment);
     if (kind === 'carry') return withCors(await carryPlayers(request, env, url.pathname), origin, environment);
+    if (kind === 'leave') return withCors(await leaveMatch(request, env, url.pathname), origin, environment);
     return error(404, 'not_found', origin, environment);
   } catch {
     return error(500, 'unavailable', origin, environment);
@@ -621,6 +622,34 @@ async function openSocket(request: Request, env: ServerEnv, pathname: string): P
   const forwarded = new Request(request, { headers: clientIpHeaders(request) });
   const stub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(matchId));
   return stub.fetch(forwarded);
+}
+
+/** Authenticated. The bearer is the only target. A device id in the body is ignored. */
+async function leaveMatch(request: Request, env: ServerEnv, pathname: string): Promise<Response> {
+  const matchId = matchIdFrom(pathname);
+  const token = bearer(request);
+  if (!matchId || !token) return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
+  const index = d1MatchIndex(env.DB);
+  if (!(await index.find(matchId))) return Response.json({ error: 'not_found' }, { status: 404 });
+  const now = Date.now();
+  const credential = await index.findCredential(await sha256Hex(token));
+  if (!credential || credential.matchId !== matchId || credential.revokedAt !== null || now >= credential.expiresAt) {
+    return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
+  }
+  const stub = env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(matchId));
+  const stored = await stub.fetch('https://match.internal/leave', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  });
+  if (!stored.ok) return pass(stored);
+  let revoked: boolean;
+  try {
+    const payload = (await stored.json()) as { revoked?: unknown };
+    revoked = payload.revoked === true;
+  } catch {
+    revoked = false;
+  }
+  return Response.json({ revoked }, { status: 200, headers: { 'cache-control': 'no-store' } });
 }
 
 async function carryPlayers(request: Request, env: ServerEnv, pathname: string): Promise<Response> {

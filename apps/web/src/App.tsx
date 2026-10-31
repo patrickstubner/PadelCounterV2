@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { isOpenMatch, lastChangeAt, planNewMatch, scoreClaimFor, type NewMatchPlan } from '@padel/core';
+import { isOpenMatch, lastChangeAt, otherPhones, planNewMatch, scoreClaimFor, type NewMatchPlan } from '@padel/core';
 import { detailHistoryState, joinHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
@@ -28,7 +28,7 @@ import {
   type CelebratedWin,
 } from './domain/celebration';
 import { colonSetScore, currentHistory } from './domain/history';
-import { RULES_SUMMARY, celebrationWinner, matchResult, serveCourtLabel, servePickPrompt, tiebreakHint } from './domain/rules';
+import { RULES_SUMMARY, celebrationWinner, courtCue, matchResult, serveCourtLabel, servePickPrompt } from './domain/rules';
 import { useInstallOffer } from './hooks/useInstallOffer';
 import { useMatch } from './hooks/useMatch';
 import { forgetJoinToken, heldJoin, isJoinCodeFragment, readJoinToken, releaseHeldJoin, type JoinAttempt } from './live/protocol';
@@ -71,7 +71,7 @@ function useUpdateReady(): boolean {
 
 export function App() {
   const match = useMatch();
-  const room = useLive(match.liveRef, match.replaceLog, match.applyLive, match.revertLive, match.readLog);
+  const room = useLive(match.liveRef, match.replaceLog, match.applyLive, match.revertLive, match.readLog, match.archiveLocal);
   const install = useInstallOffer();
   useWakeLock(!match.state.ended);
   const updateReady = useUpdateReady();
@@ -273,8 +273,8 @@ export function App() {
     playFanfare();
   }, [showVictory, fanfareOn, victoryKey]);
   const active = state.sets[state.activeSet];
-  const tiebreak = tiebreakHint(state);
-  const pick = servePickPrompt(state);
+  const cue = courtCue(state);
+  const pick = cue ? null : servePickPrompt(state);
   const scoreLine = `${state.teams.a.name} ${active.a}, ${state.teams.b.name} ${active.b}`;
   const serve = serveCourtLabel(state);
   const showFinal = state.ended || winner !== null;
@@ -292,7 +292,7 @@ export function App() {
         ? resultLine
         : showFinal
           ? `Match ended. Final score. ${finalSets}.`
-          : `Set ${state.activeSet + 1}. ${scoreLine}. ${serve}.${pick ? ` ${pick}.` : ''}${tiebreak ? ` ${tiebreak}.` : ''}`;
+          : `Set ${state.activeSet + 1}. ${scoreLine}. ${serve}.${pick ? ` ${pick}.` : ''}${cue ? ` ${cue.text}` : ''}`;
   const historyRows = currentHistory(match.log);
   const played = matches.filter((item) => !item.live);
   const continueActor = (): { id: string; isHost: boolean } => {
@@ -317,6 +317,18 @@ export function App() {
     if (!next) {
       setContinuingId(null);
       return;
+    }
+    const restoredWin = currentWin(next);
+    if (restoredWin) {
+      const key = celebrationKey(restoredWin);
+      try {
+        saveCelebrated(restoredWin, localStorage);
+      } catch {
+        // Dismissal still applies for this visit when storage is blocked.
+      }
+      setRemembered(restoredWin);
+      setDismissed(key);
+      setOpened(null);
     }
     if (room.status === 'live') room.disconnect();
     match.continueMatch(next);
@@ -417,7 +429,9 @@ export function App() {
           open: isOpenMatch(state),
           lastEventAt: lastChangeAt(state.createdAt, match.log.events.map((event) => event.at)),
           now: Date.now(),
-          coPlayers: room.status === 'live' ? Math.max(0, room.players - 1) : 0,
+          coPlayers: room.status === 'live'
+            ? otherPhones({ phones: room.phones, onlinePlayers: room.players })
+            : 0,
         });
         setReconnectChoice(plan.reconnectSelected);
         setPendingPlan(plan);
@@ -504,6 +518,7 @@ export function App() {
         actions={actions}
         phoneCount={room.status === 'live' ? (room.phones.length > 0 ? room.phones.filter((phone) => phone.online).length : room.players) : null}
         onPhones={room.status === 'live' ? () => setPhonesOpen(true) : undefined}
+        version={import.meta.env.APP_VERSION}
       />
       {showVictory && screen.view === 'court' && celebrated ? (
         <Victory
@@ -527,6 +542,7 @@ export function App() {
           onServe={taps.onServe}
           hapticMode={hapticMode}
           onHaptic={() => pulseHaptic(hapticOn)}
+          serveCue={cue?.kind === 'choose-serve'}
         />
         <div className="mid">
           {result.kind === 'leading' ? (
@@ -545,9 +561,9 @@ export function App() {
               Final score
             </p>
           ) : null}
-          {tiebreak ? (
-            <p className="tb" data-testid="tiebreak-hint">
-              {tiebreak}
+          {cue ? (
+            <p className="serve-cue" data-testid={cue.kind === 'tiebreak' ? 'tiebreak-hint' : cue.kind === 'next-set' ? 'next-set-hint' : 'serve-cue'}>
+              {cue.text}
             </p>
           ) : null}
           {pick ? (
@@ -560,6 +576,11 @@ export function App() {
           ) : null}
           {room.movedNote ? (
             <p className="live-error" role="status" data-testid="new-match-notice">New match</p>
+          ) : null}
+          {room.keptNote ? (
+            <p className="live-error" role="status" data-testid="offline-kept">
+              Points entered offline are in History. They were not taken across.
+            </p>
           ) : null}
           {room.continued ? (
             <p className="live-error" role="status" data-testid="continued-notice">
@@ -620,14 +641,14 @@ export function App() {
           onServe={taps.onServe}
           hapticMode={hapticMode}
           onHaptic={() => pulseHaptic(hapticOn)}
+          serveCue={cue?.kind === 'choose-serve'}
         />
       </main>
-      <footer className="foot">
+      <footer className="foot court-foot">
         {match.saveFailed ? <p className="save-note">Saving on this device failed.</p> : null}
         <p className="rules">{RULES_SUMMARY}</p>
-        <p className="app-version" data-testid="app-version">{`v${import.meta.env.APP_VERSION}`}</p>
-        {updateButton}
       </footer>
+      {updateButton}
       <p className="sr-only" aria-live="polite">
         {live}
       </p>
@@ -670,7 +691,15 @@ export function App() {
         />
       ) : null}
       {phonesOpen && room.status === 'live' ? (
-        <PhoneList phones={room.phones} onClose={() => setPhonesOpen(false)} />
+        <PhoneList
+          phones={room.phones}
+          onClose={() => setPhonesOpen(false)}
+          onKick={(seat) => {
+            const mine = room.phones.find((phone) => phone.self);
+            if (mine?.seat === seat) return;
+            room.kick(seat);
+          }}
+        />
       ) : null}
       {connectOpen ? (
         <ConnectPage

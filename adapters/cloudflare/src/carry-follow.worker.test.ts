@@ -151,6 +151,41 @@ async function openCourt(hostDevice: string, guestDevice: string, sides: readonl
   return { created, host, guest, shared: shared.token, first };
 }
 
+describe('carry is not stopped by the shared address cap', () => {
+  it('accepts carry after twenty other match requests from the same address', async () => {
+    const ip = '198.51.100.77';
+    const fixed = (path: string, init: RequestInit = {}): Promise<Response> => {
+      const headers = new Headers(init.headers);
+      headers.set('origin', ORIGIN);
+      headers.set('cf-connecting-ip', ip);
+      return exports.default.fetch(new Request(`https://padel.example${path}`, { ...init, headers }));
+    };
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const response = await fixed('/join', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect(response.status).not.toBe(429);
+    }
+    const blocked = await fixed('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(blocked.status).toBe(429);
+    const carry = await fixed('/matches/11111111-1111-4111-8111-111111111111/carry', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer abcdefghijklmnopqrstuv',
+      },
+      body: JSON.stringify({ confirm: true, previousHostToken: 'abcdefghijklmnopqrstuv' }),
+    });
+    expect(carry.status).not.toBe(429);
+  });
+});
+
 describe('carry follows the phones that already joined', () => {
   it('takes a guest into the next match after a win, even after the new code is published', async () => {
     const hostDevice = 'd91000001000000000000000000000000';
@@ -200,7 +235,15 @@ describe('carry follows the phones that already joined', () => {
     expect(carry.status).toBe(200);
     const moved = await court.guest.messages.waitFor((message) => message.type === 'match_moved');
     const followed = await connect(String(moved.token), guestDevice);
+    const before = await followed.messages.waitFor((message) => message.type === 'roster');
+    const since = (before.phones as { self?: boolean; since?: number }[]).find((phone) => phone.self)?.since;
+    expect(typeof since).toBe('number');
     expect(await showCode(next.matchId, next.hostToken)).toBe(201);
+    followed.ws.close();
+    const again = await connect(String(moved.token), guestDevice);
+    const after = await again.messages.waitFor((message) => message.type === 'roster');
+    const sinceAgain = (after.phones as { self?: boolean; since?: number }[]).find((phone) => phone.self)?.since;
+    expect(sinceAgain).toBe(since);
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(followed.messages.all().some((message) => message.type === 'error' && message.code === 'revoked')).toBe(false);
     const board = freshBoard(followed.messages.all().find((message) => message.type === 'snapshot') ?? {});

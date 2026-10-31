@@ -1,12 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { ROOM_MESSAGES } from '@padel/core';
-import { JOIN_KEY, interpretMessage, isTerminalCode, isTerminalMessage, joinCodeLink, joinLink, matchCodeShareText, onlineRetryAllowed, parseJoinCodeHash, parseJoinHash, readJoinToken, reconnectDelayMs, sendMatchCode, shouldResumeSocket, socketUrl, tokenFromJoinQr, unackedAfterSnapshot } from './protocol';
+import { JOIN_KEY, copyPlainCode, interpretMessage, isTerminalCode, isTerminalMessage, joinCodeLink, joinLink, matchCodeShareText, onlineRetryAllowed, parseJoinCodeHash, parseJoinHash, readJoinToken, reconnectDelayMs, sendMatchCode, shouldResumeSocket, socketUrl, tokenFromJoinQr, unackedAfterSnapshot } from './protocol';
 
 const ID = '00000000-0000-4000-8000-0000000000aa';
 const TOKEN = 'abcdefghijklmnopqrstuv';
 
 const PAGE = 'https://patrickstubner.github.io/PadelCounterV2/';
 const CODE = 'K7M4-2QAB';
+
+describe('copying a short code', () => {
+  it('writes the canonical code and nothing around it', async () => {
+    let written = '';
+    expect(await copyPlainCode('k7m42qab', async (value) => {
+      written = value;
+    })).toBe('copied');
+    expect(written).toBe(CODE);
+    expect(written).not.toContain('http');
+    expect(written).not.toContain('#');
+    expect(await copyPlainCode('<img src=x>', async () => undefined)).toBe('visible');
+    expect(await copyPlainCode(CODE, async () => {
+      throw new Error('denied');
+    })).toBe('visible');
+  });
+});
 
 describe('sending a short code', () => {
   it('shares the fragment link, copies it when sharing is missing, and ignores a cancelled share', async () => {

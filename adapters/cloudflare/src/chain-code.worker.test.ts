@@ -24,6 +24,7 @@ function call(path: string, init: RequestInit = {}): Promise<Response> {
 }
 
 interface Inbox {
+  all(): Record<string, unknown>[];
   waitFor(match: (message: Record<string, unknown>) => boolean): Promise<Record<string, unknown>>;
 }
 
@@ -35,6 +36,7 @@ function inbox(ws: WebSocket): Inbox {
     notify();
   });
   return {
+    all: () => messages.slice(),
     waitFor(match) {
       const start = Date.now();
       return new Promise((resolve, reject) => {
@@ -199,14 +201,18 @@ describe('join code of a carried match chain', () => {
   it('rejects the code after End match and records activity on this room', async () => {
     const court = await carriedChain();
     const firstActivity = await activityOf(court.firstId);
-    const storedId = await runInDurableObject(env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(court.secondId)), (_instance, state) => {
+    const stored = await runInDurableObject(env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(court.secondId)), (_instance, state) => {
       state.storage.sql.exec('UPDATE meta SET activity_touch = 1 WHERE id = 1');
-      const row = state.storage.sql.exec('SELECT base_json FROM meta WHERE id = 1').toArray()[0];
+      const row = state.storage.sql.exec('SELECT base_json, match_id FROM meta WHERE id = 1').toArray()[0];
       const base = JSON.parse(String(row?.base_json)) as { matchId?: unknown };
-      return typeof base.matchId === 'string' ? base.matchId : '';
+      return {
+        baseId: typeof base.matchId === 'string' ? base.matchId : '',
+        roomId: typeof row?.match_id === 'string' ? row.match_id : '',
+      };
     });
-    expect(storedId).toBe(court.firstId);
-    expect(storedId).not.toBe(court.secondId);
+    expect(stored.baseId).toBe(court.firstId);
+    expect(stored.baseId).not.toBe(court.secondId);
+    expect(stored.roomId).toBe(court.secondId);
     await env.DB.prepare('UPDATE matches SET last_activity = 1 WHERE id = ?').bind(court.secondId).run();
 
     expect((await redeem(court.code, dev())).status).toBe(201);
@@ -257,7 +263,47 @@ describe('join code of a carried match chain', () => {
     expect((await redeem(next.code, dev())).status).toBe(201);
   });
 
-  it('keeps the code when a phone leaves, and there is no kick route', async () => {
+  it('revokes a repeated end only while the match is still ended', async () => {
+    const hostDevice = dev();
+    const created = await postMatch(hostDevice, seeded(['a']));
+    const shared = await issueCode(created.matchId, created.hostToken);
+    const host = await connect(created.hostToken, hostDevice);
+    const snap = await host.messages.waitFor((message) => message.type === 'snapshot');
+    const state = boardOf(snap);
+    const eventId = crypto.randomUUID();
+    const end = { type: 'match/end' as const, at: Date.now(), by: 'host' as const };
+    const claim = scoreClaimFor(state, end);
+    host.ws.send(JSON.stringify({ type: 'event', eventId, event: end, ...(claim ? { claim } : {}) }));
+    await host.messages.waitFor((message) => message.type === 'event' && (message.event as { type?: string }).type === 'match/end');
+    expect((await redeem(shared.code, dev())).status).toBe(401);
+
+    await env.DB.prepare('UPDATE join_codes SET revoked_at = NULL WHERE match_id = ?').bind(created.matchId).run();
+    await env.DB.prepare('UPDATE credentials SET revoked_at = NULL WHERE match_id = ? AND host = 0').bind(created.matchId).run();
+    expect((await redeem(shared.code, dev())).status).toBe(201);
+
+    host.ws.send(JSON.stringify({ type: 'event', eventId, event: end }));
+    const repeated = await host.messages.waitFor((message) => message.type === 'event' && message.duplicate === true);
+    expect((repeated.event as { type?: string }).type).toBe('match/end');
+    expect((await redeem(shared.code, dev())).status).toBe(401);
+
+    const resumed = matchReducer(state, end);
+    send(host.ws, resumed, { type: 'match/resume', at: Date.now(), by: 'host' });
+    await host.messages.waitFor((message) => message.type === 'event' && (message.event as { type?: string }).type === 'match/resume');
+    const next = await issueCode(created.matchId, created.hostToken, true);
+    expect((await redeem(next.code, dev())).status).toBe(201);
+    const seen = host.messages.all().length;
+    host.ws.send(JSON.stringify({ type: 'event', eventId, event: end }));
+    const start = Date.now();
+    for (;;) {
+      const fresh = host.messages.all().slice(seen).some((message) => message.type === 'event' && message.duplicate === true);
+      if (fresh) break;
+      if (Date.now() - start > 3_000) throw new Error(`no duplicate end after resume in ${JSON.stringify(host.messages.all().slice(seen))}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect((await redeem(next.code, dev())).status).toBe(201);
+  });
+
+  it('keeps the code when the socket closes, and an anonymous leave does not revoke it', async () => {
     const court = await carriedChain();
     expect((await redeem(court.code, dev())).status).toBe(201);
     const host = await connect(court.secondToken, dev());
@@ -265,9 +311,9 @@ describe('join code of a carried match chain', () => {
     expect((await redeem(court.code, dev())).status).toBe(201);
     const leave = await call(`/matches/${court.secondId}/leave`, { method: 'POST' });
     const kick = await call(`/matches/${court.secondId}/kick`, { method: 'POST' });
-    expect(leave.status).toBe(404);
+    expect(leave.status).toBe(401);
     expect(kick.status).toBe(404);
-    expect(await leave.json()).toEqual({ error: 'not_found' });
+    expect(await leave.json()).toMatchObject({ error: 'bad_token' });
     expect(await kick.json()).toEqual({ error: 'not_found' });
     expect((await redeem(court.code, dev())).status).toBe(201);
   });

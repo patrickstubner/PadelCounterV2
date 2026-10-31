@@ -83,6 +83,9 @@ export function useMatch() {
       logRef.current = next;
       dispatch({ type: 'replace', log: next });
     },
+    archiveLocal: (kept: MatchLog) => {
+      dispatch({ type: 'archive-log', log: kept });
+    },
     continueMatch: (next: MatchLog) => {
       logRef.current = next;
       dispatch({ type: 'continue-match', log: next });

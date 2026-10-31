@@ -1,5 +1,5 @@
-import type { PointerEvent } from 'react';
-import type { HapticPoint, PressHaptic } from '../domain/haptic';
+import { useRef, type PointerEvent } from 'react';
+import { releaseInside, type HapticPoint, type PressHaptic } from '../domain/haptic';
 import { SplitFlap } from './SplitFlap';
 
 interface SetScoreProps {
@@ -46,6 +46,7 @@ export function SetScore({
   ]
     .filter(Boolean)
     .join(' ');
+  const skipClick = useRef(false);
 
   return (
     <button
@@ -55,8 +56,16 @@ export function SetScore({
       aria-pressed={active}
       disabled={locked}
       aria-label={`Set ${index + 1}`}
-      onClick={onSelect}
+      onClick={() => {
+        if (skipClick.current) {
+          skipClick.current = false;
+          press?.forget();
+          return;
+        }
+        onSelect();
+      }}
       onPointerDown={(event) => {
+        skipClick.current = false;
         if (!press || !hapticOnPress) return;
         try {
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -66,8 +75,20 @@ export function SetScore({
         press.down(pointOf(event), !event.currentTarget.disabled);
       }}
       onPointerMove={(event) => press?.move(pointOf(event))}
-      onPointerUp={(event) => press?.up(pointOf(event), !event.currentTarget.disabled && hapticOnPress === true)}
+      onPointerUp={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const inside = releaseInside(rect, event.clientX, event.clientY);
+        if (event.pointerType === 'mouse') skipClick.current = !inside;
+        press?.up(pointOf(event), !event.currentTarget.disabled && hapticOnPress === true && inside);
+      }}
       onPointerCancel={(event) => press?.cancel(event.pointerId)}
+      onLostPointerCapture={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (event.pointerType === 'mouse' && !releaseInside(rect, event.clientX, event.clientY)) {
+          skipClick.current = true;
+        }
+        press?.cancel(event.pointerId);
+      }}
     >
       <SplitFlap value={gamesLabel} />
       <span className="marker" aria-hidden="true" />

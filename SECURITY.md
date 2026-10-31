@@ -534,6 +534,47 @@ Places that read `base.matchId`, and what this version does with each:
 
 A workerd test builds that chain with `previousHostToken`, carries a guest, and then `POST /join` with the code. After End match the code is `401`. After New code the previous code is `401`. After the socket closes, and after the missing leave and kick routes, the code is still `201`.
 
+## Review 33, 2026-10-30
+
+Version 2.3.0. Pull request 26 is on `main`. This review is removing one phone, the copy of the short code, and the serve cues. No new dependency, no new host, and no change to the content security policy. Review 32's rows for Leave and Kick describe 2.2.10. This review adds both.
+
+Threats considered:
+
+- A phone removes itself and then keeps scoring, or marks itself so nobody can remove it.
+- A guest removes the phone that started the match, or two phones take turns removing each other.
+- The kick names a device id, and that id is written into the roster or the error.
+- Revoking one phone revokes the shared code, so the other phones are dropped.
+- A removed phone reconnects with the old token or with the code that is still on the court.
+- Copy code puts the join link, the token, or extra text on the clipboard.
+- The serve hint states a rule the FIP book does not contain.
+
+Decisions:
+
+- Any admitted phone may remove any other phone except the starter. The starter is the `host` seat, and only the host credential receives it. A guest cannot take that seat, so a phone cannot protect itself by becoming the starter. The starter may remove every other phone, including one that is offline. No phone may remove its own seat. There is no protect switch.
+- A successful removal revokes that device’s credential in the Durable Object and in D1, drops that device’s joined row and roster row, and closes its socket with `revoked`. The shared code is not revoked. The device is recorded in the room. `POST /join` with the current shared code will not mint a new token for it. A new code clears that record. That is the new invitation. Other phones stay.
+- The client sends `{ type: 'kick', seat }` and the seat is the same public id already on the roster (`host`, `p2`, …). The roster allowlist is unchanged: `seat`, `since`, `online`, `seen`, `kind`, `self`. Device ids, addresses, and tokens are not added. A device id in the kick message is ignored and is not copied into the reply.
+- One credential may remove 3 phones per 10 minutes. One match may absorb 8. A burst of attempts on one socket is `slow_down` after 5 in 10 seconds, and that does not close the socket. `kick_refused` and `kick_limited` do not close it either. `revoked` still does, for the phone that was removed.
+- Copy code writes the canonical short code and nothing else. The clipboard API is tried first. If it is missing or throws, a temporary field is used and then removed. A string that is not a short code is not written. Share link is unchanged: the fragment link, or a copy of that link.
+- The serve sentences are the ones in `docs/fip-serve.md`. A 6–4 or 7–5 ending does not get a “who serves next” sentence, because the December 2025 rulebook states that only for the set after a tie-break.
+- P26-01. A mouse release outside the control does not score. `setPointerCapture` still tracks the drag. The click is ignored when that release was outside the button.
+- P26-02. A dragged touch does not leave `suppressClick` set. The next keyboard tick still runs. `pointercancel` clears the flag. A mouse click after a drag still does not tick twice.
+- P26-03. Continue stores the win key as already shown, so the celebration does not cover the court again.
+- P26-04. Before a snapshot replaces a local score that is ahead, that log is archived. A later snapshot with fewer games does not overwrite it. The court says the points are in History.
+- P26-05. Tests cover the first code leaving a device-bound seat in place, a guest continuing a match that has not ended, disconnect on continue while live, `join_offer` following the same path as a move, the new-match note clearing, `pointercancel`, the right mouse button, and a disabled control.
+- P26-06. `POST /carry` is not in the per-address match-route budget. Phones on one network can still move after other requests have filled that budget. The per-phone carry cap in the durable object is unchanged.
+- P26-07. Take phones counts every other phone on the roster, including offline ones. The roster is already only on an admitted socket.
+- P26-09. D1 revocation for End match, activity, kick, and leave uses the durable object name, not `base.matchId`. The update is `token_hash` and `match_id` together. A later `match/new` in the log cannot aim the revoke at another row.
+- Leave. `POST /matches/:id/leave` requires the caller’s bearer token. The worker checks that token against this match before it calls the durable object. The body is not read for a target, so a phone cannot name another device or seat. The object revokes that token only, and the D1 update uses the durable object name, never `base.matchId`. The shared player code (`device_id` is null) is not revoked, so the join code still works. Other sockets stay open. Five calls per credential per ten minutes, and the same per-address cap as invite and join. After that the answer is `leave_limited`. A missing or foreign token is `bad_token`.
+- P28-01. Create writes the room id into `meta.match_id`. That value is the object name when the name is a UUID, otherwise the id replay already shows after the worker assigned it. It is not `base.matchId`. End match, activity, kick, and leave use `ctx.id.name` when that name is a UUID, and the stored id otherwise. A name that is not a UUID is not sent to D1. Both are lowercased. End match reads the id before it stores the event. If neither id is available, the event is not stored, so a retry is not a duplicate that skips the revoke. A repeated end runs the revoke again only while the match is still ended.
+- P27-01. Remove says the phone is removed, and that other phones can still join with this code until New code. The block is the device id. A new device id with the same code is admitted. New code is what turns the code off.
+- P27-02. A duplicate `match/end` revokes the shared code only when replay still shows the match as ended. After resume, sending that old event id again does not revoke a code issued since.
+- P27-03. A guest does not see Remove on the starter’s row. The starter still does, for every other phone. Each Remove button’s accessible name includes its place in the list, so two phones of the same kind are not the same control.
+- P27-04. In portrait the board and each team clip overflow, and the large digit’s line box matches the column, so the page is not taller than the screen.
+- P27-06. Leave with the host credential revokes that credential. Coming back with the same token is rejected. The other phones stay, without a host seat. Carry runs before that disconnect. The way back is a local court or a new match.
+- P27-07. Tests cover the ninth removal in one match, the room row revoked by a removal, the leaver’s socket closing, a duplicate end while the match is ended and after resume, the tie-break sentence only at 6–6, the next-set sentence after 6–7, and Leave when this phone disconnects.
+- P28-02. A chained `log` notice sets the phone’s session id to the replay id, and New code is posted to that id. Tests cover a non-UUID name, an uppercase id, a missing name, and the activity marker being put back when the touch fails or the id is missing.
+- P28-03. Chains ended before 2.2.10 still have the old D1 rows. Their codes were not revoked and `last_activity` was not moved. They expire on the normal lifetime. This version does not rewrite them.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.
