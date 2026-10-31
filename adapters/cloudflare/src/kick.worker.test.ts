@@ -432,6 +432,100 @@ describe('removing a phone', () => {
     });
     expect(kickedAgain.status).toBe(201);
   });
+
+  it('tells a kicked phone it was removed, including on its own token and when the court is full', async () => {
+    const hostDevice = 'd43000001000000000000000000000000';
+    const kickedDevice = 'd43000002000000000000000000000000';
+    const created = await createLive(hostDevice);
+    const invite = await call(`/matches/${created.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${created.hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'player' }),
+    });
+    const shared = (await invite.json()) as { token: string; code: string };
+    const host = await openSocket(created.hostToken, hostDevice, IPHONE);
+    const guests = [
+      await openSocket(shared.token, kickedDevice, ANDROID),
+      await openSocket(shared.token, 'd43000003000000000000000000000000', IPHONE),
+      await openSocket(shared.token, 'd43000004000000000000000000000000', ANDROID),
+    ];
+    const kicked = guests[0];
+    if (!kicked) throw new Error('kicked phone');
+    const seat = await seatOf(kicked.messages, true);
+    host.ws.send(JSON.stringify({ type: 'kick', seat }));
+    expect((await kicked.messages.waitFor((message) => message.type === 'error')).code).toBe('removed');
+    const reason = await env.DB.prepare(
+      'SELECT revoke_reason FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NOT NULL',
+    ).bind(created.matchId, kickedDevice).first();
+    expect(reason?.revoke_reason).toBe('removed');
+
+    const ownToken = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${kicked.session}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice }),
+    });
+    expect(ownToken.status).toBe(401);
+    expect(await ownToken.json()).toEqual({
+      error: 'removed',
+      message: 'You were removed from this match. Ask the others for a new code.',
+    });
+
+    const replacement = await openSocket(shared.token, 'd43000005000000000000000000000000', IPHONE);
+    const whileFull = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice, code: shared.code }),
+    });
+    expect(whileFull.status).toBe(401);
+    expect(await whileFull.json()).toEqual({
+      error: 'join_removed',
+      message: ROOM_MESSAGES.join_removed,
+    });
+    const stranger = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'd43000006000000000000000000000000', code: shared.code }),
+    });
+    expect(stranger.status).toBe(201);
+
+    const ticket = 'rmvdhello1111111111111';
+    await env.DB.prepare('INSERT INTO tickets (ticket_hash, match_id, expires_at) VALUES (?, ?, ?)').bind(
+      await sha256Hex(ticket),
+      created.matchId,
+      Date.now() + 60_000,
+    ).run();
+    const response = await call(`/ws/${ticket}`, {
+      headers: { upgrade: 'websocket', 'user-agent': ANDROID },
+    });
+    const ws = response.webSocket;
+    if (!ws) throw new Error(`socket ${response.status}`);
+    ws.accept();
+    const messages = inbox(ws);
+    ws.send(JSON.stringify({
+      type: 'hello',
+      protocol: LIVE_PROTOCOL,
+      token: kicked.session,
+      device: kickedDevice,
+      clientNow: Date.now(),
+    }));
+    const hello = await messages.waitFor((message) => message.type === 'error');
+    expect(hello.code).toBe('removed');
+    expect(hello.code).not.toBe('revoked');
+
+    const left = await call(`/matches/${created.matchId}/leave`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${replacement.session}`, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(left.status).toBe(200);
+    const afterLeave = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${replacement.session}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'd43000005000000000000000000000000' }),
+    });
+    expect(afterLeave.status).toBe(401);
+    expect(await afterLeave.json()).toEqual({ error: 'bad_token', message: ROOM_MESSAGES.bad_token });
+  });
 });
 
 function callFrom(ip: string, path: string, init: RequestInit = {}): Promise<Response> {

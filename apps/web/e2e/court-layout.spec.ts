@@ -68,6 +68,43 @@ test('portrait uses the full height and keeps the version in the menu', async ({
   expect(size).toBeGreaterThanOrEqual(16);
 });
 
+test('wide landscape header labels stay inside the button', async ({ page }) => {
+  for (const size of [
+    { width: 932, height: 430 },
+    { width: 1100, height: 700 },
+  ]) {
+    await page.setViewportSize(size);
+    await expect(page.getByTestId('menu-toggle')).toHaveCount(0);
+    const header = await page.locator('.top').boundingBox();
+    expect(header).not.toBeNull();
+    if (!header) continue;
+    expect(header.height).toBeGreaterThan(60);
+    for (const id of ['fanfare-toggle', 'haptic-toggle'] as const) {
+      const button = page.getByTestId(id);
+      await expect(button).toBeVisible();
+      const fit = await button.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const text = range.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        return {
+          inside: text.top >= box.top - 0.5
+            && text.bottom <= box.bottom + 0.5
+            && text.left >= box.left - 0.5
+            && text.right <= box.right + 0.5,
+          height: box.height,
+          minHeight: Number.parseFloat(style.minHeight),
+          label: node.textContent,
+        };
+      });
+      expect(fit.label === 'Victory sound: On' || fit.label === 'Haptic feedback: On').toBe(true);
+      expect(fit.inside, `${size.width}x${size.height} ${fit.label}`).toBe(true);
+      expect(fit.height).toBeGreaterThanOrEqual(fit.minHeight - 0.5);
+    }
+  }
+});
+
 test('landscape keeps the rules and the menu version', async ({ page }) => {
   await page.setViewportSize({ width: 844, height: 390 });
   await expect(page.locator('.rules')).toBeVisible();

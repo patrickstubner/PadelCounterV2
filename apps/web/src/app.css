@@ -336,7 +336,7 @@ button:disabled { cursor: not-allowed; }
 }
 
 .top-actions .text-btn {
-  height: 2.75rem;
+  height: auto;
   min-height: 2.75rem;
   border-radius: 0.7rem;
 }

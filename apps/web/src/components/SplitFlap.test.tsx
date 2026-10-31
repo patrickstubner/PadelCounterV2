@@ -68,6 +68,13 @@ describe('split flap direction', () => {
     expect(Math.max(inkHeight / column.height, inkWidth / column.width)).toBeGreaterThanOrEqual(0.85);
     expect(inkHeight).toBeLessThanOrEqual(column.height);
     expect(inkWidth).toBeLessThanOrEqual(column.width);
+    const tight = portraitDigitFontPx({ width: 200, height: 100 }, { width: 40, height: 80 }, 100);
+    const ink = (tight / 100) * 80;
+    expect(ink).toBeLessThan(100);
+    expect(100 - ink).toBeGreaterThanOrEqual(2);
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'SplitFlap.tsx'), 'utf8');
+    expect(source).toContain('DIGIT_SLACK_PX = 2');
+    expect(source).toContain('size *= fit');
   });
 
   it('keeps landscape set digits inside the cell, including 0, 6, and 10', () => {

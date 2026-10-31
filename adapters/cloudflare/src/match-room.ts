@@ -265,9 +265,12 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
     const seated = this.seatedSockets(ws, deviceId);
     const result = helloPayload(room, tokenHash, seated.others, Date.now(), deviceId);
-    if (result.ok && deviceId && isKickedDevice(this.sql(), deviceId)) {
-      this.reject(ws, 'removed');
-      return;
+    if (deviceId && isKickedDevice(this.sql(), deviceId)) {
+      const invite = room.invites.find((row) => safeEqualHex(row.tokenHash, tokenHash));
+      if (result.ok || invite?.deviceId === deviceId) {
+        this.reject(ws, 'removed');
+        return;
+      }
     }
     if (!result.ok) {
       if (result.code === 'match_full' && seated.same.length === 0) {
@@ -911,7 +914,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     if (matchId) {
       for (const hash of hashes) {
         try {
-          await d1MatchIndex(this.env.DB).revokeCredentialInMatch(hash, matchId, now);
+          await d1MatchIndex(this.env.DB).revokeCredentialInMatch(hash, matchId, now, 'removed');
         } catch {
           // The room invite is already revoked, so the old token cannot hello.
         }

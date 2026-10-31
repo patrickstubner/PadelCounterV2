@@ -32,6 +32,8 @@ const INSERT_CREDENTIAL =
 const REVOKE_CREDENTIAL = 'UPDATE credentials SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL';
 const REVOKE_CREDENTIAL_IN_MATCH =
   'UPDATE credentials SET revoked_at = ? WHERE token_hash = ? AND match_id = ? AND revoked_at IS NULL';
+const REVOKE_REMOVED_IN_MATCH =
+  'UPDATE credentials SET revoked_at = ?, revoke_reason = ? WHERE token_hash = ? AND match_id = ? AND revoked_at IS NULL';
 const FIND_MINTED =
   'SELECT token_hash, expires_at FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NULL AND expires_at > ?';
 const COUNT_MINTED =
@@ -49,7 +51,7 @@ const REBIND_CREDENTIAL =
 const REVOKE_SHARED_CREDS =
   'UPDATE credentials SET revoked_at = ? WHERE match_id = ? AND host = 0 AND revoked_at IS NULL';
 const FIND_CREDENTIAL =
-  'SELECT token_hash, match_id, host, expires_at, revoked_at, device_id FROM credentials WHERE token_hash = ?';
+  'SELECT token_hash, match_id, host, expires_at, revoked_at, device_id, revoke_reason FROM credentials WHERE token_hash = ?';
 const DELETE_REVOKED_CREDENTIALS = 'DELETE FROM credentials WHERE match_id = ? AND revoked_at IS NOT NULL';
 const DELETE_REVOKED_CODES = 'DELETE FROM join_codes WHERE match_id = ? AND revoked_at IS NOT NULL';
 const REVOKE_PLAYERS =
@@ -99,6 +101,8 @@ export interface CredentialRow {
   readonly expiresAt: number;
   readonly revokedAt: number | null;
   readonly deviceId?: string | null;
+  /** Set only when this phone was removed. Other revokes leave it null. */
+  readonly revokeReason?: 'removed' | null;
 }
 
 export interface JoinCodeRow {
@@ -129,8 +133,8 @@ export interface MatchIndex {
   countMinted(matchId: string, now: number): Promise<number>;
   findMinted(matchId: string, deviceId: string, now: number): Promise<{ tokenHash: string } | null>;
   revokeCredential(tokenHash: string, now: number): Promise<void>;
-  /** Revoke one credential only inside this durable object's match. */
-  revokeCredentialInMatch(tokenHash: string, matchId: string, now: number): Promise<void>;
+  /** Revoke one credential only inside this durable object's match. `removed` is the kick reason. */
+  revokeCredentialInMatch(tokenHash: string, matchId: string, now: number, reason?: 'removed'): Promise<void>;
   revokeSharedAccess(matchId: string, now: number, keepHashes?: readonly string[]): Promise<void>;
   putJoinCode(matchId: string, now: number, row: JoinCodeRow): Promise<void>;
   insertCredential(row: CredentialRow): Promise<void>;
@@ -314,7 +318,11 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
     async revokeCredential(tokenHash, now) {
       await db.prepare(REVOKE_CREDENTIAL).bind(now, tokenHash).run();
     },
-    async revokeCredentialInMatch(tokenHash, matchId, now) {
+    async revokeCredentialInMatch(tokenHash, matchId, now, reason) {
+      if (reason === 'removed') {
+        await db.prepare(REVOKE_REMOVED_IN_MATCH).bind(now, 'removed', tokenHash, matchId).run();
+        return;
+      }
       await db.prepare(REVOKE_CREDENTIAL_IN_MATCH).bind(now, tokenHash, matchId).run();
     },
     async revokeSharedAccess(matchId, now, keepHashes = []) {
@@ -355,6 +363,7 @@ export function d1MatchIndex(db: D1Like): MatchIndex {
         host: row.host === 1,
         expiresAt,
         revokedAt,
+        revokeReason: row.revoke_reason === 'removed' ? 'removed' : null,
         deviceId: typeof row.device_id === 'string' && row.device_id.length > 0 ? row.device_id : null,
       };
     },

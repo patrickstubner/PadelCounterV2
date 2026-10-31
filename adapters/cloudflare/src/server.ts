@@ -441,6 +441,17 @@ async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
         { status: 429 },
       );
     }
+    if (
+      credential &&
+      credential.revokedAt !== null &&
+      now < credential.expiresAt &&
+      credential.revokeReason === 'removed'
+    ) {
+      return Response.json(
+        { error: 'removed', message: ROOM_MESSAGES.removed },
+        { status: 401, headers: { 'cache-control': 'no-store' } },
+      );
+    }
     if (!token || !credential || credential.revokedAt !== null || now >= credential.expiresAt) {
       return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
     }
