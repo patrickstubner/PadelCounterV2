@@ -41,6 +41,7 @@ export {
   canDecrement,
   courtCue,
   canIncrement,
+  canScoreGame,
   canTakeGame,
   celebrationWinner,
   matchResult,

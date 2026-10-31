@@ -1,6 +1,6 @@
 import { useRef, useState, type PointerEvent } from 'react';
 import { createPressHaptic, releaseInside, type HapticPoint, type PressHaptic } from '../domain/haptic';
-import { canIncrement, canTakeGame, displayGames, isUpcomingSet, serveChoice, setWinner } from '../domain/rules';
+import { canScoreGame, canTakeGame, displayGames, isUpcomingSet, serveChoice, setWinner } from '../domain/rules';
 import type { MatchState, SetIndex, TeamId } from '../domain/types';
 import { BallIcon, MinusIcon, PlusIcon } from './icons';
 import { SetScore } from './SetScore';
@@ -56,7 +56,7 @@ export function TeamPanel({
   const name = state.teams[team].name;
   const active = state.sets[state.activeSet];
   const locked = state.ended;
-  const plusDisabled = locked || !canIncrement(active, team);
+  const plusDisabled = !canScoreGame(state, team);
   const minusDisabled = locked || !canTakeGame(state, team);
   const activeWinner = setWinner(active.a, active.b);
   const asking = state.serveAsk === team && state.serve === null;
@@ -184,6 +184,7 @@ export function TeamPanel({
         className="step step-plus"
         data-testid={`increment-${team}`}
         disabled={plusDisabled}
+        aria-disabled={plusDisabled ? true : undefined}
         aria-label={`${name}: add one game`}
         onClick={() => {
           if (skipClick.current) {

@@ -139,8 +139,15 @@ export function celebrationWinner(state: MatchState): TeamId | null {
 }
 
 export function canIncrement(score: SetScore, team: TeamId): boolean {
+  if (setWinner(score.a, score.b) !== null) return false;
   const next: SetScore = { a: score.a, b: score.b, [team]: score[team] + 1 };
   return isPlausibleSetScore(next.a, next.b);
+}
+
+/** Plus is closed on the set that is already won, and after End match. Minus stays open. */
+export function canScoreGame(state: MatchState, team: TeamId): boolean {
+  if (state.ended) return false;
+  return canIncrement(state.sets[state.activeSet], team);
 }
 
 export function canDecrement(score: SetScore, team: TeamId): boolean {

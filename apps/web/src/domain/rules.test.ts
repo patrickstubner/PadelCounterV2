@@ -168,14 +168,24 @@ describe('celebrationWinner', () => {
 });
 
 describe('manual corrections stay on plausible scores', () => {
-  it('allows fixing 6:0 to 6:1 and blocks 7:0', () => {
-    expect(canIncrement({ a: 6, b: 0 }, 'b')).toBe(true);
-    expect(canIncrement({ a: 6, b: 0 }, 'a')).toBe(false);
-    expect(canIncrement({ a: 6, b: 4 }, 'b')).toBe(true);
+  it('blocks plus on a finished set for both teams', () => {
+    for (const score of [
+      { a: 6, b: 0 },
+      { a: 6, b: 4 },
+      { a: 7, b: 5 },
+      { a: 7, b: 6 },
+      { a: 0, b: 6 },
+      { a: 4, b: 6 },
+      { a: 5, b: 7 },
+      { a: 6, b: 7 },
+    ]) {
+      expect(canIncrement(score, 'a'), `${score.a}:${score.b} a`).toBe(false);
+      expect(canIncrement(score, 'b'), `${score.a}:${score.b} b`).toBe(false);
+    }
     expect(canIncrement({ a: 6, b: 5 }, 'a')).toBe(true);
+    expect(canIncrement({ a: 6, b: 5 }, 'b')).toBe(true);
     expect(canIncrement({ a: 6, b: 6 }, 'a')).toBe(true);
-    expect(canIncrement({ a: 7, b: 6 }, 'a')).toBe(false);
-    expect(canIncrement({ a: 7, b: 6 }, 'b')).toBe(false);
+    expect(canIncrement({ a: 5, b: 5 }, 'b')).toBe(true);
   });
 
   it('blocks a decrement that would invent 7:4', () => {

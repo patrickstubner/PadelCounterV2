@@ -1110,6 +1110,38 @@ describe('offline score reconcile in the durable object', () => {
     expect((snap.log as { events: { type?: string }[] }).events.at(-1)?.type).toBe('match/end');
   });
 
+  it('rejects a plus after the match is won and accepts one after minus', async () => {
+    const created = await createLive('d23100001000000000000000000000000', Array.from({ length: 12 }, () => 'a' as const));
+    expect(created.state.sets[0]).toEqual({ a: 6, b: 0 });
+    expect(created.state.sets[1]).toEqual({ a: 6, b: 0 });
+    expect(created.state.activeSet).toBe(1);
+    const host = await connect(created.hostToken, 'd23100001000000000000000000000000');
+    const before = scoreBoard(created.state);
+    const forged = {
+      before,
+      after: {
+        ...before,
+        sets: [before.sets[0], { a: 6, b: 1 }, before.sets[2]],
+      },
+      baseRevision: created.state.revision,
+    };
+    const plus: MatchEvent = { type: 'game/increment', team: 'b', at: Date.now() };
+    expect(scoreClaimFor(created.state, plus)).toBeNull();
+    const refused = await push(host.ws, host.messages, '00000000-0000-4000-8000-000000000231', plus, forged);
+    expect(refused).toMatchObject({ type: 'error', code: 'not_applied' });
+    const minus: MatchEvent = { type: 'game/decrement', team: 'a', at: Date.now() };
+    const taken = await push(host.ws, host.messages, '00000000-0000-4000-8000-000000000232', minus, scoreClaimFor(created.state, minus));
+    expect(taken.type).toBe('event');
+    const opened = matchReducer(created.state, minus);
+    expect(opened.sets[1]).toEqual({ a: 5, b: 0 });
+    const again: MatchEvent = { type: 'game/increment', team: 'b', at: Date.now() };
+    const accepted = await push(host.ws, host.messages, '00000000-0000-4000-8000-000000000233', again, scoreClaimFor(opened, again));
+    expect(accepted.type).toBe('event');
+    expect((accepted.event as { team?: string }).team).toBe('b');
+    const board = await storedBoard(created.hostToken, 'd23100001000000000000000000000000');
+    expect(board.sets[1]).toEqual({ a: 5, b: 1 });
+  });
+
   it('closes a protocol 1 hello and asks for an update', async () => {
     const created = await createLive('d0c000061000000000000000000000000');
     const response = await call(`/ws/${await ticketFor(created.hostToken, 'd0c000061000000000000000000000000')}`, { headers: { upgrade: 'websocket' } });

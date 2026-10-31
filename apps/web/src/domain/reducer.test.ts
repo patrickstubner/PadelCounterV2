@@ -73,7 +73,7 @@ describe('matchReducer', () => {
     expect(matchWinner(state.sets)).toBe('a');
   });
 
-  it('lets a finished 6:4 be corrected to 6:5', () => {
+  it('blocks plus on a finished set and opens it again after minus', () => {
     let state = start();
     for (let i = 0; i < 4; i += 1) {
       state = play(state, 'a', 1);
@@ -83,10 +83,51 @@ describe('matchReducer', () => {
     expect(state.sets[0]).toEqual({ a: 6, b: 4 });
     expect(state.activeSet).toBe(1);
     state = matchReducer(state, { type: 'set/select', index: 0, at: state.updatedAt + 1 });
-    const corrected = play(state, 'b', 1);
-    expect(corrected.sets[0]).toEqual({ a: 6, b: 5 });
-    expect(setWinner(6, 5)).toBeNull();
+    const blockedB = matchReducer(state, { type: 'game/increment', team: 'b', at: state.updatedAt + 1 });
+    const blockedA = matchReducer(state, { type: 'game/increment', team: 'a', at: state.updatedAt + 2 });
+    expect(blockedB).toBe(state);
+    expect(blockedA).toBe(state);
+    const stillWon = matchReducer(state, { type: 'game/decrement', team: 'b', at: state.updatedAt + 3 });
+    expect(stillWon.sets[0]).toEqual({ a: 6, b: 3 });
+    expect(setWinner(6, 3)).toBe('a');
+    expect(matchReducer(stillWon, { type: 'game/increment', team: 'b', at: stillWon.updatedAt + 1 })).toBe(stillWon);
+    const opened = matchReducer(state, { type: 'game/decrement', team: 'a', at: state.updatedAt + 4 });
+    expect(opened.sets[0]).toEqual({ a: 5, b: 4 });
+    expect(setWinner(5, 4)).toBeNull();
+    const corrected = matchReducer(opened, { type: 'game/increment', team: 'b', at: opened.updatedAt + 1 });
+    expect(corrected.sets[0]).toEqual({ a: 5, b: 5 });
     expect(corrected.activeSet).toBe(0);
+  });
+
+  it('blocks plus for both teams once the match is won, including 7:6', () => {
+    let decided = play(start(), 'a', 6);
+    decided = play(decided, 'a', 6);
+    expect(matchWinner(decided.sets)).toBe('a');
+    expect(decided.sets[1]).toEqual({ a: 6, b: 0 });
+    const extra = matchReducer(decided, { type: 'game/increment', team: 'b', at: decided.updatedAt + 1 });
+    expect(extra).toBe(decided);
+    const third = matchReducer(decided, { type: 'set/select', index: 2, at: decided.updatedAt + 2 });
+    const thirdGame = matchReducer(third, { type: 'game/increment', team: 'a', at: third.updatedAt + 1 });
+    expect(thirdGame.sets[2]).toEqual({ a: 1, b: 0 });
+    expect(matchWinner(thirdGame.sets)).toBe('a');
+    const reopened = matchReducer(decided, { type: 'game/decrement', team: 'a', at: decided.updatedAt + 3 });
+    expect(reopened.sets[1]).toEqual({ a: 5, b: 0 });
+    expect(matchWinner(reopened.sets)).toBeNull();
+    const resumed = matchReducer(reopened, { type: 'game/increment', team: 'b', at: reopened.updatedAt + 1 });
+    expect(resumed.sets[1]).toEqual({ a: 5, b: 1 });
+
+    let tiebreak = start();
+    for (let i = 0; i < 6; i += 1) {
+      tiebreak = play(tiebreak, 'a', 1);
+      tiebreak = play(tiebreak, 'b', 1);
+    }
+    tiebreak = play(tiebreak, 'a', 1);
+    expect(tiebreak.sets[0]).toEqual({ a: 7, b: 6 });
+    tiebreak = matchReducer(tiebreak, { type: 'set/select', index: 0, at: tiebreak.updatedAt + 1 });
+    expect(matchReducer(tiebreak, { type: 'game/increment', team: 'b', at: tiebreak.updatedAt + 1 })).toBe(tiebreak);
+    const back = matchReducer(tiebreak, { type: 'game/decrement', team: 'a', at: tiebreak.updatedAt + 2 });
+    expect(back.sets[0]).toEqual({ a: 6, b: 6 });
+    expect(matchReducer(back, { type: 'game/increment', team: 'b', at: back.updatedAt + 1 }).sets[0]).toEqual({ a: 6, b: 7 });
   });
 
   it('ignores increments that are not plausible and decrements down to zero', () => {

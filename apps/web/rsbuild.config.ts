@@ -49,7 +49,7 @@ const workboxPlugin: RsbuildPlugin = {
         swDest,
         globDirectory: dist,
         globPatterns: ['**/*.{html,js,css,webmanifest,png,svg,ico,txt,mp3}'],
-        globIgnores: ['**/sw.js', '**/*.map', '**/icon-1024.png', '**/stay-awake.mp4'],
+        globIgnores: ['**/sw.js', '**/*.map', '**/icon-1024-v231.png', '**/stay-awake.mp4'],
         runtimeCaching: stayAwakeRuntimeCaching,
         modifyURLPrefix: { '': prefix },
         inlineWorkboxRuntime: true,

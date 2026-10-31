@@ -37,20 +37,21 @@ describe('split flap direction', () => {
     expect(css).toContain('.flap.is-down .flap-enter { animation-name: drive-in-down; }');
   });
 
-  it('sizes the portrait digit to the free column only when text-box-trim exists', () => {
+  it('sizes the portrait digit so the whole glyph stays in the column', () => {
     const portrait = css.slice(css.indexOf('@media (orientation: portrait)'), css.indexOf('.victory {'));
-    const fallback = portrait.slice(portrait.indexOf('.current-set .num {'), portrait.indexOf('@supports (text-box-trim: trim-both)'));
-    expect(fallback).toContain('overflow: visible');
-    expect(fallback).toContain('letter-spacing: 0');
-    expect(fallback).toContain('clamp(3rem, min(96cqh, calc(100cqw / 1.22)), 18rem)');
-    expect(fallback).not.toContain('text-box-trim');
-    expect(fallback).not.toContain('100cqh / 0.8');
-    const supported = portrait.slice(portrait.indexOf('@supports (text-box-trim: trim-both)'), portrait.indexOf('.current-set.is-won'));
-    expect(supported).toContain('text-box-trim: trim-both');
-    expect(supported).toContain('100cqh / 0.8');
-    expect(supported).toContain('100cqw / 0.66');
+    const rule = portrait.slice(portrait.indexOf('.current-set .num {'), portrait.indexOf('.current-set.is-won'));
+    expect(rule).toContain('overflow: visible');
+    expect(rule).toContain('letter-spacing: 0');
+    expect(rule).toContain('line-height: 1');
+    expect(rule).toContain('clamp(3rem, min(92cqh, calc(100cqw / 0.78)), 16rem)');
+    expect(rule).not.toContain('text-box-trim');
+    expect(rule).not.toContain('line-height: 0.8');
+    expect(portrait).not.toContain('100cqh / 0.8');
+    expect(portrait).not.toContain('text-box-trim');
+    const flap = portrait.slice(portrait.indexOf('.current-set .flap { overflow'));
+    expect(flap).toContain('overflow: visible');
+    expect(flap).toContain('line-height: 1');
     expect(portrait).not.toContain('data-chars');
-    expect(portrait).not.toContain('including 10');
     expect(css).toContain('font-variant-numeric: tabular-nums');
   });
 

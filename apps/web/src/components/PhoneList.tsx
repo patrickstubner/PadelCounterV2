@@ -93,7 +93,7 @@ export function PhoneList({ phones, onClose, onKick }: PhoneListProps) {
         <ConfirmDialog
           titleId="kick-title"
           title="Remove this phone?"
-          body="This phone is removed. Others can still join with this code until you tap New code."
+          body="This phone cannot rejoin with the current code. Tap New code to let it join again."
           confirmLabel="Remove"
           confirmTestId="kick-confirm"
           cancelTestId="kick-cancel"

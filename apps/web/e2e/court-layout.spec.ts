@@ -48,7 +48,7 @@ test('portrait uses the full height and keeps the version in the menu', async ({
   await page.getByTestId('menu-toggle').click();
   const version = page.getByTestId('app-version');
   await expect(version).toBeVisible();
-  await expect(version).toHaveText(/^v2\.3\.0$/);
+  await expect(version).toHaveText(/^v2\.3\.1$/);
   const size = await version.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
   expect(size).toBeGreaterThanOrEqual(16);
 });

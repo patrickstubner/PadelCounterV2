@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.1
+
+- In portrait the large score shows the whole digit. Round numbers such as 0, 6, 8, and 9 are not cut off at the top or the bottom. Landscape is unchanged.
+- Remove asks first. This phone cannot rejoin with the current code. Tap New code to let it join again.
+- The home-screen icon, the maskable icons, and the favicon show a large V2.
+- Plus stops on a set that is already finished, including the set that decided the match. That covers 6–0, 6–4, 7–5, and 7–6, for both teams. Minus still takes a game back. Plus works again when that set is no longer finished. An open third set can still be scored. The server refuses a plus that the court would refuse.
+
 ## 2.3.0
 
 - The phone button in the top bar is a rounded rectangle, the same shape as the menu button.

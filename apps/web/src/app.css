@@ -1139,29 +1139,9 @@ button:disabled { cursor: not-allowed; }
     overflow: visible;
     letter-spacing: 0;
     line-height: 1;
-    padding-inline: 0.06em;
-    /* Same size as 1.2.9 when the larger trimmed size is unavailable. */
-    font-size: clamp(3rem, min(96cqh, calc(100cqw / 1.22)), 18rem);
-  }
-
-  @supports (text-box-trim: trim-both) {
-    .current-set .num {
-      text-box-trim: trim-both;
-      text-box-edge: cap alphabetic;
-      padding-inline: 0;
-      font-size: min(calc(100cqh / 0.8), calc(100cqw / 0.66));
-    }
-    .current-set .num,
-    .current-set .flap {
-      /* The font is 100cqh / 0.8. A line box of 1 would stick out under the board. */
-      line-height: 0.8;
-    }
-    .current-set .flap-current,
-    .current-set .flap-leave,
-    .current-set .flap-enter {
-      text-box-trim: trim-both;
-      text-box-edge: cap alphabetic;
-    }
+    padding-inline: 0.04em;
+    /* The em box stays inside the column, so 0, 6, 8, and 9 keep their curves. */
+    font-size: clamp(3rem, min(92cqh, calc(100cqw / 0.78)), 16rem);
   }
   .current-set.is-won .num { color: var(--accent); }
 
@@ -1182,7 +1162,7 @@ button:disabled { cursor: not-allowed; }
   .current-set,
   .current-set .num,
   .current-set .flap { pointer-events: none; }
-  .current-set .flap { overflow: hidden; }
+  .current-set .flap { overflow: visible; line-height: 1; }
 
   .team-head { height: 2.75rem; }
 

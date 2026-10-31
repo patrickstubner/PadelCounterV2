@@ -29,8 +29,11 @@ describe('scoring without undo', () => {
     winSet('a', T0 + 1);
     winSet('a', T0 + 20);
     expect(matchWinner(state.sets)).toBe('a');
-    state = matchReducer(state, { type: 'set/select', index: 2, at: T0 + 40 });
-    state = matchReducer(state, { type: 'game/increment', team: 'b', at: T0 + 41 });
+    const onDecider = matchReducer(state, { type: 'game/increment', team: 'b', at: T0 + 40 });
+    expect(onDecider).toBe(state);
+    state = matchReducer(state, { type: 'set/select', index: 2, at: T0 + 41 });
+    state = matchReducer(state, { type: 'game/increment', team: 'b', at: T0 + 42 });
+    expect(state.sets[1]).toEqual({ a: 6, b: 0 });
     expect(state.sets[2]).toEqual({ a: 0, b: 1 });
     expect(matchWinner(state.sets)).toBe('a');
   });
