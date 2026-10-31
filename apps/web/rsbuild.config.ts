@@ -57,7 +57,7 @@ const workboxPlugin: RsbuildPlugin = {
         sourcemap: false,
         clientsClaim: true,
         skipWaiting: true,
-        cacheId: 'padel-counter-v2-2.3.5',
+        cacheId: 'padel-counter-v2-2.3.6',
         cleanupOutdatedCaches: true,
         disableDevLogs: true,
         navigateFallback: `${prefix}index.html`,

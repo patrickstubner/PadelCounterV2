@@ -64,7 +64,7 @@ test('portrait uses the full height and keeps the version in the menu', async ({
   await page.getByTestId('menu-toggle').click();
   const version = page.getByTestId('app-version');
   await expect(version).toBeVisible();
-  await expect(version).toHaveText(/^v2\.3\.5$/);
+  await expect(version).toHaveText(/^v2\.3\.6$/);
   const size = await version.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
   expect(size).toBeGreaterThanOrEqual(16);
 });
@@ -117,7 +117,7 @@ test('landscape shows the menu, hides the footer, and keeps Connect beside the m
   await page.getByTestId('menu-toggle').click();
   const version = page.getByTestId('app-version');
   await expect(version).toBeVisible();
-  await expect(version).toHaveText(/^v2\.3\.5$/);
+  await expect(version).toHaveText(/^v2\.3\.6$/);
   const size = await version.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
   expect(size).toBeGreaterThanOrEqual(16);
   await expect(page.getByTestId('fanfare-toggle')).toBeVisible();

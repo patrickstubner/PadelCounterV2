@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.3.6
+
+- Minus puts the server back. At 6–6 the note names the server. Plus to 7–6 asks the other team who serves. Minus returns to 6–6 and that same server. Every correction does this, including a step back into the previous set. Both phones of a live match show that same server.
+
 ## 2.3.5
 
 - The serve ball is a yellow-green padel ball with a curved seam.
