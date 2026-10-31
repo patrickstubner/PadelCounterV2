@@ -1,6 +1,6 @@
 import { useRef, useState, type PointerEvent } from 'react';
 import { createPressHaptic, releaseInside, type HapticPoint, type PressHaptic } from '../domain/haptic';
-import { canScoreGame, canTakeGame, displayGames, isUpcomingSet, serveChoice, setWinner } from '../domain/rules';
+import { canScoreGame, canTakeGame, displayGames, isUpcomingSet, matchWinner, serveChoice, setWinner } from '../domain/rules';
 import type { MatchState, SetIndex, TeamId } from '../domain/types';
 import { BallIcon, MinusIcon, PlusIcon } from './icons';
 import { SetScore } from './SetScore';
@@ -18,11 +18,19 @@ interface TeamPanelProps {
   /** vibrate ticks on pointer down. ios ticks on click. off is quiet. */
   hapticMode?: 'vibrate' | 'ios' | 'off';
   onHaptic?: () => void;
-  /** Pulse the serve ball until a serving team is chosen. */
-  serveCue?: boolean;
 }
 
 const SETS: readonly SetIndex[] = [0, 1, 2];
+
+/** Both balls glow until a team is chosen. One team's ball glows harder while that team picks a player. */
+function serveGlow(state: MatchState, team: TeamId): 'cue' | 'ask' | null {
+  if (state.ended || state.serve !== null || matchWinner(state.sets)) return null;
+  if (state.serveAsk === team) return 'ask';
+  if (state.serveAsk !== null) return null;
+  const untouched = state.sets.every((set) => set.a === 0 && set.b === 0);
+  if (untouched || state.servePrompt) return 'cue';
+  return null;
+}
 
 function pointOf(event: PointerEvent<HTMLButtonElement>): HapticPoint {
   return {
@@ -51,7 +59,6 @@ export function TeamPanel({
   onServe,
   hapticMode = 'off',
   onHaptic = () => undefined,
-  serveCue = false,
 }: TeamPanelProps) {
   const name = state.teams[team].name;
   const active = state.sets[state.activeSet];
@@ -60,6 +67,7 @@ export function TeamPanel({
   const minusDisabled = locked || !canTakeGame(state, team);
   const activeWinner = setWinner(active.a, active.b);
   const asking = state.serveAsk === team && state.serve === null;
+  const glow = serveGlow(state, team);
   const serving = state.serve?.team === team || asking;
   const nextServe = serveChoice(state.serve, team);
   const serveLabel = asking
@@ -126,7 +134,7 @@ export function TeamPanel({
           <TeamName name={name} locked={locked} onCommit={(next) => onRename(team, next)} />
           <button
             type="button"
-            className={['ball', serving ? 'is-on' : '', serveCue ? 'is-cue' : ''].filter(Boolean).join(' ')}
+            className={['ball', serving ? 'is-on' : '', glow === 'cue' ? 'is-cue' : '', glow === 'ask' ? 'is-ask' : ''].filter(Boolean).join(' ')}
             data-testid={`serve-${team}`}
             aria-pressed={serving}
             aria-label={serveLabel}

@@ -548,7 +548,6 @@ export function App() {
           onServe={taps.onServe}
           hapticMode={hapticMode}
           onHaptic={() => pulseHaptic(hapticOn)}
-          serveCue={cue?.kind === 'choose-serve'}
         />
         <div className="mid">
           {result.kind === 'leading' ? (
@@ -647,7 +646,6 @@ export function App() {
           onServe={taps.onServe}
           hapticMode={hapticMode}
           onHaptic={() => pulseHaptic(hapticOn)}
-          serveCue={cue?.kind === 'choose-serve'}
         />
       </main>
       <footer className="foot court-foot">

@@ -2,8 +2,17 @@
 import { ROOM_MESSAGES, createMatch } from '@padel/core';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
+import { syncCourtChrome } from './chrome';
+
+vi.mock('./chrome', async () => {
+  const actual = await vi.importActual<typeof import('./chrome')>('./chrome');
+  return {
+    ...actual,
+    syncCourtChrome: vi.fn(actual.syncCourtChrome),
+  };
+});
 import { ARCHIVE_KEY, saveArchive, type ArchivedMatch } from './domain/archive';
 import { appendEvent, createLog, replay } from './domain/log';
 import { JOIN_KEY } from './live/protocol';
@@ -28,6 +37,7 @@ let createMode: 'ok' | 'down' = 'ok';
 let snapshot: unknown = null;
 let snapshotHost = false;
 let inviteFails = 0;
+let blockJoin = false;
 
 class FakeSocket {
   static readonly CONNECTING = 0;
@@ -91,6 +101,7 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   const url = String(input);
   fetchCalls.push({ url, init });
   if (url.endsWith('/join')) {
+    if (blockJoin) return Response.json({ error: 'offline' }, { status: 503 });
     if (joinMode === 'expired') return Response.json({ error: 'expired', message: '<b>expired</b>' }, { status: 401 });
     if (joinMode === 'bad') return Response.json({ error: 'bad_token', message: '<img src=x onerror=alert(1)>' }, { status: 401 });
     if (joinMode === 'limited') return Response.json({ error: 'code_limited', message: '<a href="https://evil.example">go</a>' }, { status: 429 });
@@ -179,7 +190,9 @@ describe('connect overlay and scanned join', () => {
     snapshot = null;
     snapshotHost = false;
     inviteFails = 0;
+    blockJoin = false;
     createdMatchId = MATCH;
+    vi.mocked(syncCourtChrome).mockClear();
     localStorage.clear();
     sessionStorage.clear();
     window.history.replaceState(null, '', '/');
@@ -986,4 +999,28 @@ describe('connect overlay and scanned join', () => {
     expect(document.body.textContent).not.toContain('onerror');
     expect(document.body.textContent).not.toContain('<b>');
   });
+
+  it('calls syncCourtChrome when the match is connected and when it is offline', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    snapshotHost = true;
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('show-qr');
+    await waitFor(() => document.querySelector('.app.is-online') !== null);
+    expect(vi.mocked(syncCourtChrome)).toHaveBeenCalledWith('online', document);
+    blockJoin = true;
+    await act(async () => {
+      sockets.at(-1)?.close();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_700));
+    });
+    expect(vi.mocked(syncCourtChrome)).toHaveBeenCalledWith('offline', document);
+    expect(document.documentElement.classList.contains('is-offline')).toBe(true);
+    expect(document.documentElement.classList.contains('is-online')).toBe(false);
+  }, 8_000);
 });
