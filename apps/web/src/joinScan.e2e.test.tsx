@@ -125,21 +125,16 @@ describe('scan to the match score', () => {
     await act(async () => {
       open.click();
     });
+    expect(getUserMedia).not.toHaveBeenCalled();
     const scanQr = document.querySelector<HTMLButtonElement>('[data-testid="scan-qr"]');
     if (!scanQr) throw new Error('missing scan');
+    scan.text = null;
     await act(async () => {
       scanQr.click();
-    });
-    expect(document.querySelector('[data-testid="join-camera"]')).toBeNull();
-
-    scan.text = null;
-    const use = document.querySelector<HTMLButtonElement>('[data-testid="use-camera"]');
-    if (!use) throw new Error('missing camera button');
-    await act(async () => {
-      use.click();
       await new Promise((resolve) => setTimeout(resolve, 30));
     });
     expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-testid="match-code-input"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="join-match-dialog"]')?.classList.contains('join-scanning')).toBe(true);
     const video = document.querySelector('[data-testid="join-camera"]');
     expect(video?.classList.contains('join-camera')).toBe(true);
@@ -160,5 +155,39 @@ describe('scan to the match score', () => {
     expect(document.querySelector('[data-testid="join-match-dialog"]')).toBeNull();
     expect(document.querySelector('[data-testid="current-a"]')?.textContent ?? '').toContain('4');
     expect(document.body.textContent ?? '').not.toContain(TOKEN);
+  });
+
+  it('keeps the code field usable when the camera is denied and does not ask again', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    const getUserMedia = vi.fn(async () => {
+      throw new DOMException('denied', 'NotAllowedError');
+    });
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
+    window.history.replaceState(null, '', '/PadelCounterV2/');
+    const container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<App />);
+    });
+    expect(getUserMedia).not.toHaveBeenCalled();
+    const open = document.querySelector<HTMLButtonElement>('[data-testid="connect-open"]');
+    await act(async () => {
+      open?.click();
+    });
+    expect(getUserMedia).not.toHaveBeenCalled();
+    const scanQr = document.querySelector<HTMLButtonElement>('[data-testid="scan-qr"]');
+    await act(async () => {
+      scanQr?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-testid="join-camera"]')).toBeNull();
+    expect(document.querySelector('[data-testid="join-camera-hint"]')?.textContent).toContain('Allow camera access');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    expect(input).not.toBeNull();
+    expect(input?.disabled).toBe(false);
+    expect(document.body.textContent ?? '').not.toContain('denied');
   });
 });

@@ -21,9 +21,10 @@ export function PrivacyPage({ onBack }: PrivacyPageProps) {
           Connect can show the same QR code and short code from any phone already in the match, or scan a
           code to join. Anyone who scans that code, or types the short code, can see the score and change
           the games, until the code expires or the match already has 4 players. The code is not an account.
-          Do not show it to people who should not score. Scan QR code can use the camera on this phone. The
-          camera fills the screen. It starts only after you tap Use camera, and it stops as soon as a code
-          is read, when you close the scanner, or when you leave the app. The picture stays on this phone.
+          Do not show it to people who should not score. Join another match can use the camera on this phone. The
+          camera fills the screen. It starts only after you tap Join another match, and it stops as soon as a code
+          is read, when you close the scanner, or when you leave the app. If the camera is blocked, the code
+          can still be typed. The picture stays on this phone.
           The short code is kept in this tab so you can send it. It is not written to local storage.
           Sending it shares a link to this app. The code is only in the part after #. This page reads that
           part, checks that it is a match code, and then removes it from the address bar. It is not sent to

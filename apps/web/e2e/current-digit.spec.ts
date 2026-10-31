@@ -14,6 +14,8 @@ interface DigitFit {
   readonly text: string;
   readonly ratio: number;
   readonly inside: boolean;
+  readonly fill: number;
+  readonly inkHeight: number;
   readonly clippers: readonly string[];
   readonly display: string;
 }
@@ -64,6 +66,8 @@ function readDigit(selector: string): DigitFit | null {
     node = node.parentElement;
   }
   const containerBox = container.getBoundingClientRect();
+  const inkHeight = ink.bottom - ink.top;
+  const inkWidth = ink.right - ink.left;
   return {
     text,
     ratio: lineHeight / fontSize,
@@ -71,6 +75,8 @@ function readDigit(selector: string): DigitFit | null {
       && ink.bottom <= containerBox.bottom + pad
       && ink.left >= containerBox.left - pad
       && ink.right <= containerBox.right + pad,
+    fill: Math.max(inkHeight / containerBox.height, inkWidth / containerBox.width),
+    inkHeight,
     clippers,
     display: getComputedStyle(container).display,
   };
@@ -105,6 +111,7 @@ test('portrait current-set digits are fully inside their column', async ({ page 
         expect(fit.ratio, id).toBeGreaterThanOrEqual(1);
         expect(fit.inside, `${id} ${glyph}`).toBe(true);
         expect(fit.clippers, `${id} ${glyph}`).toEqual([]);
+        expect(fit.fill, `${size.width}x${size.height} ${id} ${glyph}`).toBeGreaterThanOrEqual(0.85);
       }
     }
   }

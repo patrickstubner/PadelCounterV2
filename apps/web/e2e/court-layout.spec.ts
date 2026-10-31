@@ -41,14 +41,29 @@ test('portrait uses the full height and keeps the version in the menu', async ({
       }
       return '';
     };
-    return { phone: read('.phone-count'), burger: read('.menu-toggle') };
+    return { phone: read('.phone-count'), burger: read('.menu-toggle'), bar: read('.top-actions .text-btn') };
   });
   expect(shape.phone).toBe('0.7rem');
   expect(shape.burger).toBe('0.7rem');
+  expect(shape.bar).toBe('0.7rem');
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await expect(page.getByTestId('menu-toggle')).toHaveCount(0);
+  const corners = await page.locator('.top-actions .text-btn').evaluateAll((nodes) => nodes.map((node) => {
+    const box = node.getBoundingClientRect();
+    const radius = Number.parseFloat(getComputedStyle(node).borderTopLeftRadius);
+    return { radius, height: box.height, pill: radius >= box.height / 2 - 0.5 };
+  }));
+  expect(corners.length).toBeGreaterThan(0);
+  for (const corner of corners) {
+    expect(corner.pill).toBe(false);
+    expect(corner.radius).toBeGreaterThan(8);
+    expect(corner.height).toBeGreaterThan(40);
+  }
+  await page.setViewportSize({ width: 390, height: 780 });
   await page.getByTestId('menu-toggle').click();
   const version = page.getByTestId('app-version');
   await expect(version).toBeVisible();
-  await expect(version).toHaveText(/^v2\.3\.1$/);
+  await expect(version).toHaveText(/^v2\.3\.2$/);
   const size = await version.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
   expect(size).toBeGreaterThanOrEqual(16);
 });

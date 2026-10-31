@@ -48,6 +48,7 @@ const TERMINAL_CODES: ReadonlySet<RoomCode> = new Set([
   'bad_token',
   'expired',
   'revoked',
+  'removed',
   'match_full',
   'spectator_not_available',
   'upgrade_required',

@@ -32,6 +32,10 @@ describe('connect dialog layout', () => {
         onClose={() => undefined}
       />,
     );
+    expect(connect).toContain('Share my match (create code)');
+    expect(connect).toContain('Join another match (scan code)');
+    expect(connect).not.toContain('Show QR code');
+    expect(connect).not.toContain('Scan QR code');
     expect(connect).toContain('data-testid="connect-close-x"');
     expect(connect).toContain('data-testid="connect-backdrop"');
     expect(connect).not.toContain('data-testid="connect-close"');

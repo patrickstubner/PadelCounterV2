@@ -266,7 +266,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     const seated = this.seatedSockets(ws, deviceId);
     const result = helloPayload(room, tokenHash, seated.others, Date.now(), deviceId);
     if (result.ok && deviceId && isKickedDevice(this.sql(), deviceId)) {
-      this.reject(ws, 'revoked');
+      this.reject(ws, 'removed');
       return;
     }
     if (!result.ok) {
@@ -925,7 +925,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
   private closeDevice(deviceId: string): void {
     for (const socket of this.ctx.getWebSockets(COURT_TAG)) {
       const peer = this.readState(socket);
-      if (peer?.admitted === true && peer.deviceId === deviceId) this.reject(socket, 'revoked');
+      if (peer?.admitted === true && peer.deviceId === deviceId) this.reject(socket, 'removed');
     }
   }
 
@@ -1102,7 +1102,7 @@ export class MatchRoom extends DurableObject<RoomEnv> {
     }
     if (!isDeviceId(fields.deviceId)) return json(400, { error: 'invalid_match' });
     if (!readRoom(this.sql())) return json(404, { error: 'unavailable' });
-    if (isKickedDevice(this.sql(), fields.deviceId)) return json(409, { error: 'join_code' });
+    if (isKickedDevice(this.sql(), fields.deviceId)) return json(409, { error: 'join_removed' });
     const expiresAt = fields.expiresAt;
     const deviceId = fields.deviceId;
     const tokenHash = await sha256Hex(fields.token);

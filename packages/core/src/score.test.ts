@@ -182,6 +182,8 @@ describe('socket close policy', () => {
     expect(connectionCloses('bad_token')).toBe(true);
     expect(connectionCloses('expired')).toBe(true);
     expect(connectionCloses('revoked')).toBe(true);
+    expect(connectionCloses('removed')).toBe(true);
+    expect(connectionCloses('join_removed')).toBe(false);
     expect(connectionCloses('spectator_not_available')).toBe(true);
     expect(connectionCloses('match_full')).toBe(true);
     expect(connectionCloses('not_applied')).toBe(false);

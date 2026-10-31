@@ -102,12 +102,13 @@ describe('join match in the app', () => {
       },
     });
     expect(document.querySelector('[data-testid="join-match-dialog"]')?.classList.contains('join-scanning')).toBe(true);
-    expect(document.querySelector('[data-testid="enter-code"]')).not.toBeNull();
-    expect(document.querySelector('[data-testid="match-code-input"]')).toBeNull();
+    expect(document.querySelector('[data-testid="enter-code"]')).toBeNull();
+    expect(document.querySelector('[data-testid="match-code-input"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="scan-target"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="scan-hint"]')?.textContent).toContain('white frame');
+    const field = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
     await act(async () => {
-      document.querySelector<HTMLButtonElement>('[data-testid="enter-code"]')?.click();
+      field?.focus();
     });
     expect(document.querySelector('[data-testid="match-code-input"]')).not.toBeNull();
     expect(scanned).toBeGreaterThan(0);
@@ -434,6 +435,49 @@ describe('join match in the app', () => {
     );
     expect(document.body.textContent ?? '').not.toContain('/private/settings');
     expect(document.querySelector('[data-testid="join-camera"]')).toBeNull();
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    expect(input).not.toBeNull();
+    expect(input?.disabled).toBe(false);
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the camera from the tap that supplied the request and keeps the code field', async () => {
+    const denied = Promise.reject(new DOMException('denied', 'NotAllowedError'));
+    denied.catch(() => undefined);
+    const codes: string[] = [];
+    render(
+      <JoinMatchPage
+        configured
+        error={null}
+        pageHref={PAGE}
+        cameraRequest={denied}
+        onCode={(code) => {
+          codes.push(code);
+        }}
+        onToken={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+    expect(document.querySelector('[data-testid="use-camera"]')).toBeNull();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(document.querySelector('[data-testid="join-camera"]')).toBeNull();
+    expect(document.querySelector('[data-testid="join-camera-hint"]')?.textContent).toBe(
+      'Allow camera access in Settings, then tap Use camera.',
+    );
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'K7M4-2QAB');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    act(() => {
+      document.querySelector<HTMLButtonElement>('[data-testid="join-by-code"]')?.click();
+    });
+    expect(codes).toEqual(['K7M4-2QAB']);
   });
 
   it('waits at least 120 ms between scans and pauses while Enter code is open', async () => {
@@ -467,8 +511,10 @@ describe('join match in the app', () => {
       await vi.advanceTimersByTimeAsync(20);
     });
     expect(calls).toBe(2);
+    const field = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    expect(field).not.toBeNull();
     await act(async () => {
-      document.querySelector<HTMLButtonElement>('[data-testid="enter-code"]')?.click();
+      field?.focus();
     });
     const paused = calls;
     await act(async () => {
