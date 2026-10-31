@@ -31,6 +31,15 @@ const RETRYABLE_CAMERA_ERRORS = new Set(['OverconstrainedError', 'NotReadableErr
  * NotAllowedError and SecurityError are not retried. Another size will not
  * change a denied permission, and a second prompt is worse on iOS.
  */
+/** Starts in the tap that opened the scanner, so the permission prompt keeps that gesture. */
+export function requestScanCamera(): Promise<MediaStream> {
+  const devices = typeof navigator === 'undefined' ? undefined : navigator.mediaDevices;
+  if (!devices || typeof devices.getUserMedia !== 'function') {
+    return Promise.reject(new DOMException('The camera did not start.', 'NotFoundError'));
+  }
+  return openScanCamera((constraints) => devices.getUserMedia(constraints));
+}
+
 export async function openScanCamera(
   getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>,
 ): Promise<MediaStream> {

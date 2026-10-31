@@ -1,5 +1,5 @@
 /** @vitest-environment happy-dom */
-import { createMatch } from '@padel/core';
+import { ROOM_MESSAGES, createMatch } from '@padel/core';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -298,6 +298,27 @@ describe('connect overlay and scanned join', () => {
     expect(document.querySelector('[data-testid="current-a"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain(INVITE);
     expect(document.body.textContent).not.toContain(HOST);
+  });
+
+  it('clears the host code when this phone is removed and shows that sentence', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('show-qr');
+    await waitFor(() => document.querySelector('[data-testid="match-code"]') !== null);
+    expect(document.querySelector('[data-testid="match-code"]')?.textContent).toBe('K7M4-2QAB');
+    await waitFor(() => sockets.some((socket) => socket.onmessage !== null));
+    const socket = sockets.findLast((item) => item.onmessage !== null);
+    await act(async () => {
+      socket?.onmessage?.({ data: JSON.stringify({ type: 'error', code: 'removed' }) });
+    });
+    expect(document.querySelector('[data-testid="match-code"]')).toBeNull();
+    expect(document.querySelector('[data-testid="connect-dialog"] .qr')).toBeNull();
+    expect(document.querySelector('[data-testid="live-error"]')?.textContent).toBe(ROOM_MESSAGES.removed);
+    expect(sessionStorage.getItem(JOIN_KEY) ?? '').not.toContain('K7M4-2QAB');
   });
 
   it('joins from a scanned url onto the live score and drops the token', async () => {

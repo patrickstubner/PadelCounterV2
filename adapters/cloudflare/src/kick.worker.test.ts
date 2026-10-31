@@ -1,4 +1,4 @@
-import { KICK_PER_ACTOR, KICK_PER_MATCH, LIVE_PROTOCOL, createMatch, isJoinToken } from '@padel/core';
+import { CODE_ATTEMPTS_PER_PREFIX, KICK_PER_ACTOR, KICK_PER_MATCH, LIVE_PROTOCOL, ROOM_MESSAGES, createMatch, isJoinToken } from '@padel/core';
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
@@ -178,7 +178,8 @@ describe('removing a phone', () => {
     expect(phonesOf(dropped).some((phone) => phone.seat === guestSeat && phone.online === true)).toBe(true);
     expect(phonesOf(dropped).some((phone) => phone.self === true)).toBe(true);
     const revoked = await other.messages.waitFor((message) => message.type === 'error');
-    expect(revoked.code).toBe('revoked');
+    expect(revoked.code).toBe('removed');
+    expect(ROOM_MESSAGES.removed).toBe('You were removed from this match. Ask the others for a new code.');
     const otherHash = await sha256Hex(other.session);
     const roomRevoked = await runInDurableObject(
       env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(created.matchId)),
@@ -200,7 +201,11 @@ describe('removing a phone', () => {
       headers: { authorization: `Bearer ${shared.token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ device: otherDevice }),
     });
-    expect(sameCode.status).not.toBe(201);
+    expect(sameCode.status).toBe(401);
+    expect(await sameCode.json()).toEqual({
+      error: 'join_removed',
+      message: ROOM_MESSAGES.join_removed,
+    });
 
     const rotated = await call(`/matches/${created.matchId}/invites`, {
       method: 'POST',
@@ -245,8 +250,8 @@ describe('removing a phone', () => {
         return !phonesOf(message).some((row) => row.seat === seat);
       });
       assertAllowlist(gone);
-      const revoked = await phone.messages.waitFor((message) => message.type === 'error' && message.code === 'revoked');
-      expect(revoked.code).toBe('revoked');
+      const revoked = await phone.messages.waitFor((message) => message.type === 'error' && message.code === 'removed');
+      expect(revoked.code).toBe('removed');
     }
     const last = devices[KICK_PER_ACTOR];
     if (!last) throw new Error('last');
@@ -294,8 +299,8 @@ describe('removing a phone', () => {
         if (index < mark || message.type !== 'roster') return false;
         return !phonesOf(message).some((row) => row.seat === seat);
       });
-      const dropped = await phone.messages.waitFor((message) => message.type === 'error' && message.code === 'revoked');
-      expect(dropped.code).toBe('revoked');
+      const dropped = await phone.messages.waitFor((message) => message.type === 'error' && message.code === 'removed');
+      expect(dropped.code).toBe('removed');
       if (phone.ws.readyState !== 3) {
         await new Promise<void>((resolve) => phone.ws.addEventListener('close', () => resolve()));
       }
@@ -313,4 +318,219 @@ describe('removing a phone', () => {
     if (!still) throw new Error('roster');
     expect(phonesOf(still).some((row) => row.seat === seat && row.online === true)).toBe(true);
   }, 20_000);
+
+  it('says a phone was removed only for a live code and that phone', async () => {
+    const hostDevice = 'd42000031000000000000000000000000';
+    const kickedDevice = 'd42000032000000000000000000000000';
+    const otherDevice = 'd42000033000000000000000000000000';
+    expect(ROOM_MESSAGES.join_removed).toBe('This phone was removed from this match. Ask the others for a new code.');
+    const removed = { error: 'join_removed', message: ROOM_MESSAGES.join_removed };
+    const neutral = { error: 'join_code', message: ROOM_MESSAGES.join_code };
+    const created = await createLive(hostDevice);
+    const invite = await call(`/matches/${created.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${created.hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'player' }),
+    });
+    expect(invite.status).toBe(201);
+    const shared = (await invite.json()) as { token: string; code: string };
+    expect(shared.code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}$/);
+    const host = await openSocket(created.hostToken, hostDevice, IPHONE);
+    const phone = await openSocket(shared.token, kickedDevice, ANDROID);
+    const seat = await seatOf(phone.messages, true);
+    host.ws.send(JSON.stringify({ type: 'kick', seat }));
+    expect((await phone.messages.waitFor((message) => message.type === 'error')).code).toBe('removed');
+
+    const byToken = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${shared.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice }),
+    });
+    expect(byToken.status).toBe(401);
+    expect(await byToken.json()).toEqual(removed);
+
+    const byCode = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice, code: shared.code }),
+    });
+    expect(byCode.status).toBe(401);
+    expect(await byCode.json()).toEqual(removed);
+
+    const wrong = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice, code: 'ZZZZ-ZZZZ' }),
+    });
+    expect(wrong.status).toBe(401);
+    expect(await wrong.json()).toEqual(neutral);
+
+    const other = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: otherDevice, code: shared.code }),
+    });
+    expect(other.status).toBe(201);
+
+    const limitedIp = '203.0.113.77';
+    for (let n = 0; n < CODE_ATTEMPTS_PER_PREFIX; n += 1) {
+      const attempt = await callFrom(limitedIp, '/join', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ device: kickedDevice, code: 'YYYY-YYYY' }),
+      });
+      expect(attempt.status).toBe(401);
+    }
+    const blocked = await callFrom(limitedIp, '/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice, code: shared.code }),
+    });
+    expect(blocked.status).toBe(429);
+    expect(await blocked.json()).toEqual({ error: 'code_limited', message: ROOM_MESSAGES.code_limited });
+
+    await env.DB.prepare('UPDATE join_codes SET expires_at = ? WHERE match_id = ?').bind(1, created.matchId).run();
+    const expired = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice, code: shared.code }),
+    });
+    expect(expired.status).toBe(401);
+    expect(await expired.json()).toEqual(neutral);
+
+    const rotated = await call(`/matches/${created.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${created.hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'player', rotate: true }),
+    });
+    expect(rotated.status).toBe(201);
+    const next = (await rotated.json()) as { token: string; code: string };
+    expect(next.code).not.toBe(shared.code);
+    const oldCode = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice, code: shared.code }),
+    });
+    expect(oldCode.status).toBe(401);
+    expect(await oldCode.json()).toEqual(neutral);
+    const byNewToken = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${next.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice }),
+    });
+    expect(byNewToken.status).toBe(201);
+    const byNewCode = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: otherDevice, code: next.code }),
+    });
+    expect(byNewCode.status).toBe(201);
+    const kickedAgain = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice, code: next.code }),
+    });
+    expect(kickedAgain.status).toBe(201);
+  });
+
+  it('tells a kicked phone it was removed, including on its own token and when the court is full', async () => {
+    const hostDevice = 'd43000001000000000000000000000000';
+    const kickedDevice = 'd43000002000000000000000000000000';
+    const created = await createLive(hostDevice);
+    const invite = await call(`/matches/${created.matchId}/invites`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${created.hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'player' }),
+    });
+    const shared = (await invite.json()) as { token: string; code: string };
+    const host = await openSocket(created.hostToken, hostDevice, IPHONE);
+    const guests = [
+      await openSocket(shared.token, kickedDevice, ANDROID),
+      await openSocket(shared.token, 'd43000003000000000000000000000000', IPHONE),
+      await openSocket(shared.token, 'd43000004000000000000000000000000', ANDROID),
+    ];
+    const kicked = guests[0];
+    if (!kicked) throw new Error('kicked phone');
+    const seat = await seatOf(kicked.messages, true);
+    host.ws.send(JSON.stringify({ type: 'kick', seat }));
+    expect((await kicked.messages.waitFor((message) => message.type === 'error')).code).toBe('removed');
+    const reason = await env.DB.prepare(
+      'SELECT revoke_reason FROM credentials WHERE match_id = ? AND device_id = ? AND revoked_at IS NOT NULL',
+    ).bind(created.matchId, kickedDevice).first();
+    expect(reason?.revoke_reason).toBe('removed');
+
+    const ownToken = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${kicked.session}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice }),
+    });
+    expect(ownToken.status).toBe(401);
+    expect(await ownToken.json()).toEqual({
+      error: 'removed',
+      message: 'You were removed from this match. Ask the others for a new code.',
+    });
+
+    const replacement = await openSocket(shared.token, 'd43000005000000000000000000000000', IPHONE);
+    const whileFull = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: kickedDevice, code: shared.code }),
+    });
+    expect(whileFull.status).toBe(401);
+    expect(await whileFull.json()).toEqual({
+      error: 'join_removed',
+      message: ROOM_MESSAGES.join_removed,
+    });
+    const stranger = await call('/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'd43000006000000000000000000000000', code: shared.code }),
+    });
+    expect(stranger.status).toBe(201);
+
+    const ticket = 'rmvdhello1111111111111';
+    await env.DB.prepare('INSERT INTO tickets (ticket_hash, match_id, expires_at) VALUES (?, ?, ?)').bind(
+      await sha256Hex(ticket),
+      created.matchId,
+      Date.now() + 60_000,
+    ).run();
+    const response = await call(`/ws/${ticket}`, {
+      headers: { upgrade: 'websocket', 'user-agent': ANDROID },
+    });
+    const ws = response.webSocket;
+    if (!ws) throw new Error(`socket ${response.status}`);
+    ws.accept();
+    const messages = inbox(ws);
+    ws.send(JSON.stringify({
+      type: 'hello',
+      protocol: LIVE_PROTOCOL,
+      token: kicked.session,
+      device: kickedDevice,
+      clientNow: Date.now(),
+    }));
+    const hello = await messages.waitFor((message) => message.type === 'error');
+    expect(hello.code).toBe('removed');
+    expect(hello.code).not.toBe('revoked');
+
+    const left = await call(`/matches/${created.matchId}/leave`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${replacement.session}`, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(left.status).toBe(200);
+    const afterLeave = await call('/join', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${replacement.session}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'd43000005000000000000000000000000' }),
+    });
+    expect(afterLeave.status).toBe(401);
+    expect(await afterLeave.json()).toEqual({ error: 'bad_token', message: ROOM_MESSAGES.bad_token });
+  });
 });
+
+function callFrom(ip: string, path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('origin', ORIGIN);
+  headers.set('cf-connecting-ip', ip);
+  return exports.default.fetch(new Request(`https://padel.example${path}`, { ...init, headers }));
+}

@@ -736,7 +736,7 @@ export function useLive(
               revertRef.current(failed.event);
             }
           }
-          if (notice.code === 'revoked' || notice.code === 'expired') {
+          if (notice.code === 'revoked' || notice.code === 'expired' || notice.code === 'removed') {
             const current = hostRef.current;
             if (current) hostRef.current = { ...current, inviteToken: null, inviteExpiresAt: 0, inviteCode: null };
             setQr(null);

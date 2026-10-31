@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ROOM_MESSAGES, normalizeJoinCode } from '@padel/core';
-import { openScanCamera, preferContinuousFocus, scheduleScanFrame } from '../live/camera';
+import { preferContinuousFocus, requestScanCamera, scheduleScanFrame } from '../live/camera';
 import { tokenFromJoinQr } from '../live/protocol';
 import { DECODE_WAIT_MS, readQrVideo } from '../live/readQr';
 
@@ -11,6 +11,8 @@ interface JoinMatchPageProps {
   readonly onCode: (code: string) => void;
   readonly onToken: (token: string) => void;
   readonly onClose: () => void;
+  /** Permission prompt from the tap that opened this page. Absent until that tap. */
+  readonly cameraRequest?: Promise<MediaStream> | null;
   readonly scanFrame?: (video: HTMLVideoElement) => Promise<string | null>;
 }
 
@@ -95,10 +97,14 @@ function CodeForm({
   draft,
   onDraft,
   onSubmit,
+  onFocus,
+  onBlur,
 }: {
   readonly draft: string;
   readonly onDraft: (value: string) => void;
   readonly onSubmit: () => void;
+  readonly onFocus?: () => void;
+  readonly onBlur?: () => void;
 }) {
   return (
     <form
@@ -119,6 +125,8 @@ function CodeForm({
         maxLength={16}
         inputMode="text"
         onChange={(event) => onDraft(event.target.value)}
+        onFocus={onFocus}
+        onBlur={onBlur}
       />
       <button type="submit" className="text-btn" data-testid="join-by-code">
         Join
@@ -134,25 +142,28 @@ export function JoinMatchPage({
   onCode,
   onToken,
   onClose,
+  cameraRequest = null,
   scanFrame,
 }: JoinMatchPageProps) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [camera, setCamera] = useState(false);
-  const [entering, setEntering] = useState(false);
+  const requestRef = useRef<Promise<MediaStream> | null>(cameraRequest);
+  const cameraGen = useRef({ n: 0 });
+  const [camera, setCamera] = useState(cameraRequest != null);
+  const [typing, setTyping] = useState(false);
   const [draft, setDraft] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
   const [cameraHint, setCameraHint] = useState<string | null>(null);
   const onTokenRef = useRef(onToken);
   const onCloseRef = useRef(onClose);
-  const enteringRef = useRef(false);
+  const pauseRef = useRef(false);
   const pauseScanRef = useRef<(() => void) | null>(null);
   const resumeScanRef = useRef<(() => void) | null>(null);
   onTokenRef.current = onToken;
   onCloseRef.current = onClose;
-  enteringRef.current = entering;
+  pauseRef.current = typing;
 
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -188,9 +199,9 @@ export function JoinMatchPage({
 
   useEffect(() => {
     if (!camera) return;
-    if (entering) pauseScanRef.current?.();
+    if (typing) pauseScanRef.current?.();
     else resumeScanRef.current?.();
-  }, [camera, entering]);
+  }, [camera, typing]);
 
   useEffect(() => {
     if (!camera) return;
@@ -230,7 +241,7 @@ export function JoinMatchPage({
       stop();
       setLocalError(null);
       setCameraHint(CAMERA_STOPPED);
-      setEntering(false);
+      setTyping(false);
       setCamera(false);
     }, CAMERA_LIMIT_MS);
     const onHide = () => {
@@ -240,8 +251,11 @@ export function JoinMatchPage({
       }
     };
     document.addEventListener('visibilitychange', onHide);
+    const gen = cameraGen.current;
+    const mine = ++gen.n;
+    const pending = requestRef.current;
     const run = async () => {
-      if (stopped || scanning || !video || enteringRef.current) return;
+      if (stopped || scanning || !video || pauseRef.current) return;
       const started = performance.now();
       scanning = true;
       try {
@@ -250,7 +264,7 @@ export function JoinMatchPage({
         if (text) {
           stop();
           setCamera(false);
-          setEntering(false);
+          setTyping(false);
           const token = tokenFromJoinQr(text, pageHref);
           if (token) onTokenRef.current(token);
           else setLocalError(ROOM_MESSAGES.join_code);
@@ -262,7 +276,7 @@ export function JoinMatchPage({
         scanning = false;
       }
       if (stopped || !video) return;
-      if (enteringRef.current) {
+      if (pauseRef.current) {
         waiting = true;
         return;
       }
@@ -273,17 +287,11 @@ export function JoinMatchPage({
       }, Math.max(0, SCAN_GAP_MS - used));
     };
     void (async () => {
-      const devices = navigator.mediaDevices;
-      if (!devices || typeof devices.getUserMedia !== 'function') {
-        if (stopped) return;
-        setLocalError('The camera did not start.');
-        setCamera(false);
-        return;
-      }
+      let opened: MediaStream;
       try {
-        stream = await openScanCamera((constraints) => devices.getUserMedia(constraints));
+        opened = pending ? await pending : await requestScanCamera();
       } catch (error) {
-        if (stopped) return;
+        if (stopped || gen.n !== mine) return;
         const name = error instanceof Error ? error.name : '';
         if (name === 'NotAllowedError' || name === 'SecurityError') {
           setLocalError(null);
@@ -294,11 +302,13 @@ export function JoinMatchPage({
         setCamera(false);
         return;
       }
+      if (gen.n !== mine) return;
       if (stopped || !video) {
-        stopStream(stream);
-        stream = null;
+        stopStream(opened);
         return;
       }
+      stream = opened;
+      requestRef.current = null;
       const track = stream.getVideoTracks()[0];
       if (track) await preferContinuousFocus(track);
       if (stopped) {
@@ -327,10 +337,23 @@ export function JoinMatchPage({
       void run();
     })();
     return () => {
+      stopped = true;
       document.removeEventListener('visibilitychange', onHide);
-      stop();
+      queueMicrotask(() => {
+        if (gen.n === mine) stop();
+      });
     };
   }, [camera, pageHref, scanFrame]);
+
+  const armCamera = () => {
+    const request = requestScanCamera();
+    request.catch(() => undefined);
+    requestRef.current = request;
+    setLocalError(null);
+    setCameraHint(null);
+    setTyping(false);
+    setCamera(true);
+  };
 
   const submitCode = () => {
     if (!normalizeJoinCode(draft)) {
@@ -387,21 +410,13 @@ export function JoinMatchPage({
               )}
               {shown ? <p data-testid="join-match-error">{shown}</p> : null}
               {cameraHint ? <p data-testid="join-camera-hint">{cameraHint}</p> : null}
-              {entering ? (
-                <CodeForm draft={draft} onDraft={setDraft} onSubmit={submitCode} />
-              ) : (
-                <button
-                  type="button"
-                  className="text-btn"
-                  data-testid="enter-code"
-                  onClick={() => {
-                    setLocalError(null);
-                    setEntering(true);
-                  }}
-                >
-                  Enter code
-                </button>
-              )}
+              <CodeForm
+                draft={draft}
+                onDraft={setDraft}
+                onSubmit={submitCode}
+                onFocus={() => setTyping(true)}
+                onBlur={() => setTyping(false)}
+              />
             </div>
           ) : (
             <>
@@ -416,16 +431,17 @@ export function JoinMatchPage({
                 type="button"
                 className="text-btn"
                 data-testid="use-camera"
-                onClick={() => {
-                  setLocalError(null);
-                  setCameraHint(null);
-                  setEntering(false);
-                  setCamera(true);
-                }}
+                onClick={armCamera}
               >
                 Use camera
               </button>
-              <CodeForm draft={draft} onDraft={setDraft} onSubmit={submitCode} />
+              <CodeForm
+                draft={draft}
+                onDraft={setDraft}
+                onSubmit={submitCode}
+                onFocus={() => setTyping(true)}
+                onBlur={() => setTyping(false)}
+              />
             </>
           )}
         </div>

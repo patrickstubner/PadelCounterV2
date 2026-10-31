@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.2
+
+- A phone that is removed sees “You were removed from this match. Ask the others for a new code.” That message is final. Joining again with the current code, from the link or the short code, says “This phone was removed from this match. Ask the others for a new code.” A phone that was offline when it was removed hears the same sentence when it connects with its own token. A wrong code, an expired code, another phone, and a code after New code stay the same as before.
+- In portrait the current-set digit grows to the free space on that phone. Round digits stay inside the column, and the page does not scroll. Landscape is unchanged.
+- The buttons in the top bar use the same slightly rounded corners as the menu button, in portrait and in landscape.
+- Connect offers “Share my match (create code)” and “Join another match (scan code)”. Share opens the QR straight away. Join opens the camera on that tap, with the code field on the same screen. If the camera is blocked, the code can still be typed. A link still asks before it joins.
+
 ## 2.3.1
 
 - In portrait the large score shows the whole digit. Round numbers such as 0, 6, 8, and 9 are not cut off at the top or the bottom. Landscape is unchanged.

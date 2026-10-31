@@ -31,6 +31,7 @@ import { colonSetScore, currentHistory } from './domain/history';
 import { RULES_SUMMARY, celebrationWinner, courtCue, matchResult, serveCourtLabel, servePickPrompt } from './domain/rules';
 import { useInstallOffer } from './hooks/useInstallOffer';
 import { useMatch } from './hooks/useMatch';
+import { requestScanCamera } from './live/camera';
 import { forgetJoinToken, heldJoin, isJoinCodeFragment, readJoinToken, releaseHeldJoin, type JoinAttempt } from './live/protocol';
 import { useLive } from './live/useLive';
 import { INSTALL_LABEL, IOS_INSTALL_HINT } from './installOffer';
@@ -104,6 +105,7 @@ export function App() {
   const [connectMode, setConnectMode] = useState<'choose' | 'show'>('choose');
   const [phonesOpen, setPhonesOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
+  const [scanCamera, setScanCamera] = useState<Promise<MediaStream> | null>(null);
   const [pendingCode, setPendingCode] = useState<string | null>(null);
   const [hostLinkNote, setHostLinkNote] = useState(false);
   const joinStarted = useRef(false);
@@ -715,6 +717,9 @@ export function App() {
             room.share(match.log);
           }}
           onScan={() => {
+            const request = requestScanCamera();
+            request.catch(() => undefined);
+            setScanCamera(request);
             setConnectOpen(false);
             openJoin();
           }}
@@ -745,6 +750,7 @@ export function App() {
             room.connect(token);
           }}
           onClose={closeJoin}
+          cameraRequest={scanCamera}
         />
       ) : null}
       {pendingCode ? (

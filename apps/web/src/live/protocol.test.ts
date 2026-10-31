@@ -265,6 +265,9 @@ describe('pending live points', () => {
     expect(isTerminalCode('score_kept')).toBe(false);
     expect(isTerminalMessage(ROOM_MESSAGES.score_kept)).toBe(false);
     expect(isTerminalMessage(ROOM_MESSAGES.revoked)).toBe(true);
+    expect(isTerminalCode('removed')).toBe(true);
+    expect(isTerminalMessage(ROOM_MESSAGES.removed)).toBe(true);
+    expect(isTerminalCode('join_removed')).toBe(false);
     expect(isTerminalMessage(ROOM_MESSAGES.offline)).toBe(false);
     expect(isTerminalMessage(ROOM_MESSAGES.spectator_not_available)).toBe(true);
   });

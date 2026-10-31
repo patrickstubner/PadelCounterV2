@@ -441,6 +441,17 @@ async function mintTicket(request: Request, env: ServerEnv): Promise<Response> {
         { status: 429 },
       );
     }
+    if (
+      credential &&
+      credential.revokedAt !== null &&
+      now < credential.expiresAt &&
+      credential.revokeReason === 'removed'
+    ) {
+      return Response.json(
+        { error: 'removed', message: ROOM_MESSAGES.removed },
+        { status: 401, headers: { 'cache-control': 'no-store' } },
+      );
+    }
     if (!token || !credential || credential.revokedAt !== null || now >= credential.expiresAt) {
       return Response.json({ error: 'bad_token', message: ROOM_MESSAGES.bad_token }, { status: 401 });
     }
@@ -475,7 +486,7 @@ async function bindSharedJoin(
     method: 'POST',
     body: JSON.stringify({ token, deviceId: device, expiresAt: credential.expiresAt }),
   });
-  if (added.status === 409) return joinCodeRejected();
+  if (added.status === 409) return rejectedPlayerInvite(added);
   if (!added.ok) return Response.json({ error: 'unavailable' }, { status: 503 });
   const minted = await readMintGrant(added);
   const claimed = await index.claimMinted({
@@ -507,6 +518,24 @@ function joinCodeRejected(): Response {
     { error: 'join_code', message: ROOM_MESSAGES.join_code },
     { status: 401, headers: { 'cache-control': 'no-store' } },
   );
+}
+
+/** A full court stays the generic code error. Only a kicked phone on a live code is told it was removed. */
+async function rejectedPlayerInvite(response: Response): Promise<Response> {
+  let code = '';
+  try {
+    const body = (await response.json()) as { error?: unknown };
+    if (typeof body.error === 'string') code = body.error;
+  } catch {
+    code = '';
+  }
+  if (code === 'join_removed') {
+    return Response.json(
+      { error: 'join_removed', message: ROOM_MESSAGES.join_removed },
+      { status: 401, headers: { 'cache-control': 'no-store' } },
+    );
+  }
+  return joinCodeRejected();
 }
 
 async function readMintGrant(response: Response): Promise<{ replaced: readonly string[]; revokedAt: number }> {
@@ -577,7 +606,7 @@ async function redeemJoinCode(request: Request, env: ServerEnv, device: string, 
     method: 'POST',
     body: JSON.stringify({ token, deviceId: device, expiresAt: credential.expiresAt }),
   });
-  if (added.status === 409) return joinCodeRejected();
+  if (added.status === 409) return rejectedPlayerInvite(added);
   if (!added.ok) return Response.json({ error: 'unavailable' }, { status: 503 });
   const minted = await readMintGrant(added);
   const claimed = await index.claimMinted({

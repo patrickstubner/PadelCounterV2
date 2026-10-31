@@ -188,12 +188,10 @@ export function ConnectPage({
         {mode === 'choose' ? (
           <div className="connect-choices">
             <button type="button" className="connect-choice" data-testid="show-qr" onClick={onShow}>
-              Show QR code
-              <small>Connect another player. Includes a code to type.</small>
+              Share my match (create code)
             </button>
             <button type="button" className="connect-choice" data-testid="scan-qr" onClick={onScan}>
-              Scan QR code
-              <small>Join a match with the camera or a typed code.</small>
+              Join another match (scan code)
             </button>
           </div>
         ) : null}
