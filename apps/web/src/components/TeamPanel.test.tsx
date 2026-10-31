@@ -69,6 +69,13 @@ describe('plus and minus controls', () => {
     expect(tag('increment-b')).toContain('aria-disabled="true"');
     expect(tag('decrement-a')).not.toContain('disabled');
     expect(tag('decrement-b')).toContain('disabled');
+
+    const third = renderToStaticMarkup(
+      <TeamPanel team="b" state={{ ...state, activeSet: 2 }} onIncrement={noop} onDecrement={noop} onRename={noop} onSelectSet={noop} onServe={noop} />,
+    );
+    const thirdPlus = third.slice(third.indexOf('data-testid="increment-b"'), third.indexOf('>', third.indexOf('data-testid="increment-b"')));
+    expect(thirdPlus).toContain('disabled');
+    expect(thirdPlus).toContain('aria-disabled="true"');
   });
 
   it('widens only the portrait buttons and keeps a bold high-contrast sign there', () => {

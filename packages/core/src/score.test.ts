@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { isValidStoredName, parseLiveTeamName, sanitizeTeamName } from './names';
 import { connectionCloses } from './messages';
 import { createMatch, assignMatchId, matchReducer, replayScore } from './reducer';
-import { matchWinner, setWinner } from './rules';
+import { canScoreGame, matchWinner, setWinner } from './rules';
 import { parseMatchLog, parseStoredEvent } from './parse';
+import type { MatchEvent } from './types';
 
 const T0 = 1_700_000_000_000;
 
@@ -29,13 +30,39 @@ describe('scoring without undo', () => {
     winSet('a', T0 + 1);
     winSet('a', T0 + 20);
     expect(matchWinner(state.sets)).toBe('a');
-    const onDecider = matchReducer(state, { type: 'game/increment', team: 'b', at: T0 + 40 });
-    expect(onDecider).toBe(state);
-    state = matchReducer(state, { type: 'set/select', index: 2, at: T0 + 41 });
-    state = matchReducer(state, { type: 'game/increment', team: 'b', at: T0 + 42 });
-    expect(state.sets[1]).toEqual({ a: 6, b: 0 });
+    state = matchReducer(state, { type: 'set/select', index: 2, at: T0 + 40 });
+    state = matchReducer(state, { type: 'game/increment', team: 'b', at: T0 + 41 });
     expect(state.sets[2]).toEqual({ a: 0, b: 1 });
     expect(matchWinner(state.sets)).toBe('a');
+  });
+
+  it('replays a stored plus on a finished set the same way, even when a new plus is closed', () => {
+    const base = createMatch(T0);
+    const onFinished: MatchEvent[] = [];
+    let at = T0;
+    for (let i = 0; i < 6; i += 1) onFinished.push({ type: 'game/increment', team: 'a', at: ++at });
+    onFinished.push({ type: 'set/select', index: 0, at: ++at });
+    const beforePlus = replayScore(base, onFinished);
+    expect(beforePlus.sets[0]).toEqual({ a: 6, b: 0 });
+    expect(canScoreGame(beforePlus, 'b')).toBe(false);
+    onFinished.push({ type: 'game/increment', team: 'b', at: at + 1 });
+    const replayed = replayScore(base, onFinished);
+    expect(replayed.sets[0]).toEqual({ a: 6, b: 1 });
+    expect(replayScore(base, onFinished).sets).toEqual(replayed.sets);
+
+    const decided: MatchEvent[] = [];
+    at = T0;
+    for (let i = 0; i < 12; i += 1) decided.push({ type: 'game/increment', team: 'a', at: ++at });
+    decided.push({ type: 'set/select', index: 2, at: ++at });
+    const openThird = replayScore(base, decided);
+    expect(matchWinner(openThird.sets)).toBe('a');
+    expect(openThird.sets[2]).toEqual({ a: 0, b: 0 });
+    expect(canScoreGame(openThird, 'b')).toBe(false);
+    decided.push({ type: 'game/increment', team: 'b', at: at + 1 });
+    const withThird = replayScore(base, decided);
+    expect(withThird.sets[1]).toEqual({ a: 6, b: 0 });
+    expect(withThird.sets[2]).toEqual({ a: 0, b: 1 });
+    expect(replayScore(base, decided)).toEqual(withThird);
   });
 
   it('corrects a finished 6:0 set to 5:1 without dropping the earlier events', () => {

@@ -5,7 +5,7 @@
 - In portrait the large score shows the whole digit. Round numbers such as 0, 6, 8, and 9 are not cut off at the top or the bottom. Landscape is unchanged.
 - Remove asks first. This phone cannot rejoin with the current code. Tap New code to let it join again.
 - The home-screen icon, the maskable icons, and the favicon show a large V2.
-- Plus stops on a set that is already finished, including the set that decided the match. That covers 6–0, 6–4, 7–5, and 7–6, for both teams. Minus still takes a game back. Plus works again when that set is no longer finished. An open third set can still be scored. The server refuses a plus that the court would refuse.
+- Plus stops on a set that is already finished, and when the match is already won, including the empty third set. That covers 6–0, 6–4, 7–5, and 7–6, for both teams, and a match that has ended. Minus still takes a game back. Plus works again when that set is no longer finished. A saved log still replays a plus that was stored earlier. If the server refuses a point this phone already counted, the court says that point was not added.
 
 ## 2.3.0
 

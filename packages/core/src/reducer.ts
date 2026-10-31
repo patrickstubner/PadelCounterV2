@@ -1,7 +1,7 @@
 import { createMatchId, isUuid } from './id';
 import type { MatchLog } from './parse';
 import { clampLiveTeamName, sanitizeTeamName, storedTeamName } from './names';
-import { canDecrement, canScoreGame, gamesPlayed, isPlausibleSetScore, matchWinner, rotateServe, setWinner } from './rules';
+import { canDecrement, gamesPlayed, isPlausibleSetScore, matchWinner, rotateServe, setWinner } from './rules';
 import { SCHEMA_VERSION, isNewMatchEvent, isPlayerSlot, isSetIndex, isTeamId, isTimestamp, type MatchEvent, type MatchState, type Server, type SetIndex, type SetScore, type TeamId } from './types';
 
 /** Names stored for a new live match. Replay cannot put a stack of marks back. */
@@ -91,7 +91,6 @@ function nextSetIndex(index: SetIndex): SetIndex {
 }
 
 function applyGame(state: MatchState, team: TeamId, at: number, delta: 1 | -1): MatchState {
-  if (delta === 1 && !canScoreGame(state, team)) return state;
   let index: SetIndex = state.activeSet;
   if (delta === -1 && state.sets[index][team] <= 0 && index > 0) {
     const previous = (index - 1) as SetIndex;

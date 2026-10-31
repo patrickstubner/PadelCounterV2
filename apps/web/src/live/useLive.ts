@@ -724,6 +724,7 @@ export function useLive(
             return;
           }
           if (notice.code === 'slow_down') slowDown.current = true;
+          let countedPlus = false;
           if (notice.eventId) {
             const failed = unackedRef.current.find((item) => item.id === notice.eventId);
             if (failed) {
@@ -731,6 +732,7 @@ export function useLive(
               queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
               seenRef.current.delete(notice.eventId);
               if (logIdsRef.current.at(-1) === notice.eventId) logIdsRef.current.pop();
+              countedPlus = failed.event.type === 'game/increment';
               revertRef.current(failed.event);
             }
           }
@@ -754,8 +756,9 @@ export function useLive(
             detachSocket(ws);
             return;
           }
-          if (asJoin && !readyRef.current) setJoinError(notice.message);
-          else noteError(notice.message);
+          const refused = countedPlus ? 'That point was not added.' : notice.message;
+          if (asJoin && !readyRef.current) setJoinError(refused);
+          else noteError(refused);
           if (asJoin && !readyRef.current) setJoining(false);
           if (!notice.close) return;
           readyRef.current = false;

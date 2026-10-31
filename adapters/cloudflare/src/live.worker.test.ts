@@ -1035,7 +1035,7 @@ describe('offline score reconcile in the durable object', () => {
     expect(events.at(-1)?.type).toBe('match/end');
     const extra = offlineFrom(created.state, ['a'])[0];
     if (!extra) throw new Error('point');
-    expect((await push(again.ws, again.messages, stepId(261), extra.event, extra.claim, 'seed-5')).reconciled).toBe('already');
+    expect((await push(again.ws, again.messages, stepId(261), extra.event, extra.claim, 'seed-5')).code).toBe('not_applied');
     const board = await storedBoard(created.hostToken, 'd0e000023000000000000000000000000');
     expect(board.sets[0]).toEqual({ a: 4, b: 1 });
     expect(board.ended).toBe(true);
@@ -1126,8 +1126,9 @@ describe('offline score reconcile in the durable object', () => {
       baseRevision: created.state.revision,
     };
     const plus: MatchEvent = { type: 'game/increment', team: 'b', at: Date.now() };
-    expect(scoreClaimFor(created.state, plus)).toBeNull();
-    const refused = await push(host.ws, host.messages, '00000000-0000-4000-8000-000000000231', plus, forged);
+    const consistent = scoreClaimFor(created.state, plus);
+    expect(consistent?.after.sets[1]).toEqual({ a: 6, b: 1 });
+    const refused = await push(host.ws, host.messages, '00000000-0000-4000-8000-000000000231', plus, consistent ?? forged);
     expect(refused).toMatchObject({ type: 'error', code: 'not_applied' });
     const minus: MatchEvent = { type: 'game/decrement', team: 'a', at: Date.now() };
     const taken = await push(host.ws, host.messages, '00000000-0000-4000-8000-000000000232', minus, scoreClaimFor(created.state, minus));
@@ -1140,6 +1141,70 @@ describe('offline score reconcile in the durable object', () => {
     expect((accepted.event as { team?: string }).team).toBe('b');
     const board = await storedBoard(created.hostToken, 'd23100001000000000000000000000000');
     expect(board.sets[1]).toEqual({ a: 5, b: 1 });
+  });
+
+  it('rejects a plus in the empty third set after 6:0 and 6:0', async () => {
+    const device = 'd23100003000000000000000000000000';
+    const created = await createLive(device, Array.from({ length: 12 }, () => 'a' as const));
+    const host = await connect(created.hostToken, device);
+    const choose: MatchEvent = { type: 'set/select', index: 2, at: Date.now() };
+    const selected = await push(host.ws, host.messages, stepId(310), choose, scoreClaimFor(created.state, choose));
+    expect(selected.type).toBe('event');
+    const onThird = matchReducer(created.state, choose);
+    const plus: MatchEvent = { type: 'game/increment', team: 'a', at: Date.now() };
+    const claim = scoreClaimFor(onThird, plus);
+    expect(claim?.after.sets[2]).toEqual({ a: 1, b: 0 });
+    const refused = await push(host.ws, host.messages, stepId(311), plus, claim);
+    expect(refused).toMatchObject({ type: 'error', code: 'not_applied' });
+    const board = await storedBoard(created.hostToken, device);
+    expect(board.sets[2]).toEqual({ a: 0, b: 0 });
+    expect(board.activeSet).toBe(2);
+  });
+
+  it('rejects a plus at 6:4, 7:5, and 7:6', async () => {
+    const rally = (pairs: number, extra: readonly TeamId[]): TeamId[] => {
+      const teams: TeamId[] = [];
+      for (let i = 0; i < pairs; i += 1) teams.push('a', 'b');
+      teams.push(...extra);
+      return teams;
+    };
+    const cases: { device: string; teams: TeamId[]; score: { a: number; b: number }; id: number }[] = [
+      { device: 'd23100064000000000000000000000000', teams: rally(4, ['a', 'a']), score: { a: 6, b: 4 }, id: 640 },
+      { device: 'd23100075000000000000000000000000', teams: rally(5, ['a', 'a']), score: { a: 7, b: 5 }, id: 750 },
+      { device: 'd23100076000000000000000000000000', teams: rally(6, ['a']), score: { a: 7, b: 6 }, id: 760 },
+    ];
+    for (const item of cases) {
+      const created = await createLive(item.device, item.teams);
+      expect(created.state.sets[0]).toEqual(item.score);
+      const host = await connect(created.hostToken, item.device);
+      const choose: MatchEvent = { type: 'set/select', index: 0, at: Date.now() };
+      const selected = await push(host.ws, host.messages, stepId(item.id), choose, scoreClaimFor(created.state, choose));
+      expect(selected.type, item.device).toBe('event');
+      const onSet = matchReducer(created.state, choose);
+      const plus: MatchEvent = { type: 'game/increment', team: 'b', at: Date.now() };
+      const refused = await push(host.ws, host.messages, stepId(item.id + 1), plus, scoreClaimFor(onSet, plus));
+      expect(refused, item.device).toMatchObject({ type: 'error', code: 'not_applied' });
+      const board = await storedBoard(created.hostToken, item.device);
+      expect(board.sets[0], item.device).toEqual(item.score);
+      host.ws.close();
+    }
+  });
+
+  it('rejects a plus after End match', async () => {
+    const device = 'd23100090000000000000000000000000';
+    const created = await createLive(device, ['a']);
+    const host = await connect(created.hostToken, device);
+    const end: MatchEvent = { type: 'match/end', at: Date.now() };
+    const ended = await push(host.ws, host.messages, stepId(900), end, scoreClaimFor(created.state, end));
+    expect(ended.type).toBe('event');
+    const closed = matchReducer(created.state, end);
+    expect(closed.ended).toBe(true);
+    const plus: MatchEvent = { type: 'game/increment', team: 'b', at: Date.now() };
+    const refused = await push(host.ws, host.messages, stepId(901), plus, scoreClaimFor(closed, plus));
+    expect(refused).toMatchObject({ type: 'error', code: 'not_applied' });
+    const board = await storedBoard(created.hostToken, device);
+    expect(board.ended).toBe(true);
+    expect(board.sets[0]).toEqual({ a: 1, b: 0 });
   });
 
   it('closes a protocol 1 hello and asks for an update', async () => {

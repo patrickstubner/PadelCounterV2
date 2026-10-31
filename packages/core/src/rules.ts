@@ -144,9 +144,12 @@ export function canIncrement(score: SetScore, team: TeamId): boolean {
   return isPlausibleSetScore(next.a, next.b);
 }
 
-/** Plus is closed on the set that is already won, and after End match. Minus stays open. */
+/**
+ * A new plus is closed when this set is already won, when the match is already won,
+ * and after End match. Replay of a stored log does not use this. Minus stays open.
+ */
 export function canScoreGame(state: MatchState, team: TeamId): boolean {
-  if (state.ended) return false;
+  if (state.ended || matchWinner(state.sets) !== null) return false;
   return canIncrement(state.sets[state.activeSet], team);
 }
 
