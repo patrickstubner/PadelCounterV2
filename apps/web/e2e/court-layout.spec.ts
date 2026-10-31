@@ -46,78 +46,79 @@ test('portrait uses the full height and keeps the version in the menu', async ({
   expect(shape.phone).toBe('0.7rem');
   expect(shape.burger).toBe('0.7rem');
   expect(shape.bar).toBe('0.7rem');
-  await page.setViewportSize({ width: 1100, height: 700 });
-  await expect(page.getByTestId('menu-toggle')).toHaveCount(0);
-  const corners = await page.locator('.top-actions .text-btn').evaluateAll((nodes) => nodes.map((node) => {
-    const box = node.getBoundingClientRect();
-    const radius = Number.parseFloat(getComputedStyle(node).borderTopLeftRadius);
-    return { radius, height: box.height, pill: radius >= box.height / 2 - 0.5 };
-  }));
-  expect(corners.length).toBeGreaterThan(0);
-  for (const corner of corners) {
-    expect(corner.pill).toBe(false);
-    expect(corner.radius).toBeGreaterThan(8);
-    expect(corner.height).toBeGreaterThan(40);
-  }
-  await page.setViewportSize({ width: 390, height: 780 });
+  const launch = await page.evaluate(() => {
+    for (const sheet of document.styleSheets) {
+      let rules: CSSRuleList;
+      try {
+        rules = sheet.cssRules;
+      } catch {
+        continue;
+      }
+      for (const rule of rules) {
+        if (rule instanceof CSSStyleRule && rule.selectorText === '.connect-launch') return rule.style.borderRadius;
+      }
+    }
+    return '';
+  });
+  expect(launch).toBe('0.7rem');
   await page.getByTestId('menu-toggle').click();
   const version = page.getByTestId('app-version');
   await expect(version).toBeVisible();
-  await expect(version).toHaveText(/^v2\.3\.2$/);
+  await expect(version).toHaveText(/^v2\.3\.3$/);
   const size = await version.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
   expect(size).toBeGreaterThanOrEqual(16);
 });
 
-test('wide landscape header labels stay inside the button', async ({ page }) => {
+test('landscape shows the menu, hides the footer, and keeps Connect beside the menu', async ({ page }) => {
   for (const size of [
+    { width: 844, height: 390 },
     { width: 932, height: 430 },
     { width: 1100, height: 700 },
   ]) {
     await page.setViewportSize(size);
-    await expect(page.getByTestId('menu-toggle')).toHaveCount(0);
-    const header = await page.locator('.top').boundingBox();
-    expect(header).not.toBeNull();
-    if (!header) continue;
-    expect(header.height).toBeGreaterThan(60);
-    for (const id of ['fanfare-toggle', 'haptic-toggle'] as const) {
-      const button = page.getByTestId(id);
-      await expect(button).toBeVisible();
-      const fit = await button.evaluate((node) => {
-        const box = node.getBoundingClientRect();
-        const range = document.createRange();
-        range.selectNodeContents(node);
-        const text = range.getBoundingClientRect();
-        const style = getComputedStyle(node);
-        return {
-          inside: text.top >= box.top - 0.5
-            && text.bottom <= box.bottom + 0.5
-            && text.left >= box.left - 0.5
-            && text.right <= box.right + 0.5,
-          height: box.height,
-          minHeight: Number.parseFloat(style.minHeight),
-          label: node.textContent,
-        };
-      });
-      expect(fit.label === 'Victory sound: On' || fit.label === 'Haptic feedback: On').toBe(true);
-      expect(fit.inside, `${size.width}x${size.height} ${fit.label}`).toBe(true);
-      expect(fit.height).toBeGreaterThanOrEqual(fit.minHeight - 0.5);
-    }
+    await expect(page.locator('.rules')).toBeHidden();
+    await expect(page.locator('.court-foot')).toBeHidden();
+    await expect(page.getByTestId('serve-cue')).toBeVisible();
+    const menu = page.getByTestId('menu-toggle');
+    const connect = page.getByTestId('connect-open');
+    await expect(menu).toBeVisible();
+    await expect(connect).toBeVisible();
+    await expect(connect).toHaveClass(/connect-launch/);
+    const placed = await page.evaluate(() => {
+      const connectNode = document.querySelector('[data-testid="connect-open"]');
+      const menuNode = document.querySelector('[data-testid="menu-toggle"]');
+      if (!(connectNode instanceof HTMLElement) || !(menuNode instanceof HTMLElement)) return null;
+      const connectBox = connectNode.getBoundingClientRect();
+      const menuBox = menuNode.getBoundingClientRect();
+      const radius = (node: HTMLElement) => getComputedStyle(node).borderTopLeftRadius;
+      return {
+        connectRight: connectBox.right,
+        menuLeft: menuBox.x,
+        connectRadius: radius(connectNode),
+        menuRadius: radius(menuNode),
+        connectHeight: connectBox.height,
+        menuHeight: menuBox.height,
+      };
+    });
+    expect(placed).not.toBeNull();
+    if (!placed) continue;
+    expect(placed.connectRight).toBeLessThanOrEqual(placed.menuLeft + 1);
+    expect(placed.connectRadius).toBe(placed.menuRadius);
+    expect(placed.connectHeight).toBeGreaterThan(40);
+    expect(Math.abs(placed.connectHeight - placed.menuHeight)).toBeLessThan(1);
+    const board = await page.locator('.board').boundingBox();
+    expect(board).not.toBeNull();
+    if (!board) continue;
+    expect(board.height).toBeGreaterThan(200);
   }
-});
-
-test('landscape keeps the rules and the menu version', async ({ page }) => {
   await page.setViewportSize({ width: 844, height: 390 });
-  await expect(page.locator('.rules')).toBeVisible();
-  await expect(page.getByTestId('serve-cue')).toBeVisible();
-  const board = await page.locator('.board').boundingBox();
-  expect(board).not.toBeNull();
-  if (!board) return;
-  expect(board.height).toBeGreaterThan(200);
   await page.getByTestId('menu-toggle').click();
   const version = page.getByTestId('app-version');
   await expect(version).toBeVisible();
+  await expect(version).toHaveText(/^v2\.3\.3$/);
   const size = await version.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
   expect(size).toBeGreaterThanOrEqual(16);
+  await expect(page.getByTestId('fanfare-toggle')).toBeVisible();
 });
 
 test('reduced motion does not pulse the serve balls', async ({ page }) => {
@@ -139,10 +140,12 @@ test('tie-break and the next set explain the serve, then the hint goes away', as
   }
   const tiebreak = page.getByTestId('tiebreak-hint');
   await expect(tiebreak).toBeVisible();
-  await expect(tiebreak).toContainText('1 point from the right');
-  await expect(tiebreak).toContainText('from the left');
-  await expect(tiebreak).toContainText('2 points each');
-  await expect(tiebreak).toContainText('every 6 points');
+  await expect(tiebreak).toContainText('Team A player 1 serves 1 point, from the right');
+  await expect(tiebreak).toContainText('Then each player serves 2 points in a row');
+  await expect(tiebreak).toContainText('The next 2 points are from the left');
+  await expect(tiebreak).toContainText('Change ends every 6 points');
+  await expect(tiebreak).not.toContainText('then from the right');
+  await expect(tiebreak).not.toContainText('player 2');
   await page.getByTestId('increment-a').click();
   const next = page.getByTestId('next-set-hint');
   await expect(next).toBeVisible();

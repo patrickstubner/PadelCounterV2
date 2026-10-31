@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { isOpenMatch, lastChangeAt, otherPhones, planNewMatch, scoreClaimFor, type NewMatchPlan } from '@padel/core';
 import { detailHistoryState, joinHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
 import { ConfirmDialog } from './components/ConfirmDialog';
@@ -35,6 +35,7 @@ import { requestScanCamera } from './live/camera';
 import { forgetJoinToken, heldJoin, isJoinCodeFragment, readJoinToken, releaseHeldJoin, type JoinAttempt } from './live/protocol';
 import { useLive } from './live/useLive';
 import { INSTALL_LABEL, IOS_INSTALL_HINT } from './installOffer';
+import { syncCourtChrome } from './chrome';
 import { watchControllerChange } from './registerServiceWorker';
 import { useWakeLock } from './useWakeLock';
 
@@ -73,6 +74,9 @@ function useUpdateReady(): boolean {
 export function App() {
   const match = useMatch();
   const room = useLive(match.liveRef, match.replaceLog, match.applyLive, match.revertLive, match.readLog, match.archiveLocal);
+  useLayoutEffect(() => {
+    syncCourtChrome(room.courtTone, document);
+  }, [room.courtTone]);
   const install = useInstallOffer();
   useWakeLock(!match.state.ended);
   const updateReady = useUpdateReady();

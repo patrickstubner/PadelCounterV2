@@ -289,11 +289,10 @@ describe('serve rotation', () => {
       serve: { team: 'b' as const, player: 2 as const },
     };
     expect(isTiebreak(tied)).toBe(true);
-    expect(tiebreakHint(tied)).toContain('Team B player 2 serves first');
-    expect(tiebreakHint(tied)).toContain('1 point from the right');
-    expect(tiebreakHint(tied)).toContain('2 points, from the left');
-    expect(tiebreakHint(tied)).toContain('2 points each');
-    expect(tiebreakHint(tied)).toContain('every 6 points');
+    expect(tiebreakHint(tied)).toBe(
+      'Team B player 2 serves 1 point, from the right. Then each player serves 2 points in a row. The next 2 points are from the left. Change ends every 6 points.',
+    );
+    expect(tiebreakHint(tied)).not.toContain('then from the right');
     expect(tiebreakHint({ ...tied, serve: null })).toContain('The player whose turn it is');
     expect(courtCue(state)).toEqual({ kind: 'choose-serve', text: 'Please choose the serving team' });
     expect(courtCue({ ...state, serve: { team: 'a', player: 1 } })).toBeNull();
@@ -369,5 +368,28 @@ describe('serve rotation', () => {
     expect(serveCourtLabel({ ...tied, serve: null, serveAsk: 'b' })).toBe('Team B to serve');
     expect(servePickPrompt({ ...tied, serve: null, servePrompt: true, ended: true })).toBeNull();
     expect(servePickPrompt({ ...tied, servePrompt: true })).toBeNull();
+  });
+
+  it('names the player whose turn it is after a full rotation to 6:6', () => {
+    const reached = (opener: 'a' | 'b') => {
+      let state = createMatch(1_700_000_000_000, '00000000-0000-4000-8000-000000000001');
+      state = matchReducer(state, { type: 'serve/set', team: opener, player: 1, at: state.updatedAt + 1 });
+      for (let game = 0; game < 6; game += 1) {
+        state = matchReducer(state, { type: 'game/increment', team: 'a', at: state.updatedAt + 1 });
+        state = matchReducer(state, { type: 'game/increment', team: 'b', at: state.updatedAt + 1 });
+      }
+      return state;
+    };
+    const fromA = reached('a');
+    expect(fromA.sets[0]).toEqual({ a: 6, b: 6 });
+    expect(fromA.serve).toEqual({ team: 'a', player: 1 });
+    expect(tiebreakHint(fromA)).toContain('Team A player 1 serves 1 point, from the right');
+    expect(tiebreakHint(fromA)).not.toContain('player 2');
+    expect(tiebreakHint(fromA)).not.toContain('Team B');
+    const fromB = reached('b');
+    expect(fromB.serve).toEqual({ team: 'b', player: 1 });
+    expect(tiebreakHint(fromB)).toContain('Team B player 1 serves 1 point, from the right');
+    expect(tiebreakHint(fromB)).not.toContain('player 2');
+    expect(tiebreakHint(fromB)).not.toContain('Team A');
   });
 });

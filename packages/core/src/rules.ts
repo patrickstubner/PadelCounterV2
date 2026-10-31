@@ -233,17 +233,20 @@ export function isTiebreak(state: MatchState): boolean {
 }
 
 /**
- * At 6:6 the hint follows the FIP tie-break (one serve from the right, then two
- * each, the next two from the left, ends every 6 points). This counter still
- * scores that game as one game. It does not step the server every two points.
- * The English rule says those next two points are “serving from the left” and
- * does not name a side for each later point. Rule 6.5 still alternates sides.
+ * At 6:6 the hint follows FIP tie-break point 3 and Rule 5.2.
+ * The player whose turn it is serves one point from the right. Then each player
+ * in the service order serves two points in a row. Point 3 says the next two
+ * points are served from the left. It does not say the second of those points,
+ * or any later point, is from the right, so this hint does not add that side.
+ * Rule 6.5 alternates sides in an ordinary game and is not used to fill the gap.
+ * This counter still scores that game as one game. It does not step the server
+ * every two points. The named player is the server already on the court.
  */
 export function tiebreakCueText(state: MatchState): string {
   const who = state.serve
     ? `${state.teams[state.serve.team].name} player ${state.serve.player}`
     : 'The player whose turn it is';
-  return `${who} serves first: 1 point from the right. Then the other team serves 2 points, from the left. After that, 2 points each. Change ends every 6 points.`;
+  return `${who} serves 1 point, from the right. Then each player serves 2 points in a row. The next 2 points are from the left. Change ends every 6 points.`;
 }
 
 /**
