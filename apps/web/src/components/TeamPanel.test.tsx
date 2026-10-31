@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { createMatch } from '../domain/reducer';
+import { createMatch, matchReducer } from '../domain/reducer';
 import { MinusIcon, PlusIcon } from './icons';
 import { TeamPanel } from './TeamPanel';
 
@@ -48,6 +48,36 @@ describe('serve marker', () => {
 });
 
 describe('plus and minus controls', () => {
+  it('disables plus for both teams when the match is already won and keeps minus', () => {
+    let state = createMatch(1_700_000_000_000, '00000000-0000-4000-8000-000000000001');
+    for (let i = 0; i < 12; i += 1) {
+      state = matchReducer(state, { type: 'game/increment', team: 'a', at: state.updatedAt + 1 });
+    }
+    const html = renderToStaticMarkup(
+      <>
+        <TeamPanel team="a" state={state} onIncrement={noop} onDecrement={noop} onRename={noop} onSelectSet={noop} onServe={noop} />
+        <TeamPanel team="b" state={state} onIncrement={noop} onDecrement={noop} onRename={noop} onSelectSet={noop} onServe={noop} />
+      </>,
+    );
+    const tag = (id: string) => {
+      const at = html.indexOf(`data-testid="${id}"`);
+      return html.slice(at, html.indexOf('>', at));
+    };
+    expect(tag('increment-a')).toContain('disabled=""');
+    expect(tag('increment-a')).toContain('aria-disabled="true"');
+    expect(tag('increment-b')).toContain('disabled');
+    expect(tag('increment-b')).toContain('aria-disabled="true"');
+    expect(tag('decrement-a')).not.toContain('disabled');
+    expect(tag('decrement-b')).toContain('disabled');
+
+    const third = renderToStaticMarkup(
+      <TeamPanel team="b" state={{ ...state, activeSet: 2 }} onIncrement={noop} onDecrement={noop} onRename={noop} onSelectSet={noop} onServe={noop} />,
+    );
+    const thirdPlus = third.slice(third.indexOf('data-testid="increment-b"'), third.indexOf('>', third.indexOf('data-testid="increment-b"')));
+    expect(thirdPlus).toContain('disabled');
+    expect(thirdPlus).toContain('aria-disabled="true"');
+  });
+
   it('widens only the portrait buttons and keeps a bold high-contrast sign there', () => {
     const plus = renderToStaticMarkup(<PlusIcon />);
     const minus = renderToStaticMarkup(<MinusIcon />);

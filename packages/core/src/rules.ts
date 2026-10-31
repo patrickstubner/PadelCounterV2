@@ -139,8 +139,18 @@ export function celebrationWinner(state: MatchState): TeamId | null {
 }
 
 export function canIncrement(score: SetScore, team: TeamId): boolean {
+  if (setWinner(score.a, score.b) !== null) return false;
   const next: SetScore = { a: score.a, b: score.b, [team]: score[team] + 1 };
   return isPlausibleSetScore(next.a, next.b);
+}
+
+/**
+ * A new plus is closed when this set is already won, when the match is already won,
+ * and after End match. Replay of a stored log does not use this. Minus stays open.
+ */
+export function canScoreGame(state: MatchState, team: TeamId): boolean {
+  if (state.ended || matchWinner(state.sets) !== null) return false;
+  return canIncrement(state.sets[state.activeSet], team);
 }
 
 export function canDecrement(score: SetScore, team: TeamId): boolean {

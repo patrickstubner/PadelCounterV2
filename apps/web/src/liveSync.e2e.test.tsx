@@ -428,6 +428,7 @@ describe('live socket reconnect', () => {
     await wait(30);
     expect(document.querySelector('.sr-only')?.textContent).toContain('Team A 2');
     expect(document.querySelector('.sr-only')?.textContent).not.toContain('Team A 3');
+    expect(document.querySelector('[data-testid="live-error"]')?.textContent).toBe('That point was not added.');
   }, 10_000);
 
   it('clears the token and shows Disconnected when the server rejects the code', async () => {

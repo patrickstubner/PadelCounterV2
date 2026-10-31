@@ -44,7 +44,7 @@ describe('phone list', () => {
       (document.querySelector('[data-testid="kick-p2"]') as HTMLButtonElement).click();
     });
     expect(document.body.textContent).toContain('Remove this phone?');
-    expect(document.body.textContent).toContain('Others can still join with this code until you tap New code.');
+    expect(document.body.textContent).toContain('This phone cannot rejoin with the current code. Tap New code to let it join again.');
     expect(kicked).toEqual([]);
     await act(async () => {
       (document.querySelector('[data-testid="kick-cancel"]') as HTMLButtonElement).click();

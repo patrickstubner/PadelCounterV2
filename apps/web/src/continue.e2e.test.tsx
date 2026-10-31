@@ -145,6 +145,7 @@ describe('continue from history', () => {
     await press('confirm-continue');
     expect(document.querySelector('[data-testid="victory"]')).toBeNull();
     await press('increment-b');
-    expect(document.querySelector('[data-testid="current-b"]')?.textContent).toContain('1');
+    expect(document.querySelector('[data-testid="current-b"]')?.textContent).toBe('0');
+    expect(document.querySelector('[data-testid="victory"]')).toBeNull();
   });
 });

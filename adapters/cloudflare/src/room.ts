@@ -6,6 +6,7 @@ import {
   MAX_PLAYER_ACTOR,
   ROOM_MESSAGES,
   canonicalEventId,
+  canScoreGame,
   actionForEvent,
   actorId,
   canPerform,
@@ -18,6 +19,7 @@ import {
   claimMatchesEvent,
   decideScore,
   isScoreEvent,
+  isTeamId,
   parseParentId,
   parseScoreClaim,
   planMerge,
@@ -329,6 +331,11 @@ export function applyPlay(
   const stamped: MatchEvent = actorId(actor)
     ? { ...parsed, at: now, capturedAt, parentId: headId, by: actorId(actor) }
     : { ...parsed, at: now, capturedAt, parentId: headId };
+
+  if (parsed.type === 'game/increment') {
+    const head = replayScore(record.base, record.events.map((item) => item.event));
+    if (!isTeamId(parsed.team) || !canScoreGame(head, parsed.team)) return fail('not_applied');
+  }
 
   if (isScoreEvent(parsed.type) && parsed.type !== 'match/end') {
     const parsedClaim = parseScoreClaim(claim);

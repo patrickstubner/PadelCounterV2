@@ -81,14 +81,14 @@ for (const name of manifestNames) {
 }
 
 const precached = [
-  'icons/icon-192.png',
-  'icons/icon-512.png',
-  'icons/icon-maskable-192.png',
-  'icons/icon-maskable-512.png',
-  'icons/apple-touch-icon-180.png',
-  'favicon.ico',
-  'favicon-16.png',
-  'favicon-32.png',
+  'icons/icon-192-v231.png',
+  'icons/icon-512-v231.png',
+  'icons/icon-maskable-192-v231.png',
+  'icons/icon-maskable-512-v231.png',
+  'icons/apple-touch-icon-180-v231.png',
+  'favicon-v231.ico',
+  'favicon-16-v231.png',
+  'favicon-32-v231.png',
   'manifest.webmanifest',
   'NOTICE.txt',
   '06_crowd-in-hardrock.mp3',
@@ -97,7 +97,7 @@ const sw = readFileSync(join(dist, 'sw.js'), 'utf8');
 for (const file of precached) {
   if (!sw.includes(`${pageBase}${file}`)) fail(`precache missing ${file}`);
 }
-if (sw.includes('icon-1024.png')) fail('icon-1024.png must not be precached');
+if (sw.includes('icon-1024-v231.png')) fail('icon-1024-v231.png must not be precached');
 if (sw.includes(`${pageBase}stay-awake.mp4`) || sw.includes('stay-awake.mp4')) {
   fail('stay-awake.mp4 must not be precached');
 }
@@ -105,7 +105,7 @@ if (!sw.includes('Content-Range') || !sw.includes('padel-stay-awake')) {
   fail('stay-awake.mp4 range requests are not served as partial content');
 }
 if (!statSync(join(dist, 'stay-awake.mp4')).isFile()) fail('stay-awake.mp4 missing from dist');
-if (!statSync(join(dist, 'icons/icon-1024.png')).isFile()) fail('icon-1024.png missing from dist');
+if (!statSync(join(dist, 'icons/icon-1024-v231.png')).isFile()) fail('icon-1024-v231.png missing from dist');
 if (sw.includes('importScripts(')) fail('service worker loads an external script');
 const notice = readFileSync(join(dist, 'NOTICE.txt'), 'utf8');
 if (!notice.includes('qr 0.7.2') || !notice.includes('Paul Miller')) fail('NOTICE missing the qr decoder');

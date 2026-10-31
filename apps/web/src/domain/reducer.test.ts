@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { matchWinner, setWinner } from './rules';
+import { canScoreGame, matchWinner, setWinner } from './rules';
 import { createMatch, matchReducer } from './reducer';
 import type { MatchEvent, MatchState, TeamId } from './types';
 
@@ -73,20 +73,32 @@ describe('matchReducer', () => {
     expect(matchWinner(state.sets)).toBe('a');
   });
 
-  it('lets a finished 6:4 be corrected to 6:5', () => {
-    let state = start();
-    for (let i = 0; i < 4; i += 1) {
-      state = play(state, 'a', 1);
-      state = play(state, 'b', 1);
+  it('refuses a new plus on 6:4, 7:5, and 7:6, and still replays a stored plus', () => {
+    const rally = (pairs: number, extra: readonly TeamId[]) => {
+      let state = start();
+      for (let i = 0; i < pairs; i += 1) {
+        state = play(state, 'a', 1);
+        state = play(state, 'b', 1);
+      }
+      for (const team of extra) state = play(state, team, 1);
+      return state;
+    };
+    for (const [label, built, expected] of [
+      ['6:4', rally(4, ['a', 'a']), { a: 6, b: 4 }],
+      ['7:5', rally(5, ['a', 'a']), { a: 7, b: 5 }],
+      ['7:6', rally(6, ['a']), { a: 7, b: 6 }],
+    ] as const) {
+      const selected = matchReducer(built, { type: 'set/select', index: 0, at: built.updatedAt + 1 });
+      expect(selected.sets[0], label).toEqual(expected);
+      expect(canScoreGame(selected, 'a'), label).toBe(false);
+      expect(canScoreGame(selected, 'b'), label).toBe(false);
     }
-    state = play(state, 'a', 2);
-    expect(state.sets[0]).toEqual({ a: 6, b: 4 });
-    expect(state.activeSet).toBe(1);
-    state = matchReducer(state, { type: 'set/select', index: 0, at: state.updatedAt + 1 });
-    const corrected = play(state, 'b', 1);
-    expect(corrected.sets[0]).toEqual({ a: 6, b: 5 });
-    expect(setWinner(6, 5)).toBeNull();
-    expect(corrected.activeSet).toBe(0);
+    const sixFour = matchReducer(rally(4, ['a', 'a']), { type: 'set/select', index: 0, at: T0 + 100 });
+    expect(matchReducer(sixFour, { type: 'game/increment', team: 'b', at: T0 + 101 }).sets[0]).toEqual({ a: 6, b: 5 });
+    const opened = matchReducer(sixFour, { type: 'game/decrement', team: 'a', at: T0 + 102 });
+    expect(opened.sets[0]).toEqual({ a: 5, b: 4 });
+    expect(canScoreGame(opened, 'b')).toBe(true);
+    expect(matchReducer(opened, { type: 'game/increment', team: 'b', at: T0 + 103 }).sets[0]).toEqual({ a: 5, b: 5 });
   });
 
   it('ignores increments that are not plausible and decrements down to zero', () => {

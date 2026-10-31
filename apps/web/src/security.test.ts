@@ -103,11 +103,11 @@ describe('shipped source stays local and text-only', () => {
     expect(manifest.theme_color).toBe('#0a1a3f');
     expect(manifest.background_color).toBe('#0a1a3f');
     expect(manifest.icons).toEqual([
-      { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-      { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-      { src: 'icons/icon-1024.png', sizes: '1024x1024', type: 'image/png', purpose: 'any' },
-      { src: 'icons/icon-maskable-192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
-      { src: 'icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      { src: 'icons/icon-192-v231.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: 'icons/icon-512-v231.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: 'icons/icon-1024-v231.png', sizes: '1024x1024', type: 'image/png', purpose: 'any' },
+      { src: 'icons/icon-maskable-192-v231.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
+      { src: 'icons/icon-maskable-512-v231.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
     ]);
     for (const icon of manifest.icons) {
       const file = join(repoRoot, 'public', icon.src);
@@ -117,20 +117,20 @@ describe('shipped source stays local and text-only', () => {
       expect(png.width).toBe(size);
       expect(png.height).toBe(size);
     }
-    expect(pngInfo(join(repoRoot, 'public/icons/apple-touch-icon-180.png'))).toEqual({
+    expect(pngInfo(join(repoRoot, 'public/icons/apple-touch-icon-180-v231.png'))).toEqual({
       width: 180,
       height: 180,
       colorType: 2,
     });
-    expect(pngInfo(join(repoRoot, 'public/favicon-16.png')).width).toBe(16);
-    expect(pngInfo(join(repoRoot, 'public/favicon-32.png')).width).toBe(32);
-    expect(existsSync(join(repoRoot, 'public/favicon.ico'))).toBe(true);
+    expect(pngInfo(join(repoRoot, 'public/favicon-16-v231.png')).width).toBe(16);
+    expect(pngInfo(join(repoRoot, 'public/favicon-32-v231.png')).width).toBe(32);
+    expect(existsSync(join(repoRoot, 'public/favicon-v231.ico'))).toBe(true);
     const html = readFileSync(join(repoRoot, 'src/index.html'), 'utf8');
     expect(html).toContain('apple-touch-icon');
-    expect(html).toContain('icons/apple-touch-icon-180.png');
-    expect(html).toContain('favicon-16.png');
-    expect(html).toContain('favicon-32.png');
-    expect(html).toContain('favicon.ico');
+    expect(html).toContain('icons/apple-touch-icon-180-v231.png');
+    expect(html).toContain('favicon-16-v231.png');
+    expect(html).toContain('favicon-32-v231.png');
+    expect(html).toContain('favicon-v231.ico');
     expect(html).toContain('apple-mobile-web-app-capable');
     expect(html).toContain('apple-mobile-web-app-status-bar-style" content="black-translucent"');
     expect(html).toContain('apple-mobile-web-app-title" content="Padel Counter V2"');
@@ -144,7 +144,7 @@ describe('shipped source stays local and text-only', () => {
     expect(fanfare).not.toContain('http://');
     expect(fanfare).not.toContain('https://');
     const buildConfig = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');
-    expect(buildConfig).toContain("'**/icon-1024.png'");
+    expect(buildConfig).toContain("'**/icon-1024-v231.png'");
     expect(html).toContain('content="#0a1a3f"');
   });
 

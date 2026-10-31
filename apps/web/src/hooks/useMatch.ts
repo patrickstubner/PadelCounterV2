@@ -5,7 +5,7 @@ import { forgetCelebratedMatch } from '../domain/celebration';
 import { createMatchId } from '../domain/id';
 import { appendEvent, createLog, replay, type MatchLog } from '../domain/log';
 import { loadLog, saveLog } from '../domain/persistence';
-import { serveChoice } from '../domain/rules';
+import { canScoreGame, serveChoice } from '../domain/rules';
 import { sessionReducer, type Session } from '../domain/session';
 import type { MatchEvent, SetIndex, TeamId } from '../domain/types';
 
@@ -46,6 +46,7 @@ export function useMatch() {
   const record = (event: MatchEvent) => dispatch({ type: 'record', event });
   const publish = (event: MatchEvent) => {
     const current = replay(logRef.current);
+    if (event.type === 'game/increment' && !canScoreGame(current, event.team)) return;
     const claim = isScoreEvent(event.type) ? scoreClaimFor(current, event) : null;
     if (isScoreEvent(event.type) && !claim) return;
     if (liveRef.current?.(event, claim)) return;

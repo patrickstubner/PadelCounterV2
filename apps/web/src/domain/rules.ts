@@ -4,6 +4,7 @@ export {
   RULES_SUMMARY,
   canDecrement,
   canIncrement,
+  canScoreGame,
   canTakeGame,
   celebrationWinner,
   courtCue,
