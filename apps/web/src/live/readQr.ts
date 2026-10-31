@@ -51,14 +51,16 @@ const MAX_SIDE = 4096;
 /**
  * A still photo tries every region. The long edge of the whole frame is about
  * 960, and the top and bottom squares cover a code the centre square misses.
+ * Those squares come before glare and the full frame: a miss in the centre can
+ * use the whole frame budget, and then a code at the top is never read.
  * Glare is its own pass: a bright spike must not be handled only by stretching.
  */
 const STILL_STEPS: readonly DecodeStep[] = [
   { region: 'center', edge: 640, prepare: 'raw', effort: 2 },
-  { region: 'center', edge: 640, prepare: 'glare', effort: 3 },
-  { region: 'full', edge: 960, prepare: 'raw', effort: 2 },
   { region: 'top', edge: 640, prepare: 'raw', effort: 2 },
   { region: 'bottom', edge: 640, prepare: 'raw', effort: 2 },
+  { region: 'center', edge: 640, prepare: 'glare', effort: 3 },
+  { region: 'full', edge: 960, prepare: 'raw', effort: 2 },
   { region: 'center', edge: 640, prepare: 'stretch', effort: 3 },
   { region: 'tight', edge: 640, prepare: 'stretch', effort: 3 },
   { region: 'center', edge: 420, prepare: 'stretch', effort: 2 },
@@ -312,6 +314,16 @@ interface SampleRect {
   readonly height: number;
 }
 
+/** A square frame makes the top and bottom squares the same crop as the centre. */
+function stillStepsFor(image: ImageData): readonly DecodeStep[] {
+  const center = regionRect(image.width, image.height, 'center');
+  return STILL_STEPS.filter((step) => {
+    if (step.region !== 'top' && step.region !== 'bottom') return true;
+    const rect = regionRect(image.width, image.height, step.region);
+    return rect.x !== center.x || rect.y !== center.y || rect.width !== center.width || rect.height !== center.height;
+  });
+}
+
 function regionRect(width: number, height: number, region: Region): SampleRect {
   if (region === 'full') return { x: 0, y: 0, width, height };
   const side = Math.min(width, height);
@@ -492,7 +504,7 @@ async function readImage(image: ImageData, attempt: DecodeAttempt): Promise<stri
     }
   }
   if (attempt.cancelled) return null;
-  return decodeSamples((step) => stillSample(image, step), STILL_STEPS, attempt);
+  return decodeSamples((step) => stillSample(image, step), stillStepsFor(image), attempt);
 }
 
 async function readVideo(video: HTMLVideoElement, attempt: DecodeAttempt): Promise<string | null> {
