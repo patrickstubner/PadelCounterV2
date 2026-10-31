@@ -64,7 +64,7 @@ test('portrait uses the full height and keeps the version in the menu', async ({
   await page.getByTestId('menu-toggle').click();
   const version = page.getByTestId('app-version');
   await expect(version).toBeVisible();
-  await expect(version).toHaveText(/^v2\.3\.4$/);
+  await expect(version).toHaveText(/^v2\.3\.5$/);
   const size = await version.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
   expect(size).toBeGreaterThanOrEqual(16);
 });
@@ -110,12 +110,14 @@ test('landscape shows the menu, hides the footer, and keeps Connect beside the m
     expect(board).not.toBeNull();
     if (!board) continue;
     expect(board.height).toBeGreaterThan(200);
+    const fits = await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight);
+    expect(fits, `${size.width}x${size.height}`).toBe(true);
   }
   await page.setViewportSize({ width: 844, height: 390 });
   await page.getByTestId('menu-toggle').click();
   const version = page.getByTestId('app-version');
   await expect(version).toBeVisible();
-  await expect(version).toHaveText(/^v2\.3\.4$/);
+  await expect(version).toHaveText(/^v2\.3\.5$/);
   const size = await version.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
   expect(size).toBeGreaterThanOrEqual(16);
   await expect(page.getByTestId('fanfare-toggle')).toBeVisible();
@@ -158,7 +160,14 @@ test('the serve ball accepts a click on a large window', async ({ page }) => {
       });
       await page.reload();
       await page.getByTestId('serve-cue').waitFor();
-      await page.getByTestId(`serve-${side}`).click();
+      const ball = page.getByTestId(`serve-${side}`);
+      const hit = await ball.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        const top = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        return top === node || (top instanceof Node && node.contains(top));
+      });
+      expect(hit, `${size.width}x${size.height} ${side}`).toBe(true);
+      await ball.click();
       await expect(page.getByTestId(`serve-player-${side}`)).toHaveText('1');
     }
   }

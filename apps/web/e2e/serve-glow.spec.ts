@@ -92,6 +92,13 @@ test('reduced motion keeps a still glow', async ({ page }) => {
   expect(cue.name).toBe('none');
   expect(cue.shadow).not.toBe('none');
   expect(cue.transform).toBe('none');
+  const stillRing = await page.getByTestId('serve-a').evaluate((node) => {
+    const ring = getComputedStyle(node, '::after');
+    return { content: ring.content, name: ring.animationName, offset: ring.outlineOffset };
+  });
+  expect(stillRing.content).toBe('none');
+  expect(stillRing.name).toBe('none');
+  expect(stillRing.offset).toBe('0px');
   await page.getByTestId('serve-a').click();
   for (let game = 0; game < 6; game += 1) {
     await page.getByTestId('increment-a').click();
@@ -107,6 +114,95 @@ test('reduced motion keeps a still glow', async ({ page }) => {
   await page.getByTestId('serve-b').click();
   expect((await ballStyle(page, 'serve-b')).name).toBe('none');
   expect((await ballStyle(page, 'serve-b')).shadow).toBe('none');
+});
+
+test('the ring shrinks slightly, then grows, with the glow', async ({ page }) => {
+  await openCourt(page);
+  const timing = await page.getByTestId('serve-a').evaluate((node) => {
+    const ball = getComputedStyle(node);
+    const ring = getComputedStyle(node, '::after');
+    const frames = (name: string) => {
+      for (const sheet of document.styleSheets) {
+        let rules: CSSRuleList;
+        try {
+          rules = sheet.cssRules;
+        } catch {
+          continue;
+        }
+        for (const rule of rules) {
+          if (rule instanceof CSSKeyframesRule && rule.name === name) {
+            return [...rule.cssRules].map((item) => (item as CSSKeyframeRule).keyText);
+          }
+        }
+      }
+      return [];
+    };
+    return {
+      ballName: ball.animationName,
+      ballDuration: ball.animationDuration,
+      ballTiming: ball.animationTimingFunction,
+      ballIteration: ball.animationIterationCount,
+      ballTransform: ball.transform,
+      ringName: ring.animationName,
+      ringDuration: ring.animationDuration,
+      ringTiming: ring.animationTimingFunction,
+      ringIteration: ring.animationIterationCount,
+      glowFrames: frames('serve-glow'),
+      strongFrames: frames('serve-glow-strong'),
+      ringFrames: frames('serve-ring'),
+    };
+  });
+  expect(timing.ballName).toBe('serve-glow');
+  expect(timing.ringName).toBe('serve-ring');
+  expect(timing.ringDuration).toBe(timing.ballDuration);
+  expect(timing.ringTiming).toBe(timing.ballTiming);
+  expect(timing.ringIteration).toBe('infinite');
+  expect(timing.ballIteration).toBe('infinite');
+  expect(timing.ballTransform).toBe('none');
+  expect(timing.glowFrames).toEqual(timing.ringFrames);
+  expect(timing.strongFrames).toEqual(timing.ringFrames);
+  expect(timing.ringFrames).toEqual(['0%, 100%', '20%', '50%']);
+
+  const sample = (fraction: number) => page.getByTestId('serve-a').evaluate((node, at) => {
+    const animations = document.getAnimations().flatMap((item) => {
+      const effect = item.effect;
+      if (!(effect instanceof KeyframeEffect) || effect.target !== node) return [];
+      const duration = Number(effect.getComputedTiming().duration);
+      item.pause();
+      item.currentTime = duration * at;
+      return [{ name: item.animationName, pseudo: effect.pseudoElement, duration }];
+    });
+    const ball = getComputedStyle(node);
+    const ring = getComputedStyle(node, '::after');
+    const layers = ball.boxShadow.split(/,(?![^(]*\))/);
+    let reach = 0;
+    for (const layer of layers) {
+      const nums = [...layer.matchAll(/([\d.]+)px/g)].map((match) => Number(match[1]));
+      if (nums.length >= 2) reach = Math.max(reach, (nums.at(-1) ?? 0) + (nums.at(-2) ?? 0));
+    }
+    return {
+      animations,
+      reach,
+      offset: Number.parseFloat(ring.outlineOffset),
+      transform: ball.transform,
+    };
+  }, fraction);
+
+  const shrunk = await sample(0.2);
+  const grown = await sample(0.5);
+  expect(shrunk.animations.map((item) => `${item.pseudo ?? ''}:${item.name}`).sort()).toEqual(['::after:serve-ring', ':serve-glow']);
+  expect(grown.animations.map((item) => `${item.pseudo ?? ''}:${item.name}`).sort()).toEqual(['::after:serve-ring', ':serve-glow']);
+  expect(shrunk.transform).toBe('none');
+  expect(grown.transform).toBe('none');
+  expect(shrunk.offset).toBeLessThan(0);
+  expect(grown.offset).toBeGreaterThan(0);
+  expect(grown.reach).toBeGreaterThan(shrunk.reach);
+
+  const box = await page.getByTestId('serve-a').boundingBox();
+  expect(box).not.toBeNull();
+  if (!box) return;
+  await page.getByTestId('serve-a').click();
+  await expect(page.getByTestId('serve-player-a')).toHaveText('1');
 });
 
 test('the spotlight is not clipped by the court', async ({ page }) => {

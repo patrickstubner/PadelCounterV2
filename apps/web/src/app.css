@@ -495,6 +495,20 @@ button:disabled { cursor: not-allowed; }
   width: 1.65rem;
   height: 1.65rem;
   flex: 0 0 auto;
+  display: block;
+}
+
+.ball-felt {
+  fill: #d4ee4a;
+  stroke: #5f7d10;
+  stroke-width: 0.7;
+}
+
+.ball-seam {
+  fill: none;
+  stroke: #f7fff6;
+  stroke-width: 1.2;
+  stroke-linecap: round;
 }
 
 .serve-player {
@@ -757,10 +771,13 @@ button:disabled { cursor: not-allowed; }
   color: #ffffff;
 }
 
-/* Spotlight on the ball. The shadow grows and shrinks. The ball itself does not. */
+/* Spotlight on the ball. The ring shrinks slightly, then grows, on the same
+   keyframes as the radial glow. The icon and the hit target stay still. */
 .ball.is-cue,
 .ball.is-ask {
   --glow-reach: 2.5rem;
+  border-color: transparent;
+  background-clip: padding-box;
   animation: serve-glow 1.4s ease-in-out infinite;
 }
 
@@ -769,30 +786,57 @@ button:disabled { cursor: not-allowed; }
   animation-name: serve-glow-strong;
 }
 
+.ball.is-cue::after,
+.ball.is-ask::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  outline: 3px solid var(--accent);
+  animation: serve-ring 1.4s ease-in-out infinite;
+}
+
 @keyframes serve-glow {
   0%, 100% {
     box-shadow:
-      0 0 0.45rem 0.08rem color-mix(in srgb, var(--accent) 72%, transparent),
-      0 0 1rem 0.28rem color-mix(in srgb, var(--accent) 34%, transparent);
+      0 0 0.65rem 0.16rem color-mix(in srgb, var(--accent) 86%, transparent),
+      0 0 1.2rem 0.4rem color-mix(in srgb, var(--accent) 48%, transparent);
+  }
+  20% {
+    box-shadow:
+      0 0 0.4rem 0.08rem color-mix(in srgb, var(--accent) 78%, transparent),
+      0 0 0.95rem 0.28rem color-mix(in srgb, var(--accent) 40%, transparent);
   }
   50% {
     box-shadow:
-      0 0 1.05rem 0.4rem color-mix(in srgb, var(--accent) 78%, transparent),
-      0 0 1.7rem 0.8rem color-mix(in srgb, var(--accent) 36%, transparent);
+      0 0 1.25rem 0.48rem color-mix(in srgb, var(--accent) 92%, transparent),
+      0 0 1.6rem 0.9rem color-mix(in srgb, var(--accent) 55%, transparent);
   }
 }
 
 @keyframes serve-glow-strong {
   0%, 100% {
     box-shadow:
-      0 0 0.7rem 0.18rem color-mix(in srgb, var(--accent) 88%, transparent),
-      0 0 1.35rem 0.45rem color-mix(in srgb, var(--accent) 46%, transparent);
+      0 0 0.9rem 0.26rem color-mix(in srgb, var(--accent) 96%, transparent),
+      0 0 1.45rem 0.55rem color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+  20% {
+    box-shadow:
+      0 0 0.6rem 0.14rem color-mix(in srgb, var(--accent) 90%, transparent),
+      0 0 1.15rem 0.4rem color-mix(in srgb, var(--accent) 52%, transparent);
   }
   50% {
     box-shadow:
-      0 0 1.25rem 0.55rem color-mix(in srgb, var(--accent) 92%, transparent),
-      0 0 1.9rem 1rem color-mix(in srgb, var(--accent) 48%, transparent);
+      0 0 1.45rem 0.65rem color-mix(in srgb, var(--accent) 100%, transparent),
+      0 0 1.8rem 1.1rem color-mix(in srgb, var(--accent) 68%, transparent);
   }
+}
+
+@keyframes serve-ring {
+  0%, 100% { outline-offset: 0; }
+  20% { outline-offset: -0.14rem; }
+  50% { outline-offset: 0.32rem; }
 }
 
 .update-ready {
@@ -1337,15 +1381,24 @@ button:disabled { cursor: not-allowed; }
   .ball.is-cue,
   .ball.is-ask {
     animation: none;
+    border-color: var(--accent);
+    background-clip: border-box;
     box-shadow:
-      0 0 1.05rem 0.4rem color-mix(in srgb, var(--accent) 82%, transparent),
-      0 0 1.7rem 0.8rem color-mix(in srgb, var(--accent) 42%, transparent);
+      0 0 1.25rem 0.48rem color-mix(in srgb, var(--accent) 92%, transparent),
+      0 0 1.6rem 0.9rem color-mix(in srgb, var(--accent) 55%, transparent);
   }
 
   .ball.is-ask {
     box-shadow:
-      0 0 1.25rem 0.55rem color-mix(in srgb, var(--accent) 92%, transparent),
-      0 0 1.9rem 1rem color-mix(in srgb, var(--accent) 50%, transparent);
+      0 0 1.45rem 0.65rem color-mix(in srgb, var(--accent) 100%, transparent),
+      0 0 1.8rem 1.1rem color-mix(in srgb, var(--accent) 68%, transparent);
+  }
+
+  .ball.is-cue::after,
+  .ball.is-ask::after {
+    content: none;
+    animation: none;
+    outline: none;
   }
   .flap-leave,
   .flap-enter {
@@ -1699,6 +1752,8 @@ button:disabled { cursor: not-allowed; }
   .btn-solid,
   .undo-btn,
   .ball.is-on { background: ButtonFace; color: ButtonText; }
+  .ball-felt { fill: ButtonText; stroke: ButtonText; }
+  .ball-seam { stroke: ButtonFace; }
   .num,
   .team-name,
   .app-version,
