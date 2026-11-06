@@ -1,9 +1,28 @@
-import { useRef, useState, type MutableRefObject } from 'react';
-import { isRoomCode, ROOM_MESSAGES, type MatchEvent, type MatchLog } from '@padel/core';
-import { deviceId } from '../domain/device';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { HOST_TOKEN_TTL_MS, isJoinToken, isPublicSeat, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, sameBoard, scoreBoard, type CausalEvent, type MatchEvent, type MatchLog, type PublicPhone, type ScoreClaim } from '@padel/core';
+import { localScoreAhead } from '../domain/archive';
+import { DEVICE_KEY, clearLegacyDeviceId, deviceId, legacyDeviceId, rememberedDeviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
 import type { LiveSend } from '../hooks/useMatch';
-import { interpretMessage, joinLink, socketUrl } from './protocol';
+import {
+  ACK_MS,
+  canonicalEventId,
+  forgetJoinToken,
+  HIDE_RECONNECT_MS,
+  interpretMessage,
+  isTerminalCode,
+  isTerminalMessage,
+  JOIN_KEY,
+  joinLink,
+  OFFLINE_COURT_MS,
+  onlineRetryAllowed,
+  reconnectDelayMs,
+  SLOW_BANNER_MS,
+  shouldResumeSocket,
+  socketUrl,
+  unackedAfterSnapshot,
+  type PendingLiveEvent,
+} from './protocol';
 
 export interface ShareOptions {
   readonly previousHostToken?: string;
@@ -12,20 +31,36 @@ export interface ShareOptions {
 
 export interface LiveController {
   readonly configured: boolean;
-  readonly status: 'off' | 'connecting' | 'live';
+  readonly status: 'off' | 'connecting' | 'live' | 'disconnected';
+  /** local is black, online is dark blue, offline is dark red after the debounce. */
+  readonly courtTone: 'local' | 'online' | 'offline';
   readonly host: boolean;
   readonly players: number;
+  readonly phones: readonly PublicPhone[];
   readonly qr: string | null;
+  readonly code: string | null;
   readonly error: string | null;
-  readonly offer: string | null;
+  readonly joinError: string | null;
+  readonly joining: boolean;
+  /** This phone is following the starter into the new match. */
+  readonly movedNote: boolean;
+  /** Offline points were copied to History before a server snapshot replaced them. */
+  readonly keptNote: boolean;
+  /** The old match ended and this phone was not moved into the new one. */
+  readonly continued: boolean;
+  readonly dismissContinued: () => void;
+  readonly pendingRestore: readonly { readonly id: string; readonly event: MatchEvent; readonly claim: ScoreClaim | null }[];
+  readonly clearRestore: () => void;
+  readonly commitRestore: () => MatchEvent[];
   readonly share: (log: MatchLog, options?: ShareOptions) => void;
   readonly rotate: () => void;
+  readonly kick: (seat: string) => void;
   readonly connect: (token: string) => void;
+  readonly joinByCode: (code: string) => Promise<boolean>;
+  readonly rejectToken: () => void;
   readonly disconnect: () => void;
-  readonly acceptOffer: () => void;
-  readonly dismissOffer: () => void;
-  /** Sends the end event, then drops this phone's socket. Returns the host token when this phone created the match. */
-  readonly finishShared: (event: MatchEvent) => string | null;
+  /** Sends the end event, then drops this phone's socket. Returns the member token. */
+  readonly finishShared: (event: MatchEvent, claim: ScoreClaim | null) => string | null;
 }
 
 async function errorText(response: Response): Promise<string> {
@@ -40,98 +75,597 @@ async function errorText(response: Response): Promise<string> {
 
 function thisDevice(): string {
   try {
-    if (typeof localStorage === 'undefined') return 'd00000000';
-    return deviceId(localStorage);
+    if (typeof localStorage !== 'undefined') {
+      const id = deviceId(localStorage);
+      if (localStorage.getItem(DEVICE_KEY) === id) return id;
+    }
   } catch {
-    return 'd00000000';
+    // Storage can throw in private mode; fall through to the page id.
   }
+  return rememberedDeviceId();
+}
+
+function thisLegacy(): string | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    return legacyDeviceId(localStorage);
+  } catch {
+    return null;
+  }
+}
+
+function devApiOverride(): string {
+  if (!import.meta.env.DEV) return '';
+  const testApi = (globalThis as { __PADEL_TEST_API__?: unknown }).__PADEL_TEST_API__;
+  return typeof testApi === 'string' ? testApi.replace(/\/$/, '') : '';
+}
+
+interface PendingPoint extends PendingLiveEvent<MatchEvent> {
+  sentAt: number;
+  resent: boolean;
+  claim: ScoreClaim | null;
+  parentId: string | null;
+}
+
+function apiBase(): string {
+  const fromEnv = String(import.meta.env.PUBLIC_API_URL ?? '').replace(/\/$/, '');
+  if (fromEnv) return fromEnv;
+  return devApiOverride();
 }
 
 export function useLive(
   liveRef: MutableRefObject<LiveSend | null>,
   replaceLog: (log: MatchLog) => void,
   applyLive: (event: MatchEvent) => void,
+  revertLive: (event: MatchEvent) => void,
+  readLog: () => MatchLog,
+  archiveLocal: (log: MatchLog) => void = () => undefined,
 ): LiveController {
-  const api = String(import.meta.env.PUBLIC_API_URL ?? '').replace(/\/$/, '');
-  const [status, setStatus] = useState<'off' | 'connecting' | 'live'>('off');
+  const api = apiBase();
+  const [status, setStatus] = useState<'off' | 'connecting' | 'live' | 'disconnected'>('off');
+  const [courtTone, setCourtTone] = useState<'local' | 'online' | 'offline'>('local');
   const [host, setHost] = useState(true);
   const [players, setPlayers] = useState(0);
+  const [phones, setPhones] = useState<readonly PublicPhone[]>([]);
   const [qr, setQr] = useState<string | null>(null);
+  const [matchCode, setMatchCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [offer, setOffer] = useState<string | null>(null);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
+  const [movedNote, setMovedNote] = useState(false);
+  const [keptNote, setKeptNote] = useState(false);
+  const [continued, setContinued] = useState(false);
+  const [pendingRestore, setPendingRestore] = useState<readonly { id: string; event: MatchEvent; claim: ScoreClaim | null }[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
-  const hostRef = useRef<{ matchId: string; token: string } | null>(null);
+  const hostRef = useRef<{
+    matchId: string;
+    token: string;
+    inviteToken: string | null;
+    inviteExpiresAt: number;
+    inviteCode: string | null;
+  } | null>(null);
   const replaceRef = useRef(replaceLog);
   const applyRef = useRef(applyLive);
+  const revertRef = useRef(revertLive);
   const readyRef = useRef(false);
   const generation = useRef(0);
-  const offerRef = useRef<string | null>(null);
+  const tokenRef = useRef<{ token: string; expiresAt: number } | null>(null);
+  const matchRef = useRef('');
+  const resumes = useRef(0);
+  const opening = useRef(false);
+  const slowDown = useRef(false);
+  const nameSeq = useRef(0);
+  const lastOnlineRetry = useRef(0);
+  const hadLive = useRef(false);
+  const hiddenAt = useRef<number | null>(null);
+  const wakeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const offlineTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seenRef = useRef(new Set<string>());
+  const conflictNote = useRef(false);
+  const keptRetry = useRef(new Set<string>());
+  const headRef = useRef<string | null>(null);
+  const logIdsRef = useRef<string[]>([]);
+  const readLogRef = useRef(readLog);
+  const pendingRef = useRef(pendingRestore);
+  readLogRef.current = readLog;
+  pendingRef.current = pendingRestore;
+  const unackedRef = useRef<PendingPoint[]>([]);
+  const queueRef = useRef<PendingPoint[]>([]);
+  const wakeRef = useRef<() => void>(() => undefined);
+  const reconnectNowRef = useRef<() => void>(() => undefined);
   replaceRef.current = replaceLog;
   applyRef.current = applyLive;
+  revertRef.current = revertLive;
 
-  const rememberOffer = (token: string | null) => {
-    offerRef.current = token;
-    setOffer(token);
+  const clearWake = () => {
+    if (wakeTimer.current !== null) {
+      clearTimeout(wakeTimer.current);
+      wakeTimer.current = null;
+    }
+  };
+
+  const dropToken = () => {
+    tokenRef.current = null;
+    try {
+      forgetJoinToken(sessionStorage);
+    } catch {
+      // Storage may be blocked.
+    }
+  };
+
+  const clearPending = () => {
+    queueRef.current = [];
+    unackedRef.current = [];
+    keptRetry.current = new Set();
+  };
+
+  const clearSlowTimer = () => {
+    if (slowTimer.current !== null) {
+      clearTimeout(slowTimer.current);
+      slowTimer.current = null;
+    }
+  };
+
+  /** Handlers go first so a closing socket cannot open another connection. */
+  const detachSocket = (ws: WebSocket | null) => {
+    if (!ws) return;
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    if (socketRef.current === ws) socketRef.current = null;
+    try {
+      ws.close();
+    } catch {
+      // Already closed.
+    }
+  };
+
+  const socketIsUp = (ws: WebSocket | null): boolean =>
+    ws !== null && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
+
+  const armSlowClear = () => {
+    clearSlowTimer();
+    slowTimer.current = setTimeout(() => {
+      slowTimer.current = null;
+      setError((current) => (current === ROOM_MESSAGES.slow_down ? null : current));
+      setJoinError((current) => (current === ROOM_MESSAGES.slow_down ? null : current));
+    }, SLOW_BANNER_MS);
+  };
+
+  const noteError = (message: string) => {
+    setError(message);
+    if (message === ROOM_MESSAGES.slow_down) armSlowClear();
+    else clearSlowTimer();
+  };
+
+  const clearSlowBanner = () => {
+    clearSlowTimer();
+    setError((current) => (current === ROOM_MESSAGES.slow_down ? null : current));
+    setJoinError((current) => (current === ROOM_MESSAGES.slow_down ? null : current));
+  };
+
+  const writeHost = (held: { token: string; expiresAt: number }) => {
+    const current = hostRef.current;
+    if (!current) return;
+    try {
+      sessionStorage.setItem(JOIN_KEY, JSON.stringify({
+        token: held.token,
+        expiresAt: held.expiresAt,
+        host: true,
+        matchId: current.matchId,
+        ...(current.inviteToken ? { inviteToken: current.inviteToken, inviteExpiresAt: current.inviteExpiresAt } : {}),
+        ...(current.inviteCode ? { inviteCode: current.inviteCode } : {}),
+      }));
+    } catch {
+      // The ref still shows or rotates a code until this tab closes.
+    }
+  };
+
+  const persistMember = (matchId: string, held: { token: string; expiresAt: number }) => {
+    const same = hostRef.current?.matchId === matchId ? hostRef.current : null;
+    const next = {
+      matchId,
+      token: held.token,
+      inviteToken: same?.inviteToken ?? null,
+      inviteExpiresAt: same?.inviteExpiresAt ?? 0,
+      inviteCode: same?.inviteCode ?? null,
+    };
+    hostRef.current = next;
+    try {
+      sessionStorage.setItem(JOIN_KEY, JSON.stringify({
+        token: held.token,
+        expiresAt: held.expiresAt,
+        host: false,
+        matchId,
+        ...(next.inviteToken ? { inviteToken: next.inviteToken, inviteExpiresAt: next.inviteExpiresAt } : {}),
+        ...(next.inviteCode ? { inviteCode: next.inviteCode } : {}),
+      }));
+    } catch {
+      // The ref still shows the code until this tab closes.
+    }
+  };
+
+  const persistHost = (matchId: string, held: { token: string; expiresAt: number }) => {
+    const same = hostRef.current?.matchId === matchId ? hostRef.current : null;
+    hostRef.current = {
+      matchId,
+      token: held.token,
+      inviteToken: same?.inviteToken ?? null,
+      inviteExpiresAt: same?.inviteExpiresAt ?? 0,
+      inviteCode: same?.inviteCode ?? null,
+    };
+    writeHost(held);
+  };
+
+  const rememberInvite = (inviteToken: string, inviteExpiresAt: number, inviteCode: string | null) => {
+    const current = hostRef.current;
+    const held = tokenRef.current;
+    if (!current || !held) return;
+    hostRef.current = { ...current, inviteToken, inviteExpiresAt, inviteCode };
+    setMatchCode(inviteCode);
+    writeHost(held);
+  };
+
+  const rememberToken = (token: string, asJoin: boolean) => {
+    const now = Date.now();
+    const current = tokenRef.current;
+    if (current && current.token === token) {
+      if (current.expiresAt <= now) return null;
+      return current;
+    }
+    let keptExpiry: number | null = null;
+    try {
+      const raw = sessionStorage.getItem(JOIN_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { token?: unknown; expiresAt?: unknown };
+        if (parsed.token === token && typeof parsed.expiresAt === 'number' && parsed.expiresAt > now) {
+          keptExpiry = parsed.expiresAt;
+        }
+      }
+    } catch {
+      // A missing expiry gets a fresh lifetime below.
+    }
+    const next = { token, expiresAt: keptExpiry ?? now + (asJoin ? JOIN_TOKEN_TTL_MS : HOST_TOKEN_TTL_MS) };
+    tokenRef.current = next;
+    try {
+      let matchId = '';
+      let hostFlag = false;
+      let inviteToken: string | null = null;
+      let inviteExpiresAt = 0;
+      let inviteCode: string | null = null;
+      const raw = sessionStorage.getItem(JOIN_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as {
+          token?: unknown;
+          host?: unknown;
+          matchId?: unknown;
+          inviteToken?: unknown;
+          inviteExpiresAt?: unknown;
+          inviteCode?: unknown;
+        };
+        if (parsed.token === token && isUuid(parsed.matchId) && (parsed.host === true || parsed.host === false)) {
+          matchId = parsed.matchId.toLowerCase();
+          hostFlag = parsed.host === true;
+          if (isJoinToken(parsed.inviteToken) && typeof parsed.inviteExpiresAt === 'number') {
+            inviteToken = parsed.inviteToken;
+            inviteExpiresAt = parsed.inviteExpiresAt;
+          }
+          const storedCode = normalizeJoinCode(parsed.inviteCode);
+          if (storedCode) inviteCode = storedCode;
+        }
+      }
+      sessionStorage.setItem(JOIN_KEY, JSON.stringify({
+        token: next.token,
+        expiresAt: next.expiresAt,
+        ...(matchId ? {
+          host: hostFlag,
+          matchId,
+          ...(inviteToken ? { inviteToken, inviteExpiresAt } : {}),
+          ...(inviteCode ? { inviteCode } : {}),
+        } : {}),
+      }));
+      if (matchId) hostRef.current = { matchId, token, inviteToken, inviteExpiresAt, inviteCode };
+    } catch {
+      // The in-memory copy still reconnects this visit.
+    }
+    return next;
+  };
+
+  const showLocalCourt = () => {
+    hadLive.current = false;
+    if (offlineTimer.current !== null) {
+      clearTimeout(offlineTimer.current);
+      offlineTimer.current = null;
+    }
+    setCourtTone('local');
+  };
+
+  const sendPoint = (ws: WebSocket, item: PendingPoint) => {
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    const body = item.event.type === 'team/rename'
+      ? { type: 'team_renamed', eventId: item.id, team: item.event.team.toUpperCase(), name: item.event.name }
+      : {
+          type: 'event',
+          eventId: item.id,
+          parentId: item.parentId,
+          event: item.event,
+          ...(item.claim ? { claim: item.claim } : {}),
+        };
+    try {
+      ws.send(JSON.stringify(body));
+    } catch {
+      return false;
+    }
+    item.sentAt = Date.now();
+    return true;
+  };
+
+  const armSender = () => {
+    liveRef.current = (courtEvent: MatchEvent, claim: ScoreClaim | null) => {
+      const eventId = canonicalEventId(createMatchId());
+      const held = tokenRef.current;
+      if (!eventId || !held) return false;
+      if (unackedRef.current.length >= MAX_PENDING_EVENTS) {
+        noteError(ROOM_MESSAGES.slow_down);
+        return true;
+      }
+      const parentId = headRef.current;
+      const point: PendingPoint = {
+        id: eventId,
+        event: courtEvent,
+        token: held.token,
+        matchId: matchRef.current,
+        sentAt: Date.now(),
+        resent: false,
+        claim,
+        parentId,
+      };
+      headRef.current = eventId;
+      logIdsRef.current.push(eventId);
+      seenRef.current.add(eventId);
+      unackedRef.current.push(point);
+      applyRef.current(courtEvent);
+      const ws = socketRef.current;
+      const queuedIds = new Set(queueRef.current.map((item) => item.id));
+      const waiting = !readyRef.current || unackedRef.current.some((item) => isScoreEvent(item.event.type) && item.id !== eventId && !queuedIds.has(item.id));
+      if (waiting || !ws || !sendPoint(ws, point)) {
+        queueRef.current.push(point);
+        if (hadLive.current && !waiting) {
+          setStatus('connecting');
+          wakeRef.current();
+        }
+      }
+      return true;
+    };
+  };
+
+  const flushQueued = (ws: WebSocket) => {
+    if (!readyRef.current) return;
+    const rest: PendingPoint[] = [];
+    let blocked = unackedRef.current.some((item) => isScoreEvent(item.event.type) && !queueRef.current.some((queued) => queued.id === item.id));
+    for (const item of queueRef.current) {
+      if (blocked) {
+        rest.push(item);
+        continue;
+      }
+      if (!sendPoint(ws, item)) {
+        rest.push(item);
+        if (isScoreEvent(item.event.type)) blocked = true;
+        continue;
+      }
+      if (isScoreEvent(item.event.type)) blocked = true;
+    }
+    queueRef.current = rest;
+  };
+
+  const resendOutstanding = (ws: WebSocket, matchId: string, log: MatchLog, eventIds: readonly string[]): 'already' | 'fast-forward' | 'merged' | 'ambiguous' => {
+    const token = tokenRef.current?.token ?? '';
+    const outstanding = unackedAfterSnapshot(
+      [...unackedRef.current, ...queueRef.current],
+      token,
+      matchId,
+      [...seenRef.current],
+    ).map((item): PendingPoint => ({ ...item, claim: item.claim ?? null, parentId: item.parentId ?? null, sentAt: Date.now(), resent: false }));
+    const server: CausalEvent[] = log.events.flatMap((event, index) => {
+      const id = eventIds[index];
+      if (!id) return [];
+      const previous = index === 0 ? null : eventIds[index - 1] ?? null;
+      return [{
+        id,
+        parentId: event.parentId === undefined ? previous : event.parentId,
+        event,
+        claim: null,
+      }];
+    });
+    const stateNow = replayScore(log.base, log.events);
+    const listed = (items: readonly CausalEvent[]) => items.filter((item) => {
+      if (item.claim && sameBoard(scoreBoard(stateNow), item.claim.after)) return false;
+      const alone = planMerge(log.base, server, [item]);
+      return alone.reason !== 'already';
+    }).map((item) => ({ id: item.id, event: item.event, claim: item.claim }));
+    const plan = planMerge(
+      log.base,
+      server,
+      outstanding.map((item) => ({ id: item.id, parentId: item.parentId, event: item.event, claim: item.claim })),
+    );
+    const sendById = new Map(plan.send.map((item) => [item.id, item]));
+    const sending = outstanding.flatMap((item) => {
+      const planned = sendById.get(item.id);
+      return planned ? [{ ...item, parentId: planned.parentId, claim: planned.claim }] : [];
+    });
+    queueRef.current = [];
+    unackedRef.current = sending;
+    const known = new Set(eventIds);
+    if (plan.reason === 'ambiguous') {
+      const incoming = listed(plan.ambiguous);
+      const incomingIds = new Set(incoming.map((item) => item.id));
+      setPendingRestore((current) => {
+        const kept = current.filter((item) => !known.has(item.id) && !incomingIds.has(item.id));
+        return [...kept, ...incoming].slice(0, MAX_PENDING_EVENTS);
+      });
+      return plan.reason;
+    }
+    setPendingRestore((current) => current.filter((item) => !known.has(item.id) && !sendById.has(item.id)));
+    for (const item of sending) {
+      if (!sendPoint(ws, item)) queueRef.current.push(item);
+    }
+    return plan.reason;
   };
 
   const disconnect = () => {
+    const held = tokenRef.current;
+    const matchId = matchRef.current;
+    const api = apiBase();
+    if (held && isUuid(matchId) && api) {
+      const token = held.token;
+      void fetch(`${api}/matches/${matchId}/leave`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      }).catch(() => undefined);
+    }
+    dropToken();
+    clearPending();
+    clearWake();
+    showLocalCourt();
     generation.current += 1;
+    opening.current = false;
     liveRef.current = null;
     readyRef.current = false;
-    socketRef.current?.close();
-    socketRef.current = null;
+    detachSocket(socketRef.current);
     hostRef.current = null;
+    matchRef.current = '';
     setStatus('off');
     setHost(true);
     setQr(null);
+    setMatchCode(null);
     setPlayers(0);
-    rememberOffer(null);
+    setPhones([]);
+    setError(null);
+    setPendingRestore([]);
+    setMovedNote(false);
   };
 
-  const open = (token: string) => {
+  const open = (token: string, asJoin: boolean, existingTicket?: string) => {
+    let sessionToken = token;
+    const held = tokenRef.current;
+    if (held?.token === sessionToken && (opening.current || socketIsUp(socketRef.current))) return;
+    if (held && held.token !== sessionToken) {
+      clearPending();
+      generation.current += 1;
+      opening.current = false;
+    }
+    detachSocket(socketRef.current);
+    if (!rememberToken(sessionToken, asJoin)) {
+      dropToken();
+      clearPending();
+      liveRef.current = null;
+      opening.current = false;
+      showLocalCourt();
+      setStatus('disconnected');
+      setError(ROOM_MESSAGES.expired);
+      setJoining(false);
+      return;
+    }
+    opening.current = true;
+    const fail = (message: string) => {
+      opening.current = false;
+      setMovedNote(false);
+      if (message === ROOM_MESSAGES.slow_down) slowDown.current = true;
+      if (isTerminalMessage(message)) {
+        dropToken();
+        clearPending();
+        liveRef.current = null;
+        showLocalCourt();
+        setStatus('disconnected');
+        noteError(message);
+        if (asJoin) setJoinError(message);
+        setJoining(false);
+        return;
+      }
+      setStatus(hadLive.current ? 'connecting' : 'off');
+      if (asJoin) {
+        setJoining(false);
+        setJoinError(message);
+        if (message === ROOM_MESSAGES.slow_down) armSlowClear();
+        return;
+      }
+      noteError(message);
+      if (tokenRef.current && message !== ROOM_MESSAGES.not_configured) wakeRef.current();
+    };
+    if (!isJoinToken(sessionToken)) {
+      fail(ROOM_MESSAGES.bad_token);
+      return;
+    }
     const mine = generation.current + 1;
     generation.current = mine;
     void (async () => {
       if (!api) {
-        setError(ROOM_MESSAGES.not_configured);
+        fail(ROOM_MESSAGES.not_configured);
         return;
       }
       readyRef.current = false;
-      socketRef.current?.close();
+      detachSocket(socketRef.current);
       setStatus('connecting');
-      setError(null);
-      let ticket: string | undefined;
-      try {
-        const response = await fetch(`${api}/join`, {
-          method: 'POST',
-          headers: { authorization: `Bearer ${token}` },
-        });
-        if (generation.current !== mine) return;
-        if (!response.ok) {
-          setError(await errorText(response));
-          setStatus('off');
+      if (asJoin) setJoinError(null);
+      else if (!hadLive.current) setError(null);
+      let ticket: string | undefined = existingTicket;
+      if (!ticket) {
+        try {
+          const response = await fetch(`${api}/join`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ device: thisDevice() }),
+          });
+          if (generation.current !== mine) return;
+          if (!response.ok) {
+            fail(await errorText(response));
+            return;
+          }
+          const body = (await response.json()) as { ticket?: unknown; token?: unknown };
+          if (typeof body.ticket !== 'string') {
+            fail(ROOM_MESSAGES.offline);
+            return;
+          }
+          ticket = body.ticket;
+          if (isJoinToken(body.token) && body.token !== sessionToken) {
+            if (!rememberToken(body.token, true)) {
+              fail(ROOM_MESSAGES.bad_token);
+              return;
+            }
+            sessionToken = body.token;
+          }
+          if (!asJoin) {
+            setError(null);
+            setJoinError(null);
+          }
+        } catch {
+          if (generation.current !== mine) return;
+          fail(ROOM_MESSAGES.offline);
           return;
         }
-        const body = (await response.json()) as { ticket?: unknown };
-        if (typeof body.ticket !== 'string') {
-          setError(ROOM_MESSAGES.offline);
-          setStatus('off');
-          return;
-        }
-        ticket = body.ticket;
-      } catch {
-        if (generation.current !== mine) return;
-        setError(ROOM_MESSAGES.offline);
-        setStatus('off');
-        return;
       }
       if (!ticket || generation.current !== mine) return;
       const ws = new WebSocket(socketUrl(api, ticket));
       socketRef.current = ws;
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'hello', protocol: 1, token, device: thisDevice() }));
+        const legacy = thisLegacy();
+        ws.send(JSON.stringify({
+          type: 'hello',
+          protocol: LIVE_PROTOCOL,
+          token: sessionToken,
+          device: thisDevice(),
+          ...(legacy ? { previousDevice: legacy } : {}),
+          clientNow: Date.now(),
+        }));
       };
       ws.onmessage = (event) => {
+        if (socketRef.current !== ws) return;
         let parsed: unknown;
         try {
           parsed = JSON.parse(String(event.data)) as unknown;
@@ -139,73 +673,445 @@ export function useLive(
           return;
         }
         const notice = interpretMessage(parsed);
-        if (notice.kind === 'join_offer') {
-          rememberOffer(notice.token);
+        if (notice.kind === 'join_offer' || notice.kind === 'match_moved') {
+          setContinued(false);
+          setMovedNote(true);
+          setJoining(true);
+          open(notice.token, true);
           return;
         }
+        if (notice.kind === 'match_notice') {
+          setContinued(true);
+          return;
+        }
+        if (notice.kind === 'pong') return;
         if (notice.kind === 'error') {
-          setError(notice.message);
+          if (notice.code === 'score_kept') {
+            const rejectedId = notice.eventId ?? '';
+            const rejected = unackedRef.current.find((item) => item.id === rejectedId);
+            unackedRef.current = unackedRef.current.filter((item) => item.id !== rejectedId);
+            queueRef.current = queueRef.current.filter((item) => item.id !== rejectedId);
+            if (keptRetry.current.has(rejectedId)) {
+              const currentLog = readLogRef.current();
+              const checked = rejected
+                ? planMerge(currentLog.base, currentLog.events.map((event, index) => ({
+                  id: logIdsRef.current[index] ?? `local-${index}`,
+                  parentId: index === 0 ? null : logIdsRef.current[index - 1] ?? null,
+                  event,
+                  claim: null,
+                })), [{ id: rejected.id, parentId: rejected.parentId, event: rejected.event, claim: rejected.claim }])
+                : null;
+              const board = scoreBoard(replayScore(currentLog.base, currentLog.events));
+              const alreadyThere = checked?.reason === 'already'
+                || (rejected?.claim != null && sameBoard(board, rejected.claim.after));
+              if (!alreadyThere && rejected) {
+                seenRef.current.delete(rejected.id);
+                setPendingRestore((current) => {
+                  if (current.some((item) => item.id === rejected.id)) return current;
+                  return [...current, { id: rejected.id, event: rejected.event, claim: rejected.claim }].slice(0, MAX_PENDING_EVENTS);
+                });
+                noteError(ROOM_MESSAGES.score_kept);
+              }
+              return;
+            }
+            keptRetry.current.add(rejectedId);
+            if (rejected) {
+              seenRef.current.delete(rejected.id);
+              queueRef.current.push({ ...rejected, sentAt: 0, resent: false });
+            }
+            conflictNote.current = true;
+            reconnectNowRef.current();
+            return;
+          }
+          if (notice.code === 'slow_down') slowDown.current = true;
+          let countedPlus = false;
+          if (notice.eventId) {
+            const failed = unackedRef.current.find((item) => item.id === notice.eventId);
+            if (failed) {
+              unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
+              queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
+              seenRef.current.delete(notice.eventId);
+              if (logIdsRef.current.at(-1) === notice.eventId) logIdsRef.current.pop();
+              countedPlus = failed.event.type === 'game/increment';
+              revertRef.current(failed.event);
+            }
+          }
+          if (notice.code === 'revoked' || notice.code === 'expired' || notice.code === 'removed') {
+            const current = hostRef.current;
+            if (current) hostRef.current = { ...current, inviteToken: null, inviteExpiresAt: 0, inviteCode: null };
+            setQr(null);
+            setMatchCode(null);
+          }
+          if (notice.code && isTerminalCode(notice.code)) {
+            dropToken();
+            clearPending();
+            liveRef.current = null;
+            readyRef.current = false;
+            opening.current = false;
+            showLocalCourt();
+            setJoining(false);
+            setMovedNote(false);
+            setStatus('disconnected');
+            noteError(notice.message);
+            detachSocket(ws);
+            return;
+          }
+          const refused = countedPlus ? 'That point was not added.' : notice.message;
+          if (asJoin && !readyRef.current) setJoinError(refused);
+          else noteError(refused);
+          if (asJoin && !readyRef.current) setJoining(false);
           if (!notice.close) return;
-          liveRef.current = null;
           readyRef.current = false;
-          setStatus('off');
-          ws.close();
+          opening.current = false;
+          setStatus(hadLive.current ? 'connecting' : 'off');
+          detachSocket(ws);
+          wakeRef.current();
           return;
         }
         if (notice.kind === 'presence') {
           setPlayers(notice.players);
           return;
         }
+        if (notice.kind === 'roster') {
+          setPhones(notice.phones);
+          setPlayers(notice.phones.filter((phone) => phone.online).length);
+          return;
+        }
         if (notice.kind === 'delta') {
-          if (readyRef.current && !notice.duplicate) applyRef.current(notice.event);
+          const foreign = !notice.duplicate && !seenRef.current.has(notice.eventId);
+          unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
+          queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
+          if (foreign) {
+            applyRef.current(notice.event);
+            logIdsRef.current.push(notice.eventId);
+            headRef.current = notice.eventId;
+          }
+          seenRef.current.add(notice.eventId);
           setPlayers(notice.players);
+          clearSlowBanner();
+          flushQueued(ws);
+          return;
+        }
+        if (notice.kind === 'tail') {
+          const current = readLogRef.current();
+          const ids = logIdsRef.current;
+          const cut = notice.since === null ? -1 : ids.lastIndexOf(notice.since);
+          if (notice.since !== null && cut < 0) {
+            reconnectNowRef.current();
+            return;
+          }
+          const prefixEvents = notice.since === null ? [] : current.events.slice(0, cut + 1);
+          const prefixIds = notice.since === null ? [] : ids.slice(0, cut + 1);
+          const nextLog = { ...current, events: [...prefixEvents, ...notice.events] };
+          const nextIds = [...prefixIds, ...notice.eventIds];
+          logIdsRef.current = nextIds;
+          seenRef.current = new Set(nextIds.map((id) => id.toLowerCase()));
+          headRef.current = nextIds[nextIds.length - 1] ?? null;
+          const kept = new Set(nextIds);
+          unackedRef.current = unackedRef.current.filter((item) => !kept.has(item.id));
+          queueRef.current = queueRef.current.filter((item) => !kept.has(item.id));
+          replaceRef.current(nextLog);
+          setPlayers(notice.players);
+          nameSeq.current = Math.max(nameSeq.current, notice.nameSeq);
+          resendOutstanding(ws, matchRef.current, nextLog, nextIds);
+          return;
+        }
+        if (notice.kind === 'rename') {
+          unackedRef.current = unackedRef.current.filter((item) => item.id !== notice.eventId);
+          queueRef.current = queueRef.current.filter((item) => item.id !== notice.eventId);
+          if (notice.seq <= nameSeq.current) return;
+          nameSeq.current = notice.seq;
+          if (!seenRef.current.has(notice.eventId)) {
+            logIdsRef.current.push(notice.eventId);
+            headRef.current = notice.eventId;
+          }
+          seenRef.current.add(notice.eventId);
+          applyRef.current({ type: 'team/rename', team: notice.team, name: notice.name, at: Date.now() });
           return;
         }
         if (notice.kind === 'log') {
+          const local = readLogRef.current();
+          if (localScoreAhead(local, notice.log)) {
+            archiveLocal(local);
+            setKeptNote(true);
+          }
+          // base.matchId is the first match in a chain. The room is the id replay shows.
+          const matchId = replayScore(notice.log.base, notice.log.events).matchId.toLowerCase();
+          matchRef.current = matchId;
+          seenRef.current = new Set(notice.eventIds.map((id) => id.toLowerCase()));
+          logIdsRef.current = [...notice.eventIds];
+          headRef.current = notice.eventIds[notice.eventIds.length - 1] ?? null;
           replaceRef.current(notice.log);
           readyRef.current = true;
+          hadLive.current = true;
+          setCourtTone('online');
           setHost(notice.host);
           setPlayers(notice.players);
+          setJoining(false);
+          setJoinError(null);
+          clearSlowTimer();
+          setError(null);
+          if (notice.host && tokenRef.current) persistHost(matchId, tokenRef.current);
+          else if (tokenRef.current) persistMember(matchId, tokenRef.current);
+          try {
+            if (typeof localStorage !== 'undefined') clearLegacyDeviceId(localStorage);
+          } catch {
+            // The next hello can send the old id again.
+          }
+          setContinued(false);
           setStatus('live');
-          liveRef.current = (courtEvent: MatchEvent) => {
-            if (ws.readyState !== WebSocket.OPEN) return false;
-            ws.send(JSON.stringify({ type: 'event', eventId: createMatchId(), event: courtEvent }));
-            return true;
-          };
+          resumes.current = 0;
+          slowDown.current = false;
+          nameSeq.current = Math.max(nameSeq.current, notice.nameSeq);
+          opening.current = false;
+          clearWake();
+          armSender();
+          const merged = resendOutstanding(ws, matchId, notice.log, notice.eventIds);
+          if (conflictNote.current) {
+            conflictNote.current = false;
+            if (merged === 'ambiguous') noteError(ROOM_MESSAGES.score_kept);
+          }
         }
       };
       ws.onerror = () => {
+        if (asJoin && !readyRef.current) {
+          setJoining(false);
+          setJoinError(ROOM_MESSAGES.offline);
+          return;
+        }
         setError(ROOM_MESSAGES.offline);
       };
       ws.onclose = () => {
         if (socketRef.current !== ws) return;
-        liveRef.current = null;
+        socketRef.current = null;
         readyRef.current = false;
-        setStatus('off');
-        setHost(true);
+        opening.current = false;
+        setJoining(false);
+        if (!tokenRef.current) return;
+        if (hadLive.current) setStatus('connecting');
+        wakeRef.current();
       };
     })();
   };
 
-  const publishQr = async (matchId: string, hostToken: string) => {
+  reconnectNowRef.current = () => {
+    if (!tokenRef.current) return;
+    clearWake();
+    detachSocket(socketRef.current);
+    opening.current = false;
+    readyRef.current = false;
+    open(tokenRef.current.token, false);
+  };
+
+  wakeRef.current = () => {
+    const held = tokenRef.current;
+    if (!held || wakeTimer.current !== null) return;
+    if (held.expiresAt <= Date.now()) {
+      dropToken();
+      clearPending();
+      liveRef.current = null;
+      showLocalCourt();
+      setStatus('disconnected');
+      setError(ROOM_MESSAGES.expired);
+      return;
+    }
+    const ws = socketRef.current;
+    const visibility = typeof document === 'undefined' ? 'visible' : document.visibilityState;
+    if (!shouldResumeSocket(visibility, ws ? ws.readyState : null, opening.current)) return;
+    const penalise = slowDown.current;
+    if (penalise) slowDown.current = false;
+    const delay = reconnectDelayMs(resumes.current, penalise);
+    resumes.current += 1;
+    wakeTimer.current = setTimeout(() => {
+      wakeTimer.current = null;
+      const again = tokenRef.current;
+      if (!again) return;
+      open(again.token, false);
+    }, delay);
+  };
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(JOIN_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        token?: unknown;
+        expiresAt?: unknown;
+        host?: unknown;
+        matchId?: unknown;
+        inviteToken?: unknown;
+        inviteExpiresAt?: unknown;
+        inviteCode?: unknown;
+      };
+      if ((parsed.host !== true && parsed.host !== false) || !isJoinToken(parsed.token) || !isUuid(parsed.matchId)) return;
+      if (typeof parsed.expiresAt === 'number' && parsed.expiresAt <= Date.now()) return;
+      const inviteToken = isJoinToken(parsed.inviteToken) ? parsed.inviteToken : null;
+      const inviteExpiresAt = typeof parsed.inviteExpiresAt === 'number' ? parsed.inviteExpiresAt : 0;
+      const inviteCode = normalizeJoinCode(parsed.inviteCode);
+      hostRef.current = { matchId: parsed.matchId.toLowerCase(), token: parsed.token, inviteToken, inviteExpiresAt, inviteCode };
+    } catch {
+      // A missing host record only means Show QR creates a match.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof window === 'undefined') return;
+    const onShow = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt.current = Date.now();
+        return;
+      }
+      const hiddenFor = hiddenAt.current === null ? 0 : Date.now() - hiddenAt.current;
+      hiddenAt.current = null;
+      resumes.current = 0;
+      const stale = socketRef.current;
+      if (hiddenFor >= HIDE_RECONNECT_MS && stale && hadLive.current) {
+        detachSocket(stale);
+        opening.current = false;
+        readyRef.current = false;
+        setStatus('connecting');
+      }
+      if (!socketIsUp(socketRef.current)) {
+        reconnectNowRef.current();
+        return;
+      }
+      wakeRef.current();
+    };
+    document.addEventListener('visibilitychange', onShow);
+    window.addEventListener('pageshow', onShow);
+    const onOnline = () => {
+      const now = Date.now();
+      if (!onlineRetryAllowed(lastOnlineRetry.current, now)) return;
+      if (!tokenRef.current) return;
+      if (readyRef.current && socketIsUp(socketRef.current)) return;
+      lastOnlineRetry.current = now;
+      clearWake();
+      resumes.current = 0;
+      if (slowDown.current) {
+        wakeRef.current();
+        return;
+      }
+      reconnectNowRef.current();
+    };
+    window.addEventListener('online', onOnline);
+    return () => {
+      document.removeEventListener('visibilitychange', onShow);
+      window.removeEventListener('pageshow', onShow);
+      window.removeEventListener('online', onOnline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (status === 'live') {
+      hadLive.current = true;
+      if (offlineTimer.current !== null) {
+        clearTimeout(offlineTimer.current);
+        offlineTimer.current = null;
+      }
+      setCourtTone('online');
+      return;
+    }
+    if (status !== 'connecting' || !hadLive.current) {
+      if (offlineTimer.current !== null) {
+        clearTimeout(offlineTimer.current);
+        offlineTimer.current = null;
+      }
+      setCourtTone('local');
+      return;
+    }
+    if (courtTone === 'offline' || offlineTimer.current !== null) return;
+    offlineTimer.current = setTimeout(() => {
+      offlineTimer.current = null;
+      setCourtTone('offline');
+    }, OFFLINE_COURT_MS);
+  }, [status, courtTone]);
+
+  useEffect(() => () => {
+    generation.current += 1;
+    opening.current = false;
+    clearWake();
+    detachSocket(socketRef.current);
+    if (offlineTimer.current !== null) {
+      clearTimeout(offlineTimer.current);
+      offlineTimer.current = null;
+    }
+    if (slowTimer.current !== null) {
+      clearTimeout(slowTimer.current);
+      slowTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!movedNote || typeof window === 'undefined') return;
+    const timer = window.setTimeout(() => setMovedNote(false), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [movedNote]);
+
+  useEffect(() => {
+    if (!keptNote || typeof window === 'undefined') return;
+    const timer = window.setTimeout(() => setKeptNote(false), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [keptNote]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const timer = window.setInterval(() => {
+      const ws = socketRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const now = Date.now();
+      const stale = unackedRef.current.filter((item) => now - item.sentAt >= ACK_MS);
+      if (stale.length === 0) return;
+      const fresh = stale.filter((item) => !item.resent);
+      if (fresh.length > 0) {
+        for (const item of fresh) {
+          try {
+            ws.send(JSON.stringify({ type: 'ping' }));
+            sendPoint(ws, item);
+            item.resent = true;
+            item.sentAt = now;
+          } catch {
+            try {
+              ws.close();
+            } catch {
+              // The close handler resumes.
+            }
+          }
+        }
+        return;
+      }
+      reconnectNowRef.current();
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const publishQr = async (matchId: string, memberToken: string, rotate = false) => {
     const response = await fetch(`${api}/matches/${matchId}/invites`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${hostToken}`,
+        authorization: `Bearer ${memberToken}`,
       },
-      body: JSON.stringify({ role: 'player' }),
+      body: JSON.stringify({ role: 'player', ...(rotate ? { rotate: true } : {}) }),
     });
     if (!response.ok) {
       setError(await errorText(response));
-      setStatus('off');
       return;
     }
-    const body = (await response.json()) as { token?: unknown };
+    const body = (await response.json()) as { token?: unknown; expiresAt?: unknown; code?: unknown; sessionToken?: unknown };
     if (typeof body.token !== 'string') {
       setError(ROOM_MESSAGES.offline);
       return;
     }
+    if (isJoinToken(body.sessionToken)) {
+      rememberToken(body.sessionToken, true);
+      open(body.sessionToken, false);
+    }
+    const expiresAt = typeof body.expiresAt === 'number' && Number.isFinite(body.expiresAt)
+      ? body.expiresAt
+      : Date.now() + JOIN_TOKEN_TTL_MS;
+    rememberInvite(body.token, expiresAt, normalizeJoinCode(body.code));
+    setError(null);
+    setJoinError(null);
     const page = typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href;
     setQr(joinLink(page, body.token));
   };
@@ -213,45 +1119,134 @@ export function useLive(
   return {
     configured: api.length > 0,
     status,
+    courtTone,
     host,
     players,
+    phones,
     qr,
+    code: matchCode,
     error,
-    offer,
-    disconnect,
-    acceptOffer: () => {
-      const token = offerRef.current;
-      rememberOffer(null);
-      if (token) open(token);
+    joinError,
+    joining,
+    movedNote,
+    keptNote,
+    continued,
+    dismissContinued: () => setContinued(false),
+    pendingRestore,
+    clearRestore: () => setPendingRestore([]),
+    commitRestore: () => {
+      const log = readLogRef.current();
+      const state = replayScore(log.base, log.events);
+      const board = scoreBoard(state);
+      const server: CausalEvent[] = log.events.map((event, index) => ({
+        id: logIdsRef.current[index] ?? `local-${index}`,
+        parentId: index === 0 ? null : logIdsRef.current[index - 1] ?? null,
+        event,
+        claim: null,
+      }));
+      const events: MatchEvent[] = [];
+      for (const item of pendingRef.current) {
+        if (item.claim && sameBoard(board, item.claim.after)) continue;
+        const plan = planMerge(log.base, server, [{ id: item.id, parentId: headRef.current, event: item.event, claim: item.claim }]);
+        if (plan.reason === 'already' || (plan.send.length === 0 && plan.ambiguous.length === 0)) continue;
+        events.push(item.event);
+      }
+      setPendingRestore([]);
+      return events;
     },
-    dismissOffer: () => rememberOffer(null),
-    finishShared: (event) => {
-      const previous = hostRef.current?.token ?? null;
+    disconnect,
+    finishShared: (event, claim) => {
+      const previous = tokenRef.current?.token ?? hostRef.current?.token ?? null;
       const ws = socketRef.current;
+      dropToken();
+      clearPending();
+      clearWake();
+      showLocalCourt();
       liveRef.current = null;
       readyRef.current = false;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'event', eventId: createMatchId(), event }));
+      if (ws && ws.readyState === WebSocket.OPEN && (claim || !isScoreEvent(event.type))) {
+        ws.send(JSON.stringify({
+          type: 'event',
+          eventId: createMatchId(),
+          parentId: headRef.current,
+          event,
+          ...(claim ? { claim } : {}),
+        }));
       }
       generation.current += 1;
-      ws?.close();
-      socketRef.current = null;
+      detachSocket(ws);
       hostRef.current = null;
       setStatus('off');
       setHost(true);
       setQr(null);
+      setMatchCode(null);
       setPlayers(0);
+      setPhones([]);
       return previous;
     },
     connect: (token) => {
-      open(token);
+      if (tokenRef.current?.token === token && (opening.current || socketIsUp(socketRef.current))) return;
+      setJoining(true);
+      setJoinError(null);
+      open(token, hostRef.current?.token !== token);
+    },
+    joinByCode: async (code) => {
+      const normalized = normalizeJoinCode(code);
+      if (!normalized) {
+        setJoinError(ROOM_MESSAGES.join_code);
+        return false;
+      }
+      if (!api) {
+        setJoinError(ROOM_MESSAGES.not_configured);
+        return false;
+      }
+      try {
+        const response = await fetch(`${api}/join`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ device: thisDevice(), code: normalized }),
+        });
+        if (!response.ok) {
+          setJoinError(await errorText(response));
+          return false;
+        }
+        const body = (await response.json()) as { token?: unknown; ticket?: unknown };
+        if (!isJoinToken(body.token) || typeof body.ticket !== 'string') {
+          setJoinError(ROOM_MESSAGES.join_code);
+          return false;
+        }
+        setJoining(true);
+        setJoinError(null);
+        open(body.token, true, body.ticket);
+        return true;
+      } catch {
+        setJoinError(ROOM_MESSAGES.offline);
+        return false;
+      }
+    },
+    rejectToken: () => {
+      setJoining(false);
+      setJoinError(ROOM_MESSAGES.bad_token);
+      setStatus('off');
     },
     share: (log, options) => {
+      const current = hostRef.current;
+      if (current && !options?.previousHostToken) {
+        if (current.inviteToken && current.inviteExpiresAt > Date.now()) {
+          const page = typeof location === 'undefined' ? 'https://patrickstubner.github.io/PadelCounterV2/' : location.href;
+          setQr(joinLink(page, current.inviteToken));
+          setMatchCode(current.inviteCode);
+          return;
+        }
+        void publishQr(current.matchId, current.token);
+        return;
+      }
       void (async () => {
         if (!api) {
           setError(ROOM_MESSAGES.not_configured);
           return;
         }
+        const liveLog = prepareLiveLog(log);
         setStatus('connecting');
         setError(null);
         try {
@@ -259,7 +1254,7 @@ export function useLive(
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              log,
+              log: liveLog,
               device: thisDevice(),
               ...(options?.previousHostToken
                 ? { previousHostToken: options.previousHostToken, carry: options.carry === true }
@@ -277,8 +1272,9 @@ export function useLive(
             setStatus('off');
             return;
           }
-          hostRef.current = { matchId: body.matchId, token: body.hostToken };
-          open(body.hostToken);
+          const held = rememberToken(body.hostToken, false);
+          if (held) persistHost(body.matchId.toLowerCase(), held);
+          open(body.hostToken, false);
           if (options?.carry && options.previousHostToken) {
             try {
               const carried = await fetch(`${api}/matches/${body.matchId}/carry`, {
@@ -287,7 +1283,10 @@ export function useLive(
                   'content-type': 'application/json',
                   authorization: `Bearer ${body.hostToken}`,
                 },
-                body: JSON.stringify({ confirm: true, previousHostToken: options.previousHostToken }),
+                body: JSON.stringify({
+                  confirm: true,
+                  previousHostToken: options.previousHostToken,
+                }),
               });
               if (!carried.ok) setError(await errorText(carried));
             } catch {
@@ -304,7 +1303,18 @@ export function useLive(
     rotate: () => {
       const current = hostRef.current;
       if (!current) return;
-      void publishQr(current.matchId, current.token);
+      void publishQr(current.matchId, current.token, true);
+    },
+    kick: (seat: string) => {
+      const ws = socketRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN || !isPublicSeat(seat)) return;
+      const mine = phones.find((phone) => phone.self);
+      if (mine?.seat === seat) return;
+      try {
+        ws.send(JSON.stringify({ type: 'kick', seat }));
+      } catch {
+        // The socket is already gone.
+      }
     },
   };
 }

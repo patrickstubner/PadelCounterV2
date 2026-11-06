@@ -26,7 +26,22 @@ export function newMatchCopy(plan: NewMatchPlan): {
   readonly body: string;
   readonly confirmLabel: string;
   readonly confirmTestId: string;
+  readonly alternateLabel?: string;
+  readonly alternateTestId?: string;
 } {
+  if (plan.askCarry) {
+    const alone = plan.kind === 'leave'
+      ? 'No leaves the shared match on this phone only.'
+      : 'No ends this match and starts the new one on this phone only.';
+    return {
+      title: 'Take the connected phones into the new match?',
+      body: `Yes moves every phone that already joined. They follow this match on their own and are not asked. A phone that is offline follows when it reconnects, while its code is still valid. ${alone}`,
+      confirmLabel: 'Take phones',
+      confirmTestId: 'take-phones',
+      alternateLabel: 'Just this phone',
+      alternateTestId: 'new-match-alone',
+    };
+  }
   if (plan.kind === 'finish') {
     return {
       title: 'Finish current match and start a new one?',

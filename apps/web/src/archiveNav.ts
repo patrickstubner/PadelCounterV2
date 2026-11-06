@@ -4,15 +4,14 @@ export type ArchiveScreen =
   | { readonly view: 'court' }
   | { readonly view: 'matches' }
   | { readonly view: 'detail'; readonly id: string }
-  | { readonly view: 'privacy' }
-  | { readonly view: 'connect' };
+  | { readonly view: 'privacy' };
 
 export function screenFromHistory(state: unknown): ArchiveScreen {
   if (typeof state !== 'object' || state === null) return { view: 'court' };
   const record = state as Record<string, unknown>;
   if (record.padelArchive === 'matches') return { view: 'matches' };
   if (record.padelArchive === 'privacy') return { view: 'privacy' };
-  if (record.padelArchive === 'connect') return { view: 'connect' };
+  if (record.padelArchive === 'join') return { view: 'court' };
   if (record.padelArchive === 'detail' && isUuid(record.id)) return { view: 'detail', id: record.id.toLowerCase() };
   return { view: 'court' };
 }
@@ -29,6 +28,6 @@ export function privacyHistoryState(): { readonly padelArchive: 'privacy' } {
   return { padelArchive: 'privacy' };
 }
 
-export function connectHistoryState(): { readonly padelArchive: 'connect' } {
-  return { padelArchive: 'connect' };
+export function joinHistoryState(): { readonly padelArchive: 'join' } {
+  return { padelArchive: 'join' };
 }

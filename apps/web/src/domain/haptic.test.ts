@@ -1,0 +1,244 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import {
+  HAPTIC_KEY,
+  HAPTIC_MS,
+  bindCourtTaps,
+  createPressHaptic,
+  releaseInside,
+  hapticEnabled,
+  pulseHaptic,
+  setHapticEnabled,
+  type CourtTapTarget,
+  type HapticEnv,
+} from './haptic';
+
+const root = dirname(fileURLToPath(import.meta.url));
+
+function storage() {
+  const stored = new Map<string, string>();
+  return {
+    stored,
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      stored.set(key, value);
+    },
+  };
+}
+
+function env(partial: Partial<HapticEnv> = {}): { env: HapticEnv; vibrate: number[]; clicks: number } {
+  const vibrate: number[] = [];
+  const clicks = { n: 0 };
+  return {
+    vibrate,
+    clicks: clicks.n,
+    env: {
+      vibrate: partial.vibrate === undefined ? (ms: number) => { vibrate.push(ms); } : partial.vibrate,
+      clickSwitch: partial.clickSwitch === undefined ? () => { clicks.n += 1; } : partial.clickSwitch,
+      switchSupported: partial.switchSupported ?? false,
+    },
+  };
+}
+
+describe('haptic preference', () => {
+  it('is on unless this device stored off', () => {
+    const store = storage();
+    expect(hapticEnabled(store)).toBe(true);
+    setHapticEnabled(store, false);
+    expect(store.stored.get(HAPTIC_KEY)).toBe('off');
+    expect(hapticEnabled(store)).toBe(false);
+    setHapticEnabled(store, true);
+    expect(store.stored.get(HAPTIC_KEY)).toBe('on');
+    expect(hapticEnabled(store)).toBe(true);
+  });
+});
+
+describe('pulseHaptic', () => {
+  it('vibrates once for 10–15 ms and does not click the switch', () => {
+    expect(HAPTIC_MS).toBeGreaterThanOrEqual(10);
+    expect(HAPTIC_MS).toBeLessThanOrEqual(15);
+    const seen = env();
+    pulseHaptic(true, seen.env);
+    expect(seen.vibrate).toEqual([HAPTIC_MS]);
+    expect(seen.env.clickSwitch).toBeTypeOf('function');
+    const clicks = { n: 0 };
+    pulseHaptic(true, {
+      vibrate: (ms) => { seen.vibrate.push(ms); },
+      clickSwitch: () => { clicks.n += 1; },
+      switchSupported: true,
+    });
+    expect(clicks.n).toBe(0);
+    expect(seen.vibrate).toEqual([HAPTIC_MS, HAPTIC_MS]);
+  });
+
+  it('does not vibrate or click when the setting is off', () => {
+    const clicks = { n: 0 };
+    const vibrate: number[] = [];
+    pulseHaptic(false, {
+      vibrate: (ms) => { vibrate.push(ms); },
+      clickSwitch: () => { clicks.n += 1; },
+      switchSupported: true,
+    });
+    expect(vibrate).toEqual([]);
+    expect(clicks.n).toBe(0);
+  });
+
+  it('clicks the iOS switch when vibrate is missing', () => {
+    const clicks = { n: 0 };
+    pulseHaptic(true, {
+      vibrate: null,
+      clickSwitch: () => { clicks.n += 1; },
+      switchSupported: true,
+    });
+    expect(clicks.n).toBe(1);
+  });
+
+  it('stays quiet when vibrate and the switch are both missing', () => {
+    const clicks = { n: 0 };
+    expect(() => pulseHaptic(true, {
+      vibrate: null,
+      clickSwitch: () => { clicks.n += 1; },
+      switchSupported: false,
+    })).not.toThrow();
+    expect(clicks.n).toBe(0);
+  });
+
+  it('swallows a vibrate throw and does not fall through to the switch', () => {
+    const clicks = { n: 0 };
+    expect(() => pulseHaptic(true, {
+      vibrate: () => { throw new Error('blocked'); },
+      clickSwitch: () => { clicks.n += 1; },
+      switchSupported: true,
+    })).not.toThrow();
+    expect(clicks.n).toBe(0);
+  });
+
+  it('swallows a switch click that throws', () => {
+    expect(() => pulseHaptic(true, {
+      vibrate: null,
+      clickSwitch: () => { throw new Error('missing'); },
+      switchSupported: true,
+    })).not.toThrow();
+  });
+
+  it('keeps the duration in this file and does not call a remote host', () => {
+    const source = readFileSync(join(root, 'haptic.ts'), 'utf8');
+    expect(source).toContain('HAPTIC_MS = 15');
+    expect(source).toContain('HAPTIC_SLOP_PX = 12');
+    expect(source).toContain(HAPTIC_KEY);
+    expect(source).not.toContain('http://');
+    expect(source).not.toContain('https://');
+    expect(source).not.toContain('innerHTML');
+  });
+});
+
+describe('court taps', () => {
+  function target(): { calls: string[]; api: CourtTapTarget } {
+    const calls: string[] = [];
+    return {
+      calls,
+      api: {
+        increment: () => { calls.push('increment'); },
+        decrement: () => { calls.push('decrement'); },
+        chooseServe: () => { calls.push('serve'); },
+        selectSet: () => { calls.push('set'); },
+      },
+    };
+  }
+
+  it('counts a mouse release only inside the control', () => {
+    const box = { left: 0, top: 0, right: 40, bottom: 40 };
+    expect(releaseInside(box, 10, 10)).toBe(true);
+    expect(releaseInside(box, 300, 10)).toBe(false);
+    expect(releaseInside({ left: 0, top: 0, right: 0, bottom: 0 }, 300, 10)).toBe(true);
+  });
+
+  it('ticks after plus, minus, and the serve ball', () => {
+    const court = target();
+    const ticks: string[] = [];
+    const taps = bindCourtTaps(0, court.api, () => { ticks.push('tick'); });
+    taps.onIncrement('a');
+    taps.onDecrement('b');
+    taps.onServe('a');
+    expect(court.calls).toEqual(['increment', 'decrement', 'serve']);
+    expect(ticks).toEqual(['tick', 'tick', 'tick']);
+  });
+
+  it('vibrates once before the click, and not when the pointer scrolls or is cancelled', () => {
+    const queued: Array<() => void> = [];
+    const request = globalThis.requestAnimationFrame;
+    const cancel = globalThis.cancelAnimationFrame;
+    globalThis.requestAnimationFrame = ((fn: FrameRequestCallback) => {
+      queued.push(() => fn(0));
+      return queued.length;
+    }) as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = (() => undefined) as typeof cancelAnimationFrame;
+    try {
+      const ticks: number[] = [];
+      const press = createPressHaptic(() => ticks.push(1));
+      const point = { pointerId: 1, x: 0, y: 0, button: 0, pointerType: 'touch' };
+      press.down(point, true);
+      expect(ticks).toEqual([]);
+      queued.splice(0).forEach((fn) => fn());
+      expect(ticks).toEqual([1]);
+      press.up(point, true);
+      press.click();
+      expect(ticks).toEqual([1]);
+
+      const scrolled = createPressHaptic(() => ticks.push(2));
+      const mouse = { ...point, pointerType: 'mouse' };
+      scrolled.down(mouse, true);
+      scrolled.move({ ...mouse, x: 40 });
+      queued.splice(0).forEach((fn) => fn());
+      scrolled.up({ ...mouse, x: 40 }, false);
+      scrolled.click();
+      expect(ticks).toEqual([1]);
+
+      const dragged = createPressHaptic(() => ticks.push(5));
+      dragged.down(point, true);
+      dragged.move({ ...point, x: 40 });
+      queued.splice(0).forEach((fn) => fn());
+      dragged.up({ ...point, x: 40 }, false);
+      dragged.click();
+      expect(ticks).toEqual([1, 5]);
+
+      const cancelled = createPressHaptic(() => ticks.push(3));
+      cancelled.down({ ...point, pointerId: 2 }, true);
+      cancelled.cancel(2);
+      queued.splice(0).forEach((fn) => fn());
+      expect(ticks).toEqual([1, 5]);
+      cancelled.click();
+      expect(ticks).toEqual([1, 5, 3]);
+
+      const right = createPressHaptic(() => ticks.push(6));
+      right.down({ ...mouse, button: 2 }, true);
+      queued.splice(0).forEach((fn) => fn());
+      expect(ticks).toEqual([1, 5, 3]);
+
+      const disabled = createPressHaptic(() => ticks.push(7));
+      disabled.down(point, false);
+      queued.splice(0).forEach((fn) => fn());
+      disabled.up(point, false);
+      expect(ticks).toEqual([1, 5, 3]);
+
+      const keyboard = createPressHaptic(() => ticks.push(4));
+      keyboard.click();
+      expect(ticks).toEqual([1, 5, 3, 4]);
+    } finally {
+      globalThis.requestAnimationFrame = request;
+      globalThis.cancelAnimationFrame = cancel;
+    }
+  });
+
+  it('ticks only when the set actually changes', () => {
+    const court = target();
+    const ticks: string[] = [];
+    const taps = bindCourtTaps(0, court.api, () => { ticks.push('tick'); });
+    taps.onSelectSet(0);
+    taps.onSelectSet(1);
+    expect(court.calls).toEqual(['set', 'set']);
+    expect(ticks).toEqual(['tick']);
+  });
+});

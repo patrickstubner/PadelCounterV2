@@ -1,7 +1,7 @@
-import { HISTORY_RETAIN_MS, quotaDay } from '@padel/core';
+import { CODE_ALARM_GLOBAL, HISTORY_RETAIN_MS, JOINS_PER_DEVICE, JOINS_PER_NETWORK, JOIN_WINDOW_MS, joinWindow, quotaDay } from '@padel/core';
 import { describe, expect, it } from 'vitest';
 import { d1MatchIndex, shouldTouchActivity, type CredentialRow, type D1Like, type D1Statement } from './match-index';
-import { quotaMac, sha256Hex } from './tokens';
+import { TEST_QUOTA_HMAC_KEY, quotaMac, sha256Hex } from './tokens';
 
 const NOW = Date.UTC(2026, 9, 27, 12, 0, 0);
 
@@ -30,8 +30,16 @@ interface CredRow {
   revokedAt: number | null;
 }
 
+interface JoinRow {
+  hash: string;
+  window: number;
+  n: number;
+  cap: number;
+}
+
 function memory(): { db: D1Like; queries: string[] } {
   const quota = new Map<string, QuotaRow>();
+  const joins = new Map<string, JoinRow>();
   const tickets = new Map<string, TicketRow>();
   const matches = new Map<string, MatchRow>();
   const creds = new Map<string, CredRow>();
@@ -40,6 +48,7 @@ function memory(): { db: D1Like; queries: string[] } {
   function snapshot() {
     return {
       quota: new Map([...quota].map(([key, row]) => [key, { ...row }])),
+      joins: new Map([...joins].map(([key, row]) => [key, { ...row }])),
       tickets: new Map([...tickets].map(([key, row]) => [key, { ...row }])),
       matches: new Map([...matches].map(([key, row]) => [key, { ...row }])),
       creds: new Map([...creds].map(([key, row]) => [key, { ...row }])),
@@ -48,10 +57,12 @@ function memory(): { db: D1Like; queries: string[] } {
 
   function restore(saved: ReturnType<typeof snapshot>) {
     quota.clear();
+    joins.clear();
     tickets.clear();
     matches.clear();
     creds.clear();
     for (const [key, row] of saved.quota) quota.set(key, row);
+    for (const [key, row] of saved.joins) joins.set(key, row);
     for (const [key, row] of saved.tickets) tickets.set(key, row);
     for (const [key, row] of saved.matches) matches.set(key, row);
     for (const [key, row] of saved.creds) creds.set(key, row);
@@ -97,6 +108,35 @@ function memory(): { db: D1Like; queries: string[] } {
     if (sql.includes('SET n = n - 1')) {
       const row = quota.get(`${values[0]}|${values[1]}`);
       if (row && row.n > 0) row.n -= 1;
+      return { meta: { changes: 1 } };
+    }
+    if (sql.startsWith('INSERT INTO join_quota')) {
+      const hash = String(values[0]);
+      const window = Number(values[1]);
+      const cap = Number(values[2]);
+      const key = `${hash}|${window}`;
+      const current = joins.get(key);
+      if (!current) {
+        if (1 > cap) throw new Error('CHECK constraint failed');
+        joins.set(key, { hash, window, n: 1, cap });
+      } else if (current.n + 1 <= current.cap) {
+        current.n += 1;
+      } else {
+        throw new Error('CHECK constraint failed');
+      }
+      const n = joins.get(key)?.n ?? 0;
+      if (sql.includes('RETURNING')) return { results: [{ n }], meta: { changes: 1 } };
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes('FROM join_quota WHERE subject_hash')) {
+      const row = joins.get(`${values[0]}|${values[1]}`);
+      return row ? { n: row.n } : null;
+    }
+    if (sql.startsWith('DELETE FROM join_quota')) {
+      const cutoff = Number(values[0]);
+      for (const [key, row] of joins) {
+        if (row.window < cutoff) joins.delete(key);
+      }
       return { meta: { changes: 1 } };
     }
     if (sql.startsWith('DELETE FROM create_quota')) {
@@ -244,11 +284,16 @@ describe('create quota', () => {
 
   it('rotates the HMAC each UTC day and does not store a plain address hash', async () => {
     const address = '203.0.113.10';
-    const today = await quotaMac('test-quota-hmac-key', 'ip', address, '2026-10-27');
-    const tomorrow = await quotaMac('test-quota-hmac-key', 'ip', address, '2026-10-28');
+    const today = await quotaMac(TEST_QUOTA_HMAC_KEY, 'ip', address, '2026-10-27');
+    const tomorrow = await quotaMac(TEST_QUOTA_HMAC_KEY, 'ip', address, '2026-10-28');
     expect(today).not.toBe(tomorrow);
     expect(today).not.toBe(await sha256Hex(address));
-    expect(today).not.toBe(await quotaMac('test-quota-hmac-key', 'device', address, '2026-10-27'));
+    expect(today).not.toBe(await quotaMac(TEST_QUOTA_HMAC_KEY, 'device', address, '2026-10-27'));
+    const socket = await quotaMac(TEST_QUOTA_HMAC_KEY, 'socket-ip', address, 'socket');
+    expect(socket).toBe(await quotaMac(TEST_QUOTA_HMAC_KEY, 'socket-ip', address, 'socket'));
+    expect(socket).not.toBe(await quotaMac(TEST_QUOTA_HMAC_KEY, 'socket-ip', '203.0.113.11', 'socket'));
+    expect(socket).not.toBe(await sha256Hex(address));
+    expect(socket).not.toContain(address);
   });
 
   it('deletes quota rows older than two days and expired tickets', async () => {
@@ -297,6 +342,50 @@ describe('create quota', () => {
     expect(await index.expiredMatchIds(NOW)).toEqual(['match-old']);
     await index.touchActivity('match-old', NOW);
     expect(await index.expiredMatchIds(NOW)).toEqual([]);
+  });
+
+  it('limits a device on every join and a network only when a failure is recorded', async () => {
+    const { db } = memory();
+    const index = d1MatchIndex(db);
+    const window = joinWindow(NOW);
+    const device = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd00000001000000000000000000000000', String(window));
+    const network = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '192.0.2.1', String(window));
+    expect(device).not.toBe(await sha256Hex('d00000001000000000000000000000000'));
+    expect(network).not.toBe(await sha256Hex('192.0.2.1'));
+    for (let i = 0; i < JOINS_PER_DEVICE; i += 1) {
+      expect((await index.takeJoinDevice(device, NOW)).ok).toBe(true);
+    }
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(network, window).first()).toBeNull();
+    const again = d1MatchIndex(db);
+    expect(await again.takeJoinDevice(device, NOW)).toEqual({ ok: false, reason: 'device' });
+    expect((await again.takeJoinDevice(device, NOW + JOIN_WINDOW_MS)).ok).toBe(true);
+
+    const shared = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-ip', '192.0.2.9', String(window));
+    for (let i = 0; i < JOINS_PER_NETWORK; i += 1) {
+      expect((await index.noteJoinFailure(shared, NOW)).ok).toBe(true);
+    }
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toEqual({ n: JOINS_PER_NETWORK });
+    expect(await index.noteJoinFailure(shared, NOW)).toEqual({ ok: false, reason: 'network' });
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toEqual({ n: JOINS_PER_NETWORK });
+    const overflowPhone = await quotaMac(TEST_QUOTA_HMAC_KEY, 'join-device', 'd000000ff000000000000000000000000', String(window));
+    expect((await index.takeJoinDevice(overflowPhone, NOW)).ok).toBe(true);
+
+    await index.purgeEphemeral(NOW + 3 * 24 * 60 * 60 * 1000);
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(device, window).first()).toBeNull();
+    expect(await db.prepare('SELECT n FROM join_quota WHERE subject_hash = ? AND window = ?').bind(shared, window).first()).toBeNull();
+  });
+
+  it('alarms only when the upsert lands on exactly 10000', async () => {
+    const { db, queries } = memory();
+    const index = d1MatchIndex(db);
+    let alarms = 0;
+    for (let i = 0; i < CODE_ALARM_GLOBAL + 2; i += 1) {
+      if (await index.noteCodeAlarm('global', NOW)) alarms += 1;
+    }
+    expect(alarms).toBe(1);
+    expect(queries.some((sql) => sql.includes('RETURNING n'))).toBe(true);
+    expect(queries.some((sql) => sql.startsWith('SELECT n FROM join_quota'))).toBe(false);
+    expect(TEST_QUOTA_HMAC_KEY.length).toBeGreaterThanOrEqual(32);
   });
 
   it('rolls back a player-credential revoke when the insert fails', async () => {

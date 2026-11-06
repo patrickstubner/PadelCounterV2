@@ -3,6 +3,24 @@ import type { MatchState, PlayerSlot, Server, SetIndex, SetScore, TeamId } from 
 export const RULES_SUMMARY =
   'This counter ends a set at 6 games with a lead of 2, at 7–5, or at 7–6 after 6–6. A match is best of 3. Serve is optional and rotates between teams and partners. Tap a set to select it.';
 
+/**
+ * Serve cues follow the International Padel Federation Rules of Padel,
+ * review of application 1 January 2026. The PDF is the December 2025 file
+ * (site title “Rules of Padel - 18 Dec_REV”):
+ * https://padelfip.com/wp-content/uploads/2025/12/FIP_Rules-of-Padel.pdf
+ * Checked 2026-10-30.
+ * Rule 4 (toss: serve or side), tie-break points 3 and 5, Rule 5.2 (ends every 6 points),
+ * Rule 6.5 (sides alternate), Rule 6.8 (each set, the pair chooses who serves first).
+ * The older case “the player who began the set serves the tie-break” is in the
+ * November 2024 PDF and is not in this December 2025 text. This counter names
+ * the server already shown for the 6–6 game, which is whose turn it is when
+ * the rotation has been followed. It does not score tie-break points.
+ */
+export const FIP_SERVE_SOURCE =
+  'International Padel Federation, Rules of Padel, review of application 1 January 2026, PDF December 2025 (checked 2026-10-30). https://padelfip.com/wp-content/uploads/2025/12/FIP_Rules-of-Padel.pdf';
+
+export const CHOOSE_SERVE_TEXT = 'Please choose the serving team';
+
 function otherTeam(team: TeamId): TeamId {
   return team === 'a' ? 'b' : 'a';
 }
@@ -72,6 +90,37 @@ export function matchWinner(sets: readonly [SetScore, SetScore, SetScore]): Team
   return null;
 }
 
+/**
+ * What the court may call the result.
+ * A winner exists only when a team has two sets. Ending early is a lead or a draw, never a win.
+ */
+export type MatchResult =
+  | { readonly kind: 'playing' }
+  | { readonly kind: 'winner'; readonly team: TeamId }
+  | { readonly kind: 'leading'; readonly team: TeamId }
+  | { readonly kind: 'draw' };
+
+function gameLead(sets: readonly [SetScore, SetScore, SetScore]): { a: number; b: number } {
+  let a = 0;
+  let b = 0;
+  for (const set of sets) {
+    a += set.a;
+    b += set.b;
+  }
+  return { a, b };
+}
+
+export function matchResult(state: MatchState): MatchResult {
+  const decided = matchWinner(state.sets);
+  if (decided) return { kind: 'winner', team: decided };
+  if (!state.ended) return { kind: 'playing' };
+  const sets = setLead(state.sets);
+  if (sets.a !== sets.b) return { kind: 'leading', team: sets.a > sets.b ? 'a' : 'b' };
+  const games = gameLead(state.sets);
+  if (games.a !== games.b) return { kind: 'leading', team: games.a > games.b ? 'a' : 'b' };
+  return { kind: 'draw' };
+}
+
 function setLead(sets: readonly [SetScore, SetScore, SetScore]): { a: number; b: number } {
   let a = 0;
   let b = 0;
@@ -83,22 +132,25 @@ function setLead(sets: readonly [SetScore, SetScore, SetScore]): { a: number; b:
   return { a, b };
 }
 
-/**
- * Full celebration when a team has won the match (two sets), or when End match
- * leaves one team ahead. A tie or an abandoned match with no lead stays quiet.
- */
+/** Celebration only when the match is won by two sets. An early ending stays quiet. */
 export function celebrationWinner(state: MatchState): TeamId | null {
-  const decided = matchWinner(state.sets);
-  if (decided) return decided;
-  if (!state.ended) return null;
-  const lead = setLead(state.sets);
-  if (lead.a === lead.b) return null;
-  return lead.a > lead.b ? 'a' : 'b';
+  const result = matchResult(state);
+  return result.kind === 'winner' ? result.team : null;
 }
 
 export function canIncrement(score: SetScore, team: TeamId): boolean {
+  if (setWinner(score.a, score.b) !== null) return false;
   const next: SetScore = { a: score.a, b: score.b, [team]: score[team] + 1 };
   return isPlausibleSetScore(next.a, next.b);
+}
+
+/**
+ * A new plus is closed when this set is already won, when the match is already won,
+ * and after End match. Replay of a stored log does not use this. Minus stays open.
+ */
+export function canScoreGame(state: MatchState, team: TeamId): boolean {
+  if (state.ended || matchWinner(state.sets) !== null) return false;
+  return canIncrement(state.sets[state.activeSet], team);
 }
 
 export function canDecrement(score: SetScore, team: TeamId): boolean {
@@ -181,14 +233,55 @@ export function isTiebreak(state: MatchState): boolean {
 }
 
 /**
- * At 6:6 the hint names who serves that one game. It does not describe a
- * two-point rotation, because this counter does not score tiebreak points.
+ * At 6:6 the hint follows FIP tie-break point 3 and Rule 5.2.
+ * The player whose turn it is serves one point from the right. Then each player
+ * in the service order serves two points in a row. Point 3 says the next two
+ * points are served from the left. It does not say the second of those points,
+ * or any later point, is from the right, so this hint does not add that side.
+ * Rule 6.5 alternates sides in an ordinary game and is not used to fill the gap.
+ * This counter still scores that game as one game. It does not step the server
+ * every two points. The named player is the server already on the court.
  */
+export function tiebreakCueText(state: MatchState): string {
+  const who = state.serve
+    ? `${state.teams[state.serve.team].name} player ${state.serve.player}`
+    : 'The player whose turn it is';
+  return `${who} serves 1 point, from the right. Then each player serves 2 points in a row, starting from the left. Teams switch sides every 6 points.`;
+}
+
+/**
+ * After 7–6 the next set is opened by the pair that did not start the tie-break
+ * (tie-break point 5). Rule 6.8: before the set, that pair chooses which player serves.
+ * The court already preselects that pair. A 6–4 or 7–5 finish has no such sentence.
+ */
+export function nextSetCueText(state: MatchState, team: TeamId): string {
+  const name = state.teams[team].name;
+  return `${name} serves first in this set, because they did not start the tie-break. They choose which player serves.`;
+}
+
+export type CourtCue =
+  | { readonly kind: 'choose-serve'; readonly text: string }
+  | { readonly kind: 'tiebreak'; readonly text: string }
+  | { readonly kind: 'next-set'; readonly text: string };
+
+/** A hint only while the court still needs it. A chosen server clears it. */
+export function courtCue(state: MatchState): CourtCue | null {
+  if (state.ended || matchWinner(state.sets)) return null;
+  const active = state.sets[state.activeSet];
+  if (active.a === 6 && active.b === 6) return { kind: 'tiebreak', text: tiebreakCueText(state) };
+  if (active.a !== 0 || active.b !== 0 || state.serve !== null) return null;
+  const previous = state.activeSet > 0 ? state.sets[state.activeSet - 1] : undefined;
+  const afterTiebreak = previous !== undefined
+    && ((previous.a === 7 && previous.b === 6) || (previous.a === 6 && previous.b === 7));
+  if (afterTiebreak && state.serveAsk) return { kind: 'next-set', text: nextSetCueText(state, state.serveAsk) };
+  const untouched = state.sets.every((set) => set.a === 0 && set.b === 0);
+  if (untouched && state.serveAsk === null) return { kind: 'choose-serve', text: CHOOSE_SERVE_TEXT };
+  return null;
+}
+
 export function tiebreakHint(state: MatchState): string | null {
-  if (!isTiebreak(state)) return null;
-  if (!state.serve) return 'Tiebreak';
-  const who = `${state.serve.team.toUpperCase()}${state.serve.player}`;
-  return `Tiebreak · ${who} serves this game`;
+  const cue = courtCue(state);
+  return cue?.kind === 'tiebreak' ? cue.text : null;
 }
 
 /**

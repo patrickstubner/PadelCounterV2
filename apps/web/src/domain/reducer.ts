@@ -1,1 +1,1 @@
-export { createMatch, matchReducer } from '@padel/core';
+export { createMatch, matchReducer, replayScore } from '@padel/core';

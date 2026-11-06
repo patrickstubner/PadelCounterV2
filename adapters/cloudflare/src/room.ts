@@ -5,6 +5,8 @@ import {
   MAX_EVENTS,
   MAX_PLAYER_ACTOR,
   ROOM_MESSAGES,
+  canonicalEventId,
+  canScoreGame,
   actionForEvent,
   actorId,
   canPerform,
@@ -12,9 +14,19 @@ import {
   credentialAllowsEvent,
   decideJoin,
   lastChangeAt,
+  LIVE_PROTOCOL,
+  capturedInstant,
+  claimMatchesEvent,
+  decideScore,
+  isScoreEvent,
+  isTeamId,
+  parseParentId,
+  parseScoreClaim,
+  planMerge,
   parseStoredEvent,
   replayScore,
   roomAcceptsScore,
+  type CausalEvent,
   type Credential,
   type MatchEvent,
   type MatchLog,
@@ -29,7 +41,7 @@ export interface InviteRow {
   readonly host: boolean;
   readonly expiresAt: number;
   readonly revokedAt: number | null;
-  /** Set only for a reconnect invite. A QR invite leaves this empty. */
+  /** Set when this invite belongs to one phone. A shared QR invite leaves this empty. */
   readonly deviceId?: string | null;
 }
 
@@ -56,12 +68,16 @@ function fail(code: RoomCode): RoomFailure {
   return { ok: false, code, message: ROOM_MESSAGES[code] };
 }
 
-/** Seed rows take the server clock and the host as the actor. Phone times are not kept. */
+/** Seed rows take the server clock and the host as the actor. A phone time on the seed cannot be a future or ancient History row. */
 export function stampSeed(log: MatchLog, now: number): MatchLog {
   return {
     schemaVersion: log.schemaVersion,
     base: { ...log.base, createdAt: now, updatedAt: now },
-    events: log.events.map((event) => ({ ...event, at: now, by: HOST_ACTOR })),
+    events: log.events.map((event) => {
+      const raw = typeof event.capturedAt === 'number' ? event.capturedAt : event.at;
+      const capturedAt = capturedInstant(Math.min(raw, now), 0, now, now) ?? now;
+      return { ...event, at: now, capturedAt, by: HOST_ACTOR };
+    }),
   };
 }
 
@@ -76,7 +92,10 @@ export function createRoom(log: MatchLog, hostHash: string, now: number): {
     record: {
       serverCreatedAt: now,
       base: stamped.base,
-      events: stamped.events.map((event, index) => ({ eventId: `seed-${index + 1}`, event })),
+      events: stamped.events.map((event, index) => ({
+        eventId: `seed-${index + 1}`,
+        event: { ...event, parentId: index === 0 ? null : `seed-${index}` },
+      })),
       invites: [
         { tokenHash: hostHash, role: 'player', host: true, expiresAt, revokedAt: null },
       ],
@@ -131,21 +150,34 @@ function credentialFor(row: InviteRow): Credential {
   return { role: row.role, host: row.host };
 }
 
+/** The one shared QR. Device-bound seats are not this row. */
+export function currentSharedInvite(record: RoomRecord, now: number): InviteRow | null {
+  let found: InviteRow | null = null;
+  for (const row of record.invites) {
+    if (row.host || row.deviceId || row.role !== 'player' || row.revokedAt !== null || now >= row.expiresAt) continue;
+    found = row;
+  }
+  return found;
+}
+
 export function issueInvite(
   record: RoomRecord,
-  hostHash: string,
+  callerHash: string,
   role: Role,
   inviteHash: string,
   now: number,
+  keepHash?: string,
 ): { readonly ok: true; readonly record: RoomRecord; readonly expiresAt: number } | RoomFailure {
-  const host = record.invites.find((row) => safeEqualHex(row.tokenHash, hostHash));
-  if (!host || host.revokedAt !== null || now >= host.expiresAt) return fail('bad_token');
-  if (!canPerform(credentialFor(host), 'issue_invite')) return fail('forbidden');
+  const caller = record.invites.find((row) => safeEqualHex(row.tokenHash, callerHash));
+  if (!caller || caller.revokedAt !== null || now >= caller.expiresAt) return fail('bad_token');
+  if (!canPerform(credentialFor(caller), 'issue_invite')) return fail('forbidden');
   if (role !== 'player') return fail('spectator_not_available');
   const expiresAt = now + JOIN_TOKEN_TTL_MS;
-  const invites = record.invites.map((row) =>
-    row.host || row.revokedAt !== null ? row : { ...row, revokedAt: now },
-  );
+  const invites = record.invites.map((row) => {
+    if (row.host || row.revokedAt !== null) return row;
+    if (keepHash && row.deviceId && safeEqualHex(row.tokenHash, keepHash)) return row;
+    return { ...row, revokedAt: now };
+  });
   return {
     ok: true,
     expiresAt,
@@ -212,7 +244,7 @@ export function helloPayload(
     credential: admitted.credential,
     payload: {
       type: 'snapshot',
-      protocol: 1,
+      protocol: LIVE_PROTOCOL,
       role: admitted.credential.role,
       host: admitted.credential.host,
       players,
@@ -229,8 +261,17 @@ export function applyLiveEvent(
   eventId: string,
   rawEvent: unknown,
   now: number,
+  claim?: unknown,
+  clientParent?: unknown,
+  clockOffset = 0,
 ):
-  | { readonly ok: true; readonly record: RoomRecord; readonly event: StoredEvent; readonly duplicate: boolean }
+  | {
+      readonly ok: true;
+      readonly record: RoomRecord;
+      readonly event: StoredEvent;
+      readonly duplicate: boolean;
+      readonly reconciled?: 'already' | 'merged';
+    }
   | RoomFailure {
   const blocked = credentialAllowsEvent({
     role: invite.role,
@@ -249,7 +290,7 @@ export function applyLiveEvent(
     });
     if (!allowed) return fail('forbidden');
   }
-  return applyPlay(record, credentialFor(invite), eventId, rawEvent, now, actor);
+  return applyPlay(record, credentialFor(invite), eventId, rawEvent, now, actor, claim, clientParent, clockOffset);
 }
 
 export function applyPlay(
@@ -259,13 +300,21 @@ export function applyPlay(
   rawEvent: unknown,
   now: number,
   actor?: string,
+  claim?: unknown,
+  clientParent?: unknown,
+  clockOffset = 0,
 ):
-  | { readonly ok: true; readonly record: RoomRecord; readonly event: StoredEvent; readonly duplicate: boolean }
+  | {
+      readonly ok: true;
+      readonly record: RoomRecord;
+      readonly event: StoredEvent;
+      readonly duplicate: boolean;
+      readonly reconciled?: 'already' | 'merged';
+    }
   | RoomFailure {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventId)) {
-    return fail('not_applied');
-  }
-  const existing = record.events.find((item) => item.eventId === eventId);
+  const canonical = canonicalEventId(eventId);
+  if (!canonical) return fail('not_applied');
+  const existing = record.events.find((item) => item.eventId === canonical);
   if (existing) return { ok: true, record, event: existing, duplicate: true };
 
   const parsed = parseStoredEvent(rawEvent);
@@ -273,14 +322,68 @@ export function applyPlay(
   const action = actionForEvent(parsed.type);
   if (!action || !canPerform(credential, action)) return fail('forbidden');
   if (parsed.type === 'match/new' || parsed.type === 'match/reset') return fail('not_applied');
+
+  const headId = record.events[record.events.length - 1]?.eventId ?? null;
+  const parent = clientParent === undefined ? headId : parseParentId(clientParent);
+  if (parent === undefined) return fail('not_applied');
+  const capturedAt = capturedInstant(parsed.at, clockOffset, now, record.serverCreatedAt);
+  if (capturedAt === null) return fail('not_applied');
+  const stamped: MatchEvent = actorId(actor)
+    ? { ...parsed, at: now, capturedAt, parentId: headId, by: actorId(actor) }
+    : { ...parsed, at: now, capturedAt, parentId: headId };
+
+  if (parsed.type === 'game/increment') {
+    const head = replayScore(record.base, record.events.map((item) => item.event));
+    if (!isTeamId(parsed.team) || !canScoreGame(head, parsed.team)) return fail('not_applied');
+  }
+
+  if (isScoreEvent(parsed.type) && parsed.type !== 'match/end') {
+    const parsedClaim = parseScoreClaim(claim);
+    if (!parsedClaim || !claimMatchesEvent(parsed, parsedClaim)) return fail('not_applied');
+    const incoming: CausalEvent = { id: canonical, parentId: parent, event: parsed, claim: parsedClaim };
+    const plan = planMerge(record.base, causalChain(record), [incoming]);
+    if (plan.reason === 'ambiguous') return fail('score_kept');
+    if (plan.send.length === 0) {
+      return { ok: true, record, duplicate: true, reconciled: 'already', event: { eventId: canonical, event: stamped } };
+    }
+    if (plan.reason === 'merged') {
+      const current = replayScore(record.base, record.events.map((item) => item.event));
+      const next = replayScore(current, [stamped]);
+      if (next === current) return fail('not_applied');
+      if (record.events.length >= MAX_EVENTS) return fail('not_applied');
+      const event: StoredEvent = { eventId: canonical, event: stamped };
+      return {
+        ok: true,
+        duplicate: false,
+        reconciled: 'merged',
+        event,
+        record: { ...record, events: [...record.events, event] },
+      };
+    }
+  } else if (parsed.type === 'match/end') {
+    const current = replayScore(record.base, record.events.map((item) => item.event));
+    const decision = decideScore(current, parsed, claim);
+    if (decision.kind === 'reject') return fail('not_applied');
+    if (decision.kind === 'already') {
+      return { ok: true, record, duplicate: true, reconciled: 'already', event: { eventId: canonical, event: stamped } };
+    }
+  }
   if (record.events.length >= MAX_EVENTS) return fail('not_applied');
 
-  const stamped: MatchEvent = actorId(actor) ? { ...parsed, at: now, by: actorId(actor) } : { ...parsed, at: now };
   const current = replayScore(record.base, record.events.map((item) => item.event));
   const next = replayScore(current, [stamped]);
   if (next === current) return fail('not_applied');
-  const event: StoredEvent = { eventId, event: stamped };
+  const event: StoredEvent = { eventId: canonical, event: stamped };
   return { ok: true, duplicate: false, event, record: { ...record, events: [...record.events, event] } };
+}
+
+function causalChain(record: RoomRecord): CausalEvent[] {
+  return record.events.map((item, index) => ({
+    id: item.eventId,
+    parentId: item.event.parentId === undefined ? (index === 0 ? null : record.events[index - 1]?.eventId ?? null) : item.event.parentId,
+    event: item.event,
+    claim: null,
+  }));
 }
 
 /** One applied event. The full log stays on the snapshot that opened the socket. */
@@ -289,12 +392,14 @@ export function eventDelta(input: {
   readonly event: MatchEvent;
   readonly duplicate: boolean;
   readonly players: number;
+  readonly reconciled?: 'already' | 'merged';
 }): {
   readonly type: 'event';
   readonly eventId: string;
   readonly event: MatchEvent;
   readonly duplicate: boolean;
   readonly players: number;
+  readonly reconciled?: 'already' | 'merged';
 } {
   return {
     type: 'event',
@@ -302,6 +407,7 @@ export function eventDelta(input: {
     event: input.event,
     duplicate: input.duplicate,
     players: input.players,
+    ...(input.reconciled ? { reconciled: input.reconciled } : {}),
   };
 }
 

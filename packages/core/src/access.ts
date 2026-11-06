@@ -22,13 +22,23 @@ export function isRole(value: unknown): value is Role {
 
 /**
  * Server-side permission check.
- * Spectators cannot change the match. Issuing a QR is host-only, and still only for a player host.
- * A spectator is never a host.
+ * Spectators cannot change the match or show a code. Any admitted player may show the shared code.
+ * A spectator is never treated as a host.
  */
 export function canPerform(credential: Credential, action: MatchAction): boolean {
-  if (credential.role === 'spectator') return false;
-  if (action === 'issue_invite') return credential.host;
-  return true;
+  if (credential.role !== 'player') return false;
+  switch (action) {
+    case 'score':
+    case 'rename':
+    case 'select_set':
+    case 'serve':
+    case 'end_match':
+    case 'resume_match':
+    case 'issue_invite':
+      return true;
+    default:
+      return false;
+  }
 }
 
 export function actionForEvent(type: string): MatchAction | null {

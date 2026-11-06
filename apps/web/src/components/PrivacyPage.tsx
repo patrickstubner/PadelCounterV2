@@ -18,9 +18,20 @@ export function PrivacyPage({ onBack }: PrivacyPageProps) {
           That data stays in this browser. There is no account and no password in this version.
         </p>
         <p>
-          Connect players can share the open match with a QR code. Anyone who scans that code can see the
-          score and change the games, until the code expires or the match already has 4 players. The code
-          is not an account. Do not show it to people who should not score.
+          Connect can show the same QR code and short code from any phone already in the match, or scan a
+          code to join. Anyone who scans that code, or types the short code, can see the score and change
+          the games, until the code expires or the match already has 4 players. The code is not an account.
+          Do not show it to people who should not score. Join another match can use the camera on this phone. The
+          camera fills the screen. It starts only after you tap Join another match, and it stops as soon as a code
+          is read, when you close the scanner, or when you leave the app. If the camera is blocked, the code
+          can still be typed. The picture stays on this phone.
+          The short code is kept in this tab so you can send it. It is not written to local storage.
+          Sending it shares a link to this app. The code is only in the part after #. This page reads that
+          part, checks that it is a match code, and then removes it from the address bar. It is not sent to
+          the server that hosts the page, and it is not used to open another site.
+          Phones in the same match can see how many are connected, a coarse device type (iPhone, Android,
+          desktop, or other), and when each phone connected or was last seen. They do not receive the
+          join code, the network address, or the full browser identity.
         </p>
         <p>
           A shared match is processed by Cloudflare (Workers and Durable Objects) so the phones can stay in
@@ -39,9 +50,11 @@ export function PrivacyPage({ onBack }: PrivacyPageProps) {
           can tell the phones apart and invite them back within one hour. The id stays until the match history is deleted.
         </p>
         <p>
-          Starting a live match is limited for each phone and for each network. The server stores a keyed hash of
-          the device id and a keyed hash of the network address for that count. The hash is not the address itself.
-          Those rows are deleted after two days.
+          Starting a live match is limited for each phone and for each network. Opening the live connection is
+          limited for each phone, and failed attempts are also limited for each network, for one minute. The
+          server stores a keyed hash of the device id and a keyed hash of the network address for those counts.
+          The hash is not the address itself. To limit abuse, Cloudflare receives a stable, non-reversible
+          pseudonymous key (an HMAC) of the IP address. Those rows are deleted after two days.
         </p>
         <p>
           Join codes are stored only as hashes. A player code hash stops working after 2 hours. The phone that

@@ -4,6 +4,7 @@ declare namespace Cloudflare {
     DB: D1Database;
     ENVIRONMENT: string;
     QUOTA_HMAC_KEY: string;
+    REQUEST_LIMIT: RateLimit;
     TEST_MIGRATIONS: { name: string; queries: string[] }[];
   }
   interface GlobalProps {

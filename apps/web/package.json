@@ -1,6 +1,6 @@
 {
   "name": "@padel/web",
-  "version": "2.0.0",
+  "version": "2.3.6",
   "private": true,
   "description": "Padel Counter v2 court. Offline on this device, with a live QR share.",
   "license": "UNLICENSED",
@@ -10,17 +10,21 @@
     "build": "rsbuild build",
     "preview": "rsbuild preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && playwright test",
+    "test:unit": "vitest run",
+    "test:layout": "playwright test",
     "verify-build": "node scripts/verify-build.mjs"
   },
   "dependencies": {
     "@padel/core": "workspace:*",
     "lottie-web": "5.13.0",
+    "qr": "0.7.2",
     "qrcode": "1.5.4",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@rsbuild/core": "2.2.13",
     "@rsbuild/plugin-react": "2.1.1",
     "@types/qrcode": "1.5.6",

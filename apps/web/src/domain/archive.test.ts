@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_TEAM_NAME_LENGTH } from './names';
 import { appendEvent, createLog, replay } from './log';
 import { loadLog, saveLog, serializeLog } from './persistence';
 import {
@@ -8,6 +9,7 @@ import {
   listMatches,
   loadArchive,
   parseArchive,
+  localScoreAhead,
   rememberMatch,
   saveArchive,
   setScoreLine,
@@ -55,6 +57,9 @@ describe('match archive', () => {
     const names = { a: 'Team A', b: 'Team B' };
     expect(statusLabel('winner-a', names)).toBe('Team A wins');
     expect(statusLabel('winner-b', names)).toBe('Team B wins');
+    expect(statusLabel('leading-a', names)).toBe('Team A leading');
+    expect(statusLabel('leading-b', names)).toBe('Team B leading');
+    expect(statusLabel('draw', names)).toBe('Draw');
     expect(statusLabel('ended-early', names)).toBe('ended early');
     expect(statusLabel('in-progress', names)).toBe('in progress');
     expect(setScoreLine([{ a: 6, b: 0 }, { a: 0, b: 0 }, { a: 0, b: 0 }])).toBe('6–0');
@@ -67,12 +72,12 @@ describe('match archive', () => {
     current = sessionReducer(current, { type: 'record', event: { type: 'match/end', at: T0 + 20 } });
     current = sessionReducer(current, { type: 'record', event: { type: 'match/reset', matchId: NEXT, at: T0 + 30 } });
     expect(current.archive).toHaveLength(1);
-    expect(current.archive[0]?.status).toBe('winner-a');
+    expect(current.archive[0]?.status).toBe('leading-a');
     expect(current.archive[0]?.sets[0]).toEqual({ a: 6, b: 0 });
     expect(current.log.events.at(-1)?.type).toBe('match/reset');
 
     const listed = listMatches(current.log, current.archive);
-    expect(listed.map((match) => match.status)).toEqual(['in progress', 'Team A wins']);
+    expect(listed.map((match) => match.status)).toEqual(['in progress', 'Team A leading']);
     expect(listed[0]?.score).toBe('0–0');
     expect(listed[1]?.score).toBe('6–0');
     expect(listed[1]?.events.map((event) => event.type)).toEqual(['game/increment', 'game/increment', 'game/increment', 'game/increment', 'game/increment', 'game/increment', 'match/end']);
@@ -80,7 +85,8 @@ describe('match archive', () => {
     const undone = sessionReducer(current, { type: 'undo' });
     expect(undone.archive).toHaveLength(0);
     expect(listMatches(undone.log, undone.archive)).toHaveLength(1);
-    expect(listMatches(undone.log, undone.archive)[0]?.status).toBe('Team A wins');
+    expect(listMatches(undone.log, undone.archive)[0]?.status).toBe('Team A leading');
+    expect(listMatches(undone.log, undone.archive)[0]?.statusKind).not.toBe('winner-a');
   });
 
   it('lists past matches newest first', () => {
@@ -128,6 +134,23 @@ describe('match archive', () => {
     const replaced = rememberMatch(archive, archived(archive[0]!.id, T0 + 500));
     expect(replaced.filter((match) => match.id === archive[0]?.id)).toHaveLength(1);
     expect(replaced.at(-1)?.at).toBe(T0 + 500);
+    const richer = archived(archive[0]!.id, T0 + 1);
+    const ahead = { ...richer, sets: [{ a: 2, b: 2 }, { a: 0, b: 0 }, { a: 0, b: 0 }] as const };
+    const kept = rememberMatch(rememberMatch([], ahead), { ...ahead, sets: [{ a: 2, b: 0 }, { a: 0, b: 0 }, { a: 0, b: 0 }] });
+    expect(kept[0]?.sets[0]).toEqual({ a: 2, b: 2 });
+  });
+
+  it('archives offline points that the server snapshot does not have', () => {
+    let local = createLog(T0, ID);
+    local = appendEvent(local, { type: 'game/increment', team: 'b', at: T0 + 1 });
+    local = appendEvent(local, { type: 'game/increment', team: 'b', at: T0 + 2 });
+    const server = createLog(T0, ID);
+    expect(localScoreAhead(local, server)).toBe(true);
+    expect(localScoreAhead(server, local)).toBe(false);
+    const saved = sessionReducer({ log: local, archive: [] }, { type: 'archive-log', log: local });
+    const snap = snapshotMatch(server);
+    const merged = snap ? rememberMatch(saved.archive, snap) : saved.archive;
+    expect(merged[0]?.sets[0]).toEqual({ a: 0, b: 2 });
   });
 
   it('shrinks the saved list when the payload is over the byte cap', () => {
@@ -279,5 +302,25 @@ describe('match archive', () => {
     saved.set(ARCHIVE_KEY, '{');
     expect(loadArchive(memory)).toEqual([]);
     expect(loadArchive(storage)).toEqual([]);
+  });
+
+  it('keeps a played match whose name uses the full shared limit', () => {
+    const name = 'A'.repeat(MAX_TEAM_NAME_LENGTH);
+    const saved = new Map<string, string>();
+    const memory: MatchStorage = {
+      getItem: (key) => saved.get(key) ?? null,
+      setItem: (key, value) => {
+        saved.set(key, value);
+      },
+    };
+    const match = archived(ID, T0);
+    const long: ArchivedMatch = {
+      ...match,
+      teams: { a: name, b: 'Team B' },
+      events: [{ type: 'team/rename', team: 'a', name, at: T0 }],
+    };
+    expect(saveArchive([long], memory)).toBe(true);
+    expect(loadArchive(memory)[0]?.teams.a).toBe(name);
+    expect(loadArchive(memory)).toHaveLength(1);
   });
 });

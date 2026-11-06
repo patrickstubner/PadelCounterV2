@@ -40,6 +40,8 @@ const html = readFileSync(htmlPath, 'utf8');
 if (!html.includes('Content-Security-Policy')) fail('CSP meta tag missing');
 if (!html.includes("default-src 'self'")) fail('CSP is not restricted to self');
 if (html.includes('unsafe-inline') || html.includes('unsafe-eval')) fail('CSP allows inline or eval');
+const mediaSrc = html.match(/media-src ([^;"]+)/)?.[1] ?? '';
+if (mediaSrc !== "'self'") fail(`CSP media-src must be 'self', got ${mediaSrc}`);
 const apiUrl = process.env.PUBLIC_API_URL ?? '';
 let htmlUrls = html;
 if (apiUrl) {
@@ -52,7 +54,10 @@ if (apiUrl) {
   if (!api || api.protocol !== 'https:' || !api.hostname.endsWith('.workers.dev') || api.username || api.password) {
     fail('PUBLIC_API_URL must be an https workers.dev origin');
   }
-  htmlUrls = html.split(api.origin).join('');
+  const wss = `wss://${api.host}`;
+  if (!html.includes(`connect-src 'self' ${api.origin} ${wss}`)) fail(`CSP connect-src missing ${wss}`);
+  if (html.includes(`ws://${api.host}`)) fail('CSP connect-src allows ws:// for an https API');
+  htmlUrls = html.split(api.origin).join('').split(wss).join('');
 }
 if (/https?:\/\//.test(htmlUrls)) fail(`external URL in index.html:\n${html}`);
 if (/<script(?![^>]*\bsrc=)[^>]*>/.test(html)) fail('inline script in index.html');
@@ -76,28 +81,40 @@ for (const name of manifestNames) {
 }
 
 const precached = [
-  'icons/icon-192.png',
-  'icons/icon-512.png',
-  'icons/icon-maskable-192.png',
-  'icons/icon-maskable-512.png',
-  'icons/apple-touch-icon-180.png',
-  'favicon.ico',
-  'favicon-16.png',
-  'favicon-32.png',
+  'icons/icon-192-v231.png',
+  'icons/icon-512-v231.png',
+  'icons/icon-maskable-192-v231.png',
+  'icons/icon-maskable-512-v231.png',
+  'icons/apple-touch-icon-180-v231.png',
+  'favicon-v231.ico',
+  'favicon-16-v231.png',
+  'favicon-32-v231.png',
   'manifest.webmanifest',
   'NOTICE.txt',
+  '06_crowd-in-hardrock.mp3',
 ];
 const sw = readFileSync(join(dist, 'sw.js'), 'utf8');
 for (const file of precached) {
   if (!sw.includes(`${pageBase}${file}`)) fail(`precache missing ${file}`);
 }
-if (sw.includes('icon-1024.png')) fail('icon-1024.png must not be precached');
-if (!statSync(join(dist, 'icons/icon-1024.png')).isFile()) fail('icon-1024.png missing from dist');
+if (sw.includes('icon-1024-v231.png')) fail('icon-1024-v231.png must not be precached');
+if (sw.includes(`${pageBase}stay-awake.mp4`) || sw.includes('stay-awake.mp4')) {
+  fail('stay-awake.mp4 must not be precached');
+}
+if (!sw.includes('Content-Range') || !sw.includes('padel-stay-awake')) {
+  fail('stay-awake.mp4 range requests are not served as partial content');
+}
+if (!statSync(join(dist, 'stay-awake.mp4')).isFile()) fail('stay-awake.mp4 missing from dist');
+if (!statSync(join(dist, 'icons/icon-1024-v231.png')).isFile()) fail('icon-1024-v231.png missing from dist');
 if (sw.includes('importScripts(')) fail('service worker loads an external script');
+const notice = readFileSync(join(dist, 'NOTICE.txt'), 'utf8');
+if (!notice.includes('qr 0.7.2') || !notice.includes('Paul Miller')) fail('NOTICE missing the qr decoder');
+if (!notice.includes('qrcode 1.5.4') || !notice.includes('Ryan Day')) fail('NOTICE missing the qrcode drawer');
 
 for (const file of walk(dist)) {
-  if (file.endsWith('.png') || file.endsWith('.ico')) continue;
+  if (file.endsWith('.png') || file.endsWith('.ico') || file.endsWith('.mp4') || file.endsWith('.mp3')) continue;
   const text = readFileSync(file, 'utf8');
+  if (text.includes('__PADEL_TEST_API__')) fail(`test API hook shipped in ${file}`);
   for (const host of banned) {
     if (text.includes(host)) fail(`${host} found in ${file}`);
   }

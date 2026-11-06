@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { nextMenuIndex } from '../menuKeys';
+import { PhoneIcon } from './icons';
 
 export interface CourtAction {
   readonly id: string;
@@ -28,31 +29,61 @@ interface CourtHeaderProps {
   readonly setLabel: string;
   readonly onBrand: () => void;
   readonly actions: readonly CourtAction[];
-  /** Tests pin the header. Otherwise a wide landscape shows the buttons. */
+  /** Tests pin the header. The court uses the menu in portrait and in landscape. */
   readonly layout?: 'menu' | 'bar';
+  readonly phoneCount?: number | null;
+  readonly onPhones?: () => void;
+  readonly version?: string;
 }
 
-const WIDE_BAR = '(orientation: landscape) and (min-width: 900px)';
+const LANDSCAPE = '(orientation: landscape)';
 
-function useWideBar(): boolean {
-  const [wide, setWide] = useState(
-    () => typeof matchMedia === 'function' && matchMedia(WIDE_BAR).matches,
+export function phonesConnectedLabel(count: number): string {
+  return count === 1 ? '1 phone connected' : `${count} phones connected`;
+}
+
+function PhoneCount({ count, onPhones }: { readonly count: number; readonly onPhones: () => void }) {
+  return (
+    <button
+      type="button"
+      className="phone-count"
+      data-testid="phone-count"
+      aria-label={phonesConnectedLabel(count)}
+      onClick={onPhones}
+    >
+      <PhoneIcon />
+      <span className="phone-count-num">{count}</span>
+    </button>
+  );
+}
+
+function useLandscape(): boolean {
+  const [landscape, setLandscape] = useState(
+    () => typeof matchMedia === 'function' && matchMedia(LANDSCAPE).matches,
   );
   useEffect(() => {
     if (typeof matchMedia !== 'function') return;
-    const query = matchMedia(WIDE_BAR);
-    const onChange = () => setWide(query.matches);
+    const query = matchMedia(LANDSCAPE);
+    const onChange = () => setLandscape(query.matches);
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
   }, []);
-  return wide;
+  return landscape;
 }
 
-export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderProps) {
-  const wide = useWideBar();
-  const mode = layout ?? (wide ? 'bar' : 'menu');
+export function CourtHeader({ setLabel, onBrand, actions, layout, phoneCount, onPhones, version }: CourtHeaderProps) {
+  const landscape = useLandscape();
+  const mode = layout ?? 'menu';
   const shown = useMemo(() => menuActions(actions, mode), [actions, mode]);
   const commands = useMemo(() => shown.filter((action) => !action.textOnly), [shown]);
+  const phoneShown = typeof phoneCount === 'number' && onPhones !== undefined;
+  const headerConnect = mode === 'menu' && landscape && !phoneShown
+    ? commands.find((action) => action.id === 'connect')
+    : undefined;
+  const menuCommands = useMemo(
+    () => (headerConnect ? commands.filter((action) => action.id !== 'connect') : commands),
+    [commands, headerConnect],
+  );
   const [open, setOpen] = useState(false);
   const menuId = useId();
   const toggleRef = useRef<HTMLButtonElement>(null);
@@ -61,7 +92,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderP
 
   useEffect(() => {
     if (mode !== 'menu' || !open || typeof document === 'undefined') return;
-    const enabled = commands.findIndex((action) => !action.disabled);
+    const enabled = menuCommands.findIndex((action) => !action.disabled);
     itemRefs.current[enabled]?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
@@ -81,7 +112,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderP
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('pointerdown', onPointer);
     };
-  }, [commands, mode, open]);
+  }, [menuCommands, mode, open]);
 
   const close = (returnFocus: boolean) => {
     setOpen(false);
@@ -89,7 +120,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderP
   };
 
   const onItemKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
-    const next = nextMenuIndex(event.key, index, commands.map((action) => !action.disabled));
+    const next = nextMenuIndex(event.key, index, menuCommands.map((action) => !action.disabled));
     if (next === null) return;
     event.preventDefault();
     event.stopPropagation();
@@ -110,6 +141,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderP
       <p className="set-heading" data-testid="active-set">{setLabel}</p>
       {mode === 'bar' ? (
         <div className="top-actions">
+          {typeof phoneCount === 'number' && onPhones ? <PhoneCount count={phoneCount} onPhones={onPhones} /> : null}
           {shown.map((action) => (
             <button
               key={action.id}
@@ -122,9 +154,22 @@ export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderP
               {action.label}
             </button>
           ))}
+          {version ? <p className="menu-version bar-version" data-testid="app-version">{`v${version}`}</p> : null}
         </div>
       ) : (
         <div className="top-end">
+          {typeof phoneCount === 'number' && onPhones ? <PhoneCount count={phoneCount} onPhones={onPhones} /> : null}
+          {headerConnect ? (
+            <button
+              type="button"
+              className="connect-launch"
+              data-testid={headerConnect.testId}
+              disabled={headerConnect.disabled}
+              onClick={headerConnect.onSelect}
+            >
+              {headerConnect.label}
+            </button>
+          ) : null}
           <button
             ref={toggleRef}
             type="button"
@@ -147,7 +192,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderP
           </button>
           <div ref={menuRef} className="match-menu" hidden={!open}>
             <div id={menuId} className="match-menu-actions" role="menu" aria-label="Match">
-              {commands.map((action, index) => (
+              {menuCommands.map((action, index) => (
                 <button
                   key={action.id}
                   ref={(node) => {
@@ -175,6 +220,7 @@ export function CourtHeader({ setLabel, onBrand, actions, layout }: CourtHeaderP
                 {action.detail ? <span className="menu-hint">{action.detail}</span> : null}
               </p>
             ))}
+            {version ? <p className="menu-version" data-testid="app-version">{`v${version}`}</p> : null}
           </div>
         </div>
       )}

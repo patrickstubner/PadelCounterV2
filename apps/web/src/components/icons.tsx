@@ -16,17 +16,21 @@ export function MinusIcon() {
   );
 }
 
+export function PhoneIcon() {
+  return (
+    <svg className="phone-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="7" y="2.5" width="10" height="19" rx="2.2" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path d="M10 5.2h4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <circle cx="12" cy="17.6" r="0.9" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function BallIcon() {
   return (
     <svg className="ball-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="8.1" fill="none" stroke="currentColor" strokeWidth="2.2" />
-      <path
-        d="M8.1 5.4c2.6 2.3 2.6 10.9 0 13.2M15.9 5.4c-2.6 2.3-2.6 10.9 0 13.2"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-      />
+      <circle className="ball-felt" cx="12" cy="12" r="8.35" />
+      <path className="ball-seam" d="M8.05 5.15c2.15 2.35 2.15 11.35 0 13.7M15.95 5.15c-2.15 2.35-2.15 11.35 0 13.7" />
     </svg>
   );
 }

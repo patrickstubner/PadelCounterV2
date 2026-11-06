@@ -1,5 +1,10 @@
+import { withBase } from '../url';
+
 /** Victory sound. Missing means on. Stored values are `on` and `off`. */
 export const FANFARE_KEY = 'pcv2:fanfare';
+
+/** Same-origin clip. It is not loaded from a third-party host. */
+export const FANFARE_FILE = '06_crowd-in-hardrock.mp3';
 
 export function fanfareEnabled(storage: Pick<Storage, 'getItem'>): boolean {
   return storage.getItem(FANFARE_KEY) !== 'off';
@@ -9,7 +14,7 @@ export function setFanfareEnabled(storage: Pick<Storage, 'setItem'>, enabled: bo
   storage.setItem(FANFARE_KEY, enabled ? 'on' : 'off');
 }
 
-/** Same moment as the celebration. One win, one fanfare. */
+/** Same moment as the celebration. One win, one fanfare. An early end does not celebrate. */
 export function shouldPlayFanfare(
   showVictory: boolean,
   enabled: boolean,
@@ -19,35 +24,48 @@ export function shouldPlayFanfare(
   return showVictory && enabled && victoryKey !== null && playedKey !== victoryKey;
 }
 
+export function fanfareSrc(): string {
+  return withBase(FANFARE_FILE);
+}
+
+/** The clip is mastered loud. Half volume is near the old oscillator level. */
+export const FANFARE_VOLUME = 0.5;
+
+let clip: HTMLAudioElement | null = null;
+
 /**
- * A short major arpeggio from oscillators. No audio file is fetched.
+ * Play the local crowd clip. The path is this app's file, not a URL from the page.
  * If the browser refuses playback, this stays silent.
  */
-export function playFanfare(): void {
+export function stopFanfare(): void {
+  const audio = clip;
+  clip = null;
+  if (!audio) return;
   try {
-    const Context = window.AudioContext ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!Context) return;
-    const audio = new Context();
-    const now = audio.currentTime;
-    const notes = [523.25, 659.25, 783.99, 1046.5];
-    for (let index = 0; index < notes.length; index += 1) {
-      const tone = audio.createOscillator();
-      const level = audio.createGain();
-      const start = now + index * 0.12;
-      tone.type = 'triangle';
-      tone.frequency.value = notes[index] ?? 523.25;
-      level.gain.setValueAtTime(0.0001, start);
-      level.gain.exponentialRampToValueAtTime(0.07, start + 0.02);
-      level.gain.exponentialRampToValueAtTime(0.0001, start + 0.28);
-      tone.connect(level);
-      level.connect(audio.destination);
-      tone.start(start);
-      tone.stop(start + 0.3);
-    }
-    window.setTimeout(() => {
-      void audio.close().catch(() => undefined);
-    }, 1200);
+    audio.pause();
   } catch {
-    // Autoplay policies and a missing AudioContext stay quiet.
+    // The element can already be gone.
+  }
+}
+
+export function playFanfare(): void {
+  const src = fanfareSrc();
+  if (!src.endsWith(`/${FANFARE_FILE}`)) return;
+  if (src.includes('://')) return;
+  stopFanfare();
+  try {
+    const audio = new Audio(src);
+    audio.preload = 'auto';
+    audio.volume = FANFARE_VOLUME;
+    clip = audio;
+    const started = audio.play();
+    if (started && typeof started.then === 'function') {
+      void started.then(
+        () => undefined,
+        () => undefined,
+      );
+    }
+  } catch {
+    // Autoplay policies and a missing Audio stay quiet.
   }
 }

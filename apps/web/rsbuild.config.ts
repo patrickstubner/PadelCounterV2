@@ -4,15 +4,12 @@ import { defineConfig, type RsbuildPlugin } from '@rsbuild/core';
 import { pluginReact } from '@rsbuild/plugin-react';
 import { generateSW } from 'workbox-build';
 import { PAGE_BASE } from './src/base';
+import { connectSrcExtra } from './src/csp';
+import { stayAwakeRuntimeCaching } from './src/stayAwakeCache';
 
 const appVersion = (JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }).version;
 const apiUrl = process.env.PUBLIC_API_URL ?? '';
-let connectSrc = '';
-try {
-  if (apiUrl) connectSrc = ` ${new URL(apiUrl).origin}`;
-} catch {
-  connectSrc = '';
-}
+const connectSrc = connectSrcExtra(apiUrl, process.env.NODE_ENV !== 'production');
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -51,15 +48,16 @@ const workboxPlugin: RsbuildPlugin = {
       await generateSW({
         swDest,
         globDirectory: dist,
-        globPatterns: ['**/*.{html,js,css,webmanifest,png,svg,ico,txt}'],
-        globIgnores: ['**/sw.js', '**/*.map', '**/icon-1024.png'],
+        globPatterns: ['**/*.{html,js,css,webmanifest,png,svg,ico,txt,mp3}'],
+        globIgnores: ['**/sw.js', '**/*.map', '**/icon-1024-v231.png', '**/stay-awake.mp4'],
+        runtimeCaching: stayAwakeRuntimeCaching,
         modifyURLPrefix: { '': prefix },
         inlineWorkboxRuntime: true,
         mode: 'production',
         sourcemap: false,
         clientsClaim: true,
         skipWaiting: true,
-        cacheId: 'padel-counter-v2',
+        cacheId: 'padel-counter-v2-2.3.6',
         cleanupOutdatedCaches: true,
         disableDevLogs: true,
         navigateFallback: `${prefix}index.html`,
@@ -74,7 +72,7 @@ const workboxPlugin: RsbuildPlugin = {
       const commit = process.env.GITHUB_SHA ?? 'dev';
       writeFileSync(
         join(dist, 'version.json'),
-        `${JSON.stringify({ version: appVersion, commit, protocol: 1 })}\n`,
+        `${JSON.stringify({ version: appVersion, commit, protocol: 2 })}\n`,
       );
     });
   },

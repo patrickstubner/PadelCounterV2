@@ -1,3 +1,14 @@
+/** Runtime floor. A shorter value is treated as unset and is never echoed. */
+export const QUOTA_KEY_MIN_LENGTH = 32;
+
+/** Fake key for tests. Not a deployed secret. */
+export const TEST_QUOTA_HMAC_KEY = 'test-quota-hmac-key-32-characters!';
+
+export function quotaSecret(value: string | undefined): string | null {
+  if (typeof value !== 'string' || value.length < QUOTA_KEY_MIN_LENGTH) return null;
+  return value;
+}
+
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return hex(digest);
@@ -15,8 +26,17 @@ export async function hmacSha256Hex(secret: string, message: string): Promise<st
   return hex(mac);
 }
 
-/** Daily create counter key. The UTC day is inside the MAC, so the stored hash rotates every day. */
-export async function quotaMac(secret: string, kind: 'device' | 'ip', subject: string, day: string): Promise<string> {
+/**
+ * Counter key. The UTC day or the minute window is inside the MAC, so the stored hash rotates.
+ * The scopes `binding` and `socket` are fixed: the rate-limit binding and the socket attachment
+ * keep one key per address, so their own windows can accumulate.
+ */
+export async function quotaMac(
+  secret: string,
+  kind: 'device' | 'ip' | 'join-device' | 'join-ip' | 'rate-ip' | 'socket-ip' | 'code-ip' | 'code-global' | 'join-code',
+  subject: string,
+  day: string,
+): Promise<string> {
   return hmacSha256Hex(secret, `${kind}:${day}:${subject}`);
 }
 

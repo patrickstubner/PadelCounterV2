@@ -1,5 +1,5 @@
 import { sanitizeTeamName } from './names';
-import { createMatch, matchReducer } from './reducer';
+import { createMatch, matchReducer, replayScore } from './reducer';
 import { serverMark } from './rules';
 import { SCHEMA_VERSION, type MatchEvent, type MatchState } from './types';
 
@@ -24,7 +24,7 @@ export function createLog(
 }
 
 export function replay(log: MatchLog): MatchState {
-  return log.events.reduce(matchReducer, log.base);
+  return replayScore(log.base, log.events);
 }
 
 export function appendEvent(log: MatchLog, event: MatchEvent): MatchLog {
@@ -32,13 +32,14 @@ export function appendEvent(log: MatchLog, event: MatchEvent): MatchLog {
   const next = matchReducer(current, event);
   if (next === current) return log;
 
-  let base = log.base;
   const events = [...log.events, event];
-  while (events.length > MAX_EVENTS) {
-    const dropped = events.shift();
-    if (dropped) base = matchReducer(base, dropped);
-  }
-  return { schemaVersion: SCHEMA_VERSION, base, events };
+  if (events.length <= MAX_EVENTS) return { schemaVersion: SCHEMA_VERSION, base: log.base, events };
+  const overflow = events.length - MAX_EVENTS;
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    base: replayScore(log.base, events.slice(0, overflow)),
+    events: events.slice(overflow),
+  };
 }
 
 export function undoLog(log: MatchLog): MatchLog {

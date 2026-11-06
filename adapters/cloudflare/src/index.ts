@@ -8,6 +8,7 @@ export { MatchRoom };
 export interface Env extends ServerEnv {
   MATCH_ROOMS: DurableObjectNamespace<MatchRoom>;
   DB: D1Database;
+  REQUEST_LIMIT: RateLimit;
 }
 
 export default {

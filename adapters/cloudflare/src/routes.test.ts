@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { isAllowedOrigin } from './cors';
-import { allowRate, takeLiveMessage, takeMatchRoute } from './rate';
+import { JOIN_FAILURE_LIMIT, allowRate, takeJoinFailure, takeLiveMessage, takeMatchRoute } from './rate';
 import { classifyPath, limitsMatchRoute, matchIdFrom } from './routes';
 
 const ID = '00000000-0000-4000-8000-0000000000aa';
@@ -13,6 +16,9 @@ describe('public routes', () => {
     expect(classifyPath('POST', '/join')).toBe('ticket');
     expect(classifyPath('GET', '/ws/abcdefghijklmnopqrstuv')).toBe('socket');
     expect(classifyPath('POST', `/matches/${ID}/carry`)).toBe('carry');
+    expect(classifyPath('POST', `/matches/${ID}/leave`)).toBe('leave');
+    expect(classifyPath('POST', `/matches/${ID}/leave`)).not.toBe('none');
+    expect(classifyPath('GET', `/matches/${ID}/leave`)).toBe('none');
     expect(classifyPath('POST', '/auth/google')).toBe('auth');
   });
 
@@ -34,7 +40,8 @@ describe('public routes', () => {
     expect(limitsMatchRoute('invite')).toBe(true);
     expect(limitsMatchRoute('socket')).toBe(true);
     expect(limitsMatchRoute('ticket')).toBe(true);
-    expect(limitsMatchRoute('carry')).toBe(true);
+    expect(limitsMatchRoute('carry')).toBe(false);
+    expect(limitsMatchRoute('leave')).toBe(true);
     expect(limitsMatchRoute('health')).toBe(false);
     expect(limitsMatchRoute('auth')).toBe(false);
     expect(limitsMatchRoute('none')).toBe(false);
@@ -86,5 +93,33 @@ describe('rate limit', () => {
     expect(takeMatchRoute(buckets, '203.0.113.9', 10_020)).toBe(false);
     expect(takeMatchRoute(buckets, '203.0.113.10', 10_020)).toBe(true);
     expect(takeMatchRoute(buckets, '203.0.113.9', 80_000)).toBe(true);
+  });
+
+  it('throttles failed joins inside one isolate before the shared route budget is full', () => {
+    const buckets = new Map<string, readonly number[]>();
+    expect(JOIN_FAILURE_LIMIT).toBe(5);
+    expect(JOIN_FAILURE_LIMIT).toBeLessThan(20);
+    for (let i = 0; i < JOIN_FAILURE_LIMIT; i += 1) {
+      expect(takeJoinFailure(buckets, '198.51.100.80', 10_000 + i)).toBe(true);
+    }
+    expect(takeJoinFailure(buckets, '198.51.100.80', 10_010)).toBe(false);
+    expect(takeJoinFailure(buckets, '198.51.100.81', 10_010)).toBe(true);
+    expect(takeMatchRoute(new Map(), '198.51.100.80', 10_010)).toBe(true);
+  });
+
+  it('revokes a kicked phone with the durable object match id', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'match-room.ts'), 'utf8');
+    const kick = source.slice(source.indexOf('private async kick'), source.indexOf('private closeDevice'));
+    expect(kick).toContain('durableMatchId');
+    expect(kick).toContain('revokeCredentialInMatch');
+    expect(kick).not.toContain('base.matchId');
+    const leave = source.slice(source.indexOf('private async leave'), source.indexOf('private async kick'));
+    expect(leave).toContain('durableMatchId');
+    expect(leave).toContain('revokeCredentialInMatch');
+    expect(leave).not.toContain('base.matchId');
+    expect(leave).not.toContain('fields.device');
+    expect(leave).not.toContain('record.seat');
+    const index = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'match-index.ts'), 'utf8');
+    expect(index).toContain('token_hash = ? AND match_id = ?');
   });
 });

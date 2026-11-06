@@ -1,40 +1,56 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { isScoreEvent, scoreClaimFor, type ScoreClaim } from '@padel/core';
 import { loadArchive, saveArchive } from '../domain/archive';
 import { forgetCelebratedMatch } from '../domain/celebration';
 import { createMatchId } from '../domain/id';
-import { createLog, replay, type MatchLog } from '../domain/log';
+import { appendEvent, createLog, replay, type MatchLog } from '../domain/log';
 import { loadLog, saveLog } from '../domain/persistence';
-import { serveChoice } from '../domain/rules';
+import { canScoreGame, serveChoice } from '../domain/rules';
 import { sessionReducer, type Session } from '../domain/session';
 import type { MatchEvent, SetIndex, TeamId } from '../domain/types';
 
 /** Return true when the live server accepted the event and the local log must wait for it. */
-export type LiveSend = (event: MatchEvent) => boolean;
+export type LiveSend = (event: MatchEvent, claim: ScoreClaim | null) => boolean;
 
 function initialSession(): Session {
-  return {
-    log: loadLog(localStorage) ?? createLog(Date.now(), createMatchId()),
-    archive: loadArchive(localStorage),
-  };
+  try {
+    return {
+      log: loadLog(localStorage) ?? createLog(Date.now(), createMatchId()),
+      archive: loadArchive(localStorage),
+    };
+  } catch {
+    return { log: createLog(Date.now(), createMatchId()), archive: [] };
+  }
 }
 
 export function useMatch() {
   const [session, dispatch] = useReducer(sessionReducer, undefined, initialSession);
   const [saveFailed, setSaveFailed] = useState(false);
   const liveRef = useRef<LiveSend | null>(null);
+  const logRef = useRef(session.log);
+  logRef.current = session.log;
   const { log } = session;
   const state = useMemo(() => replay(log), [log]);
 
   useEffect(() => {
-    const logSaved = saveLog(log, localStorage);
-    const archiveSaved = saveArchive(session.archive, localStorage);
-    setSaveFailed(!logSaved || !archiveSaved);
+    try {
+      const logSaved = saveLog(log, localStorage);
+      const archiveSaved = saveArchive(session.archive, localStorage);
+      setSaveFailed(!logSaved || !archiveSaved);
+    } catch {
+      setSaveFailed(true);
+    }
   }, [log, session.archive]);
 
   const at = () => Date.now();
   const record = (event: MatchEvent) => dispatch({ type: 'record', event });
   const publish = (event: MatchEvent) => {
-    if (liveRef.current?.(event)) return;
+    const current = replay(logRef.current);
+    if (event.type === 'game/increment' && !canScoreGame(current, event.team)) return;
+    const claim = isScoreEvent(event.type) ? scoreClaimFor(current, event) : null;
+    if (isScoreEvent(event.type) && !claim) return;
+    if (liveRef.current?.(event, claim)) return;
+    logRef.current = appendEvent(logRef.current, event);
     record(event);
   };
 
@@ -45,6 +61,7 @@ export function useMatch() {
     archive: session.archive,
     events: log.events,
     saveFailed,
+    reapply: (event: MatchEvent) => publish({ ...event, at: at() }),
     increment: (team: TeamId) => publish({ type: 'game/increment', team, at: at() }),
     decrement: (team: TeamId) => publish({ type: 'game/decrement', team, at: at() }),
     rename: (team: TeamId, name: string) => publish({ type: 'team/rename', team, name, at: at() }),
@@ -62,8 +79,26 @@ export function useMatch() {
         at: at(),
       });
     },
-    replaceLog: (next: MatchLog) => dispatch({ type: 'replace', log: next }),
-    applyLive: (event: MatchEvent) => dispatch({ type: 'record', event }),
+    readLog: () => logRef.current,
+    replaceLog: (next: MatchLog) => {
+      logRef.current = next;
+      dispatch({ type: 'replace', log: next });
+    },
+    archiveLocal: (kept: MatchLog) => {
+      dispatch({ type: 'archive-log', log: kept });
+    },
+    continueMatch: (next: MatchLog) => {
+      logRef.current = next;
+      dispatch({ type: 'continue-match', log: next });
+    },
+    applyLive: (event: MatchEvent) => {
+      logRef.current = appendEvent(logRef.current, event);
+      dispatch({ type: 'record', event });
+    },
+    revertLive: (event: MatchEvent) => {
+      logRef.current = sessionReducer({ log: logRef.current, archive: session.archive }, { type: 'revert', event }).log;
+      dispatch({ type: 'revert', event });
+    },
     deleteMatch: (id: string) => {
       if (state.matchId === id) return;
       if (!session.archive.some((match) => match.id === id)) return;

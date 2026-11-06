@@ -1,9 +1,14 @@
 export {
+  CHOOSE_SERVE_TEXT,
+  FIP_SERVE_SOURCE,
   RULES_SUMMARY,
   canDecrement,
   canIncrement,
+  canScoreGame,
   canTakeGame,
   celebrationWinner,
+  courtCue,
+  matchResult,
   displayGames,
   gamesPlayed,
   inferServeStart,
@@ -22,3 +27,4 @@ export {
   setWinner,
   tiebreakHint,
 } from '@padel/core';
+export type { CourtCue } from '@padel/core';

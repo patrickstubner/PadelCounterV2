@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { flapMotion } from './SplitFlap';
+import { flapMotion, portraitDigitFontPx } from './SplitFlap';
 
 const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../app.css'), 'utf8');
 
@@ -37,21 +37,44 @@ describe('split flap direction', () => {
     expect(css).toContain('.flap.is-down .flap-enter { animation-name: drive-in-down; }');
   });
 
-  it('sizes the portrait digit to the free column only when text-box-trim exists', () => {
+  it('sizes the portrait digit so the whole glyph stays in the column', () => {
     const portrait = css.slice(css.indexOf('@media (orientation: portrait)'), css.indexOf('.victory {'));
-    const fallback = portrait.slice(portrait.indexOf('.current-set .num {'), portrait.indexOf('@supports (text-box-trim: trim-both)'));
-    expect(fallback).toContain('overflow: visible');
-    expect(fallback).toContain('letter-spacing: 0');
-    expect(fallback).toContain('clamp(3rem, min(96cqh, calc(100cqw / 1.22)), 18rem)');
-    expect(fallback).not.toContain('text-box-trim');
-    expect(fallback).not.toContain('100cqh / 0.8');
-    const supported = portrait.slice(portrait.indexOf('@supports (text-box-trim: trim-both)'), portrait.indexOf('.current-set.is-won'));
-    expect(supported).toContain('text-box-trim: trim-both');
-    expect(supported).toContain('100cqh / 0.8');
-    expect(supported).toContain('100cqw / 0.66');
+    const rule = portrait.slice(portrait.indexOf('.current-set .num {'), portrait.indexOf('.current-set.is-won'));
+    expect(rule).toContain('overflow: visible');
+    expect(rule).toContain('letter-spacing: 0');
+    expect(rule).toContain('line-height: 1');
+    expect(rule).toContain('min(100cqh, 100cqw)');
+    expect(rule).not.toContain('92cqh');
+    expect(rule).not.toContain('text-box-trim');
+    expect(rule).not.toContain('line-height: 0.8');
+    expect(portrait).not.toContain('100cqh / 0.8');
+    expect(portrait).not.toContain('text-box-trim');
+    const flap = portrait.slice(portrait.indexOf('.current-set .flap { overflow'));
+    expect(flap).toContain('overflow: visible');
+    expect(flap).toContain('line-height: 1');
     expect(portrait).not.toContain('data-chars');
-    expect(portrait).not.toContain('including 10');
     expect(css).toContain('font-variant-numeric: tabular-nums');
+  });
+
+  it('grows the portrait digit with the free side and shrinks it for a wider glyph', () => {
+    const column = { width: 220, height: 160 };
+    const round = portraitDigitFontPx(column, { width: 70, height: 100 }, 100);
+    const taller = portraitDigitFontPx({ width: 220, height: 240 }, { width: 70, height: 100 }, 100);
+    const wider = portraitDigitFontPx(column, { width: 140, height: 100 }, 100);
+    expect(taller).toBeGreaterThan(round);
+    expect(wider).toBeLessThan(round);
+    const inkHeight = (round / 100) * 100;
+    const inkWidth = (round / 100) * 70;
+    expect(Math.max(inkHeight / column.height, inkWidth / column.width)).toBeGreaterThanOrEqual(0.85);
+    expect(inkHeight).toBeLessThanOrEqual(column.height);
+    expect(inkWidth).toBeLessThanOrEqual(column.width);
+    const tight = portraitDigitFontPx({ width: 200, height: 100 }, { width: 40, height: 80 }, 100);
+    const ink = (tight / 100) * 80;
+    expect(ink).toBeLessThan(100);
+    expect(100 - ink).toBeGreaterThanOrEqual(2);
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'SplitFlap.tsx'), 'utf8');
+    expect(source).toContain('DIGIT_SLACK_PX = 2');
+    expect(source).toContain('size *= fit');
   });
 
   it('keeps landscape set digits inside the cell, including 0, 6, and 10', () => {

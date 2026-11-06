@@ -21,6 +21,7 @@ interface HistoryPageProps {
   onOpen: (id: string) => void;
   onBack: () => void;
   onAskDelete: (id: string) => void;
+  onContinue?: () => void;
 }
 
 function EventList({ rows, testId }: { rows: readonly HistoryRow[]; testId: string }) {
@@ -56,7 +57,7 @@ function EventList({ rows, testId }: { rows: readonly HistoryRow[]; testId: stri
   );
 }
 
-export function HistoryPage({ mode, live, rows, played, selected, onOpen, onBack, onAskDelete }: HistoryPageProps) {
+export function HistoryPage({ mode, live, rows, played, selected, onOpen, onBack, onAskDelete, onContinue }: HistoryPageProps) {
   const backRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     backRef.current?.focus();
@@ -77,6 +78,11 @@ export function HistoryPage({ mode, live, rows, played, selected, onOpen, onBack
         selected ? (
           <div className="history-scroll" data-testid="match-detail">
             <CompactPast match={selected} />
+            {onContinue ? (
+              <button type="button" className="history-continue" data-testid="continue-match" onClick={onContinue}>
+                Continue
+              </button>
+            ) : null}
             <EventList rows={detailRows} testId="history-events" />
           </div>
         ) : (

@@ -3,6 +3,9 @@ import { createMatch, matchReducer } from './reducer';
 import {
   HISTORY_RETAIN_MS,
   HOST_ACTOR,
+  JOINS_PER_DEVICE,
+  JOINS_PER_NETWORK,
+  JOIN_WINDOW_MS,
   MATCHES_PER_DAY,
   MATCHES_PER_NETWORK_PER_DAY,
   MAX_PLAYER_ACTOR,
@@ -10,11 +13,16 @@ import {
   RECONNECT_WINDOW_MS,
   ROOM_CLOSE_MS,
   actorId,
+  otherPhones,
   canReopen,
+  isDeviceId,
+  CARRY_LIMIT,
+  carryDeviceIds,
   carryTokenHashes,
   credentialAllowsEvent,
   historyExpired,
   isOpenMatch,
+  joinWindow,
   offerReconnect,
   planNewMatch,
   roomAcceptsScore,
@@ -25,41 +33,72 @@ const NOW = 1_700_000_000_000;
 const JOINED = 'a'.repeat(64);
 const OUTSIDER = 'b'.repeat(64);
 
+describe('device ids', () => {
+  it('accepts 128 bits and rejects the old 32-bit form', () => {
+    expect(isDeviceId(`d${'a'.repeat(32)}`)).toBe(true);
+    expect(isDeviceId(`d${'a'.repeat(8)}`)).toBe(false);
+    expect(isDeviceId('d00000000')).toBe(false);
+    expect(actorId(`d${'b'.repeat(32)}`)).toBe(`d${'b'.repeat(32)}`);
+    expect(actorId(`d${'b'.repeat(8)}`)).toBeUndefined();
+  });
+});
+
 describe('reconnect offer', () => {
   const invites = [
-    { tokenHash: JOINED, host: false, deviceId: 'd11111111' },
-    { tokenHash: OUTSIDER, host: false, deviceId: 'd22222222' },
-    { tokenHash: 'c'.repeat(64), host: true, deviceId: 'd33333333' },
+    { tokenHash: JOINED, host: false, deviceId: 'd11111111000000000000000000000000' },
+    { tokenHash: OUTSIDER, host: false, deviceId: 'd22222222000000000000000000000000' },
+    { tokenHash: 'c'.repeat(64), host: true, deviceId: 'd33333333000000000000000000000000' },
   ];
 
-  it('carries nobody when the host does not confirm', () => {
-    expect(carryTokenHashes({ confirm: false, hostInitiated: true, joinedHashes: [JOINED], invites })).toEqual([]);
+  it('carries nobody when the member does not confirm', () => {
+    expect(carryTokenHashes({ confirm: false, memberInitiated: true, joinedHashes: [JOINED], invites })).toEqual([]);
   });
 
-  it('carries every connected device that shared one code', () => {
+  it('carries every joined device that shared one code, including the old host phone', () => {
     const shared = 'd'.repeat(64);
     const carried = carryTokenHashes({
       confirm: true,
-      hostInitiated: true,
-      joinedHashes: [shared],
+      memberInitiated: true,
+      joinedHashes: [shared, 'c'.repeat(64)],
       invites: [
-        { tokenHash: shared, host: false, deviceId: 'd11111111' },
-        { tokenHash: shared, host: false, deviceId: 'd22222222' },
+        { tokenHash: shared, host: false, deviceId: 'd11111111000000000000000000000000' },
+        { tokenHash: shared, host: false, deviceId: 'd22222222000000000000000000000000' },
         { tokenHash: shared, host: false, deviceId: null },
+        { tokenHash: 'c'.repeat(64), host: true, deviceId: 'd33333333000000000000000000000000' },
       ],
     });
-    expect(carried.map((row) => row.deviceId)).toEqual(['d11111111', 'd22222222']);
+    expect(carried.map((row) => row.deviceId)).toEqual(['d11111111000000000000000000000000', 'd22222222000000000000000000000000', 'd33333333000000000000000000000000']);
   });
 
-  it('does not carry an outsider or a request that did not come from the host', () => {
+  it('does not carry an outsider or a request that did not come from a member', () => {
     const carried = carryTokenHashes({
       confirm: true,
-      hostInitiated: true,
+      memberInitiated: true,
       joinedHashes: [JOINED],
       invites,
     });
     expect(carried.map((row) => row.tokenHash)).toEqual([JOINED]);
-    expect(carryTokenHashes({ confirm: true, hostInitiated: false, joinedHashes: [JOINED], invites })).toEqual([]);
+    expect(carryTokenHashes({ confirm: true, memberInitiated: false, joinedHashes: [JOINED], invites })).toEqual([]);
+  });
+
+  it('moves connected phones first, skips the starter, and stops at three others', () => {
+    const members = [
+      { deviceId: 'd00000001000000000000000000000000', connected: false },
+      { deviceId: 'd00000002000000000000000000000000', connected: true },
+      { deviceId: 'd00000003000000000000000000000000', connected: true },
+      { deviceId: 'd00000004000000000000000000000000', connected: false },
+      { deviceId: 'not-a-device', connected: true },
+      { deviceId: 'd00000002000000000000000000000000', connected: true },
+    ];
+    expect(carryDeviceIds({
+      confirm: true,
+      memberInitiated: true,
+      members,
+      excludeDeviceId: 'd00000003000000000000000000000000',
+    })).toEqual(['d00000002000000000000000000000000', 'd00000001000000000000000000000000', 'd00000004000000000000000000000000']);
+    expect(CARRY_LIMIT).toBe(3);
+    expect(carryDeviceIds({ confirm: false, memberInitiated: true, members })).toEqual([]);
+    expect(carryDeviceIds({ confirm: true, memberInitiated: false, members })).toEqual([]);
   });
 
   it('is not offered more than an hour after the last change', () => {
@@ -77,10 +116,11 @@ describe('reconnect offer', () => {
 describe('new match while one is open', () => {
   it('asks the host to finish, with the reconnect toggle only inside the hour', () => {
     const recent = planNewMatch({ host: true, open: true, lastEventAt: NOW, now: NOW + 60_000, coPlayers: 2 });
-    expect(recent).toEqual({ kind: 'finish', showReconnect: true, reconnectSelected: true });
+    expect(recent).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false, askCarry: true });
     const alone = planNewMatch({ host: true, open: true, lastEventAt: NOW, now: NOW + 60_000, coPlayers: 0 });
     expect(alone.reconnectSelected).toBe(false);
     expect(alone.showReconnect).toBe(true);
+    expect(alone.askCarry).toBe(false);
     const stale = planNewMatch({
       host: true,
       open: true,
@@ -88,21 +128,36 @@ describe('new match while one is open', () => {
       now: NOW + RECONNECT_WINDOW_MS + 1,
       coPlayers: 2,
     });
-    expect(stale).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false });
+    expect(stale).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false, askCarry: true });
   });
 
-  it('lets a non-host leave without ending the host match', () => {
+  it('lets a non-host leave without ending the shared match or moving the other phones', () => {
     expect(planNewMatch({ host: false, open: true, lastEventAt: NOW, now: NOW, coPlayers: 3 })).toEqual({
       kind: 'leave',
       showReconnect: false,
       reconnectSelected: false,
+      askCarry: false,
     });
+    expect(planNewMatch({ host: false, open: true, lastEventAt: NOW, now: NOW, coPlayers: 0 }).askCarry).toBe(false);
   });
 
   it('does not treat a blank court as an open match', () => {
     const blank = createMatch(NOW);
     expect(isOpenMatch(blank)).toBe(false);
-    expect(planNewMatch({ host: true, open: false, lastEventAt: NOW, now: NOW, coPlayers: 0 }).kind).toBe('reset');
+    expect(otherPhones({ phones: [{ self: true }, { self: false }], onlinePlayers: 1 })).toBe(1);
+    expect(otherPhones({ phones: [], onlinePlayers: 1 })).toBe(0);
+    expect(otherPhones({ phones: [], onlinePlayers: 3 })).toBe(2);
+    expect(planNewMatch({
+      host: true,
+      open: true,
+      lastEventAt: NOW,
+      now: NOW,
+      coPlayers: otherPhones({ phones: [{ self: true }, { self: false }], onlinePlayers: 1 }),
+    }).askCarry).toBe(true);
+    expect(planNewMatch({ host: true, open: false, lastEventAt: NOW, now: NOW, coPlayers: 0 })).toMatchObject({
+      kind: 'reset',
+      askCarry: false,
+    });
     const played = matchReducer(blank, { type: 'game/increment', team: 'a', at: NOW + 1 });
     expect(isOpenMatch(played)).toBe(true);
     expect(isOpenMatch({ ...played, ended: true })).toBe(false);
@@ -153,6 +208,10 @@ describe('retention and daily creates', () => {
     expect(historyExpired(NOW, NOW + HISTORY_RETAIN_MS)).toBe(true);
     expect(MATCHES_PER_DAY).toBe(10);
     expect(MATCHES_PER_NETWORK_PER_DAY).toBe(100);
+    expect(JOINS_PER_DEVICE).toBe(20);
+    expect(JOINS_PER_NETWORK).toBe(60);
+    expect(joinWindow(NOW)).toBe(Math.floor(NOW / JOIN_WINDOW_MS));
+    expect(joinWindow(NOW + JOIN_WINDOW_MS)).toBe(joinWindow(NOW) + 1);
     expect(MAX_PLAYER_ACTOR).toBe(32);
     expect(QUOTA_RETAIN_MS).toBe(2 * 24 * 60 * 60 * 1000);
   });

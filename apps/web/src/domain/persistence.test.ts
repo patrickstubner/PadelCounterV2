@@ -137,7 +137,7 @@ describe('parsePersisted', () => {
 
     const tooLong = structuredClone(envelope);
     const teams = tooLong.base.teams as { a: { name: string } };
-    teams.a.name = '123456789012345678901';
+    teams.a.name = '1234567890123456789012345';
     expect(parsePersisted(tooLong)).toBeNull();
 
     const control = structuredClone(envelope);

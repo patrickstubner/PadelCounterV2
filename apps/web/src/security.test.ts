@@ -39,7 +39,12 @@ describe('shipped source stays local and text-only', () => {
 
   it('does not reference HTML injection or external hosts', () => {
     const paths = [...filesUnder(join(repoRoot, 'src')), ...filesUnder(join(repoRoot, 'public'))].filter(
-      (file) => !file.endsWith('.test.ts') && !file.endsWith('.png') && !file.endsWith('.ico'),
+      (file) =>
+        !file.endsWith('.test.ts') &&
+        !file.endsWith('.png') &&
+        !file.endsWith('.ico') &&
+        !file.endsWith('.mp4') &&
+        !file.endsWith('.mp3'),
     );
     for (const file of paths) {
       const text = readFileSync(file, 'utf8');
@@ -58,6 +63,16 @@ describe('shipped source stays local and text-only', () => {
     expect(html).not.toContain(`${PAGE_BASE}/`);
     expect(html).toContain('<html lang="en">');
     expect(html).toContain('Content-Security-Policy');
+    expect(mediaSrcDirective(html)).toBe("'self'");
+    expect(html).not.toContain("media-src 'none'");
+    expect(html).not.toContain('media-src blob:');
+    expect(html).not.toContain('media-src data:');
+    expect(html).toContain("worker-src 'self'");
+    const notice = readFileSync(join(repoRoot, 'public/NOTICE.txt'), 'utf8');
+    expect(notice).toContain('qr 0.7.2');
+    expect(notice).toContain('Copyright (c) 2023 Paul Miller');
+    expect(notice).toContain('qrcode 1.5.4');
+    expect(notice).toContain('Copyright (c) 2012 Ryan Day');
     expect(html).not.toContain('unsafe-inline');
     expect(html).not.toContain('unsafe-eval');
     const rsbuild = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');
@@ -85,14 +100,14 @@ describe('shipped source stays local and text-only', () => {
     expect(manifest.name).toBe('Padel Counter V2');
     expect(manifest.short_name).toBe('Padel Counter V2');
     expect(manifest.display).toBe('standalone');
-    expect(manifest.theme_color).toBe('#0a1a3f');
-    expect(manifest.background_color).toBe('#0a1a3f');
+    expect(manifest.theme_color).toBe('#000000');
+    expect(manifest.background_color).toBe('#000000');
     expect(manifest.icons).toEqual([
-      { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-      { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-      { src: 'icons/icon-1024.png', sizes: '1024x1024', type: 'image/png', purpose: 'any' },
-      { src: 'icons/icon-maskable-192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
-      { src: 'icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      { src: 'icons/icon-192-v231.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: 'icons/icon-512-v231.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: 'icons/icon-1024-v231.png', sizes: '1024x1024', type: 'image/png', purpose: 'any' },
+      { src: 'icons/icon-maskable-192-v231.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
+      { src: 'icons/icon-maskable-512-v231.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
     ]);
     for (const icon of manifest.icons) {
       const file = join(repoRoot, 'public', icon.src);
@@ -102,30 +117,70 @@ describe('shipped source stays local and text-only', () => {
       expect(png.width).toBe(size);
       expect(png.height).toBe(size);
     }
-    expect(pngInfo(join(repoRoot, 'public/icons/apple-touch-icon-180.png'))).toEqual({
+    expect(pngInfo(join(repoRoot, 'public/icons/apple-touch-icon-180-v231.png'))).toEqual({
       width: 180,
       height: 180,
       colorType: 2,
     });
-    expect(pngInfo(join(repoRoot, 'public/favicon-16.png')).width).toBe(16);
-    expect(pngInfo(join(repoRoot, 'public/favicon-32.png')).width).toBe(32);
-    expect(existsSync(join(repoRoot, 'public/favicon.ico'))).toBe(true);
+    expect(pngInfo(join(repoRoot, 'public/favicon-16-v231.png')).width).toBe(16);
+    expect(pngInfo(join(repoRoot, 'public/favicon-32-v231.png')).width).toBe(32);
+    expect(existsSync(join(repoRoot, 'public/favicon-v231.ico'))).toBe(true);
     const html = readFileSync(join(repoRoot, 'src/index.html'), 'utf8');
     expect(html).toContain('apple-touch-icon');
-    expect(html).toContain('icons/apple-touch-icon-180.png');
-    expect(html).toContain('favicon-16.png');
-    expect(html).toContain('favicon-32.png');
-    expect(html).toContain('favicon.ico');
+    expect(html).toContain('icons/apple-touch-icon-180-v231.png');
+    expect(html).toContain('favicon-16-v231.png');
+    expect(html).toContain('favicon-32-v231.png');
+    expect(html).toContain('favicon-v231.ico');
     expect(html).toContain('apple-mobile-web-app-capable');
     expect(html).toContain('apple-mobile-web-app-status-bar-style" content="black-translucent"');
     expect(html).toContain('apple-mobile-web-app-title" content="Padel Counter V2"');
-    expect(html).toContain("media-src 'none'");
+    expect(mediaSrcDirective(html)).toBe("'self'");
+    expect(html).not.toContain('blob:');
+    expect(html).not.toContain('data:');
     const fanfare = readFileSync(join(repoRoot, 'src/domain/fanfare.ts'), 'utf8');
-    expect(fanfare).toContain('AudioContext');
-    expect(fanfare).not.toMatch(/\.mp3|\.wav|\.ogg/);
+    expect(fanfare).toContain('06_crowd-in-hardrock.mp3');
+    expect(fanfare).toContain('withBase');
+    expect(fanfare).not.toContain('AudioContext');
+    expect(fanfare).not.toContain('http://');
+    expect(fanfare).not.toContain('https://');
     const buildConfig = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');
-    expect(buildConfig).toContain("'**/icon-1024.png'");
-    expect(html).toContain('content="#0a1a3f"');
+    expect(buildConfig).toContain("'**/icon-1024-v231.png'");
+    expect(html).toContain('name="theme-color" content="#000000"');
+  });
+
+  it('allows only the same-origin stay-awake clip as media', () => {
+    const html = readFileSync(join(repoRoot, 'src/index.html'), 'utf8');
+    expect(mediaSrcDirective(html)).toBe("'self'");
+    const file = join(repoRoot, 'public/stay-awake.mp4');
+    const bytes = readFileSync(file);
+    expect(bytes.subarray(4, 8).toString('ascii')).toBe('ftyp');
+    expect(bytes.length).toBeGreaterThan(32);
+    expect(bytes.length).toBeLessThan(8_192);
+    const latin = bytes.toString('latin1');
+    expect(latin).not.toContain('http');
+    expect(latin).not.toContain('https');
+    const video = readFileSync(join(repoRoot, 'src/stayAwakeVideo.ts'), 'utf8');
+    const hook = readFileSync(join(repoRoot, 'src/useWakeLock.ts'), 'utf8');
+    expect(video).toContain("setAttribute('playsinline', '')");
+    expect(video).toContain('stay-awake.mp4');
+    expect(video).not.toContain('http://');
+    expect(video).not.toContain('https://');
+    expect(video).not.toContain('blob:');
+    expect(hook).toContain('STAY_AWAKE_FILE');
+    expect(hook).toContain('withBase(');
+    expect(hook).not.toContain('http://');
+    expect(hook).not.toContain('https://');
+    expect(hook).not.toContain('blob:');
+    expect(hook).not.toContain('data:');
+    const build = readFileSync(join(repoRoot, 'rsbuild.config.ts'), 'utf8');
+    const cache = readFileSync(join(repoRoot, 'src/stayAwakeCache.ts'), 'utf8');
+    expect(build).toContain('stayAwakeRuntimeCaching');
+    expect(build).toContain("'**/stay-awake.mp4'");
+    expect(build).not.toContain('txt,mp4');
+    expect(cache).toContain('rangeRequests: true');
+    expect(cache).toContain('stay-awake\\.mp4');
+    expect(hook).toContain("'pointerup'");
+    expect(hook).toContain("'click'");
   });
 
   it('pins the light lottie player and keeps the trophy license with the file', () => {
@@ -154,6 +209,11 @@ describe('shipped source stays local and text-only', () => {
     expect(victory).toContain('license: DISTRIBUTION_NOTICE');
   });
 });
+
+function mediaSrcDirective(html: string): string {
+  const policy = html.match(/content="([^"]*media-src[^"]*)"/)?.[1] ?? '';
+  return policy.match(/media-src\s+([^;]+)/)?.[1]?.trim() ?? '';
+}
 
 function pngInfo(file: string): { width: number; height: number; colorType: number } {
   const bytes = readFileSync(file);

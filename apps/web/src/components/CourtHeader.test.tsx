@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../App';
-import { CourtHeader, type CourtAction } from './CourtHeader';
+import { CourtHeader, phonesConnectedLabel, type CourtAction } from './CourtHeader';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -16,6 +16,10 @@ const actions: readonly CourtAction[] = [
 ];
 
 describe('court header', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('puts the set name in the header and keeps the menu closed', () => {
     const html = renderToStaticMarkup(<CourtHeader setLabel="Set 2" onBrand={() => undefined} actions={actions} layout="menu" />);
     expect(html).toContain('>Padel Counter V2<');
@@ -70,6 +74,29 @@ describe('court header', () => {
     expect(bar).toContain('data-testid="new-match"');
   });
 
+  it('draws an inline phone before the connected count', () => {
+    const menu = renderToStaticMarkup(
+      <CourtHeader setLabel="Set 1" onBrand={() => undefined} actions={actions} layout="menu" phoneCount={3} onPhones={() => undefined} />,
+    );
+    const button = menu.slice(menu.indexOf('data-testid="phone-count"'), menu.indexOf('data-testid="menu-toggle"'));
+    expect(phonesConnectedLabel(0)).toBe('0 phones connected');
+    expect(phonesConnectedLabel(1)).toBe('1 phone connected');
+    expect(phonesConnectedLabel(3)).toBe('3 phones connected');
+    expect(button).toContain('aria-label="3 phones connected"');
+    expect(button.indexOf('<svg')).toBeLessThan(button.indexOf('phone-count-num'));
+    expect(button).toContain('>3<');
+    expect(button).toContain('aria-hidden="true"');
+    expect(button).not.toContain('<img');
+    expect(button).not.toContain('http');
+    expect(button).not.toContain('href=');
+    const bar = renderToStaticMarkup(
+      <CourtHeader setLabel="Set 1" onBrand={() => undefined} actions={actions} layout="bar" phoneCount={1} onPhones={() => undefined} />,
+    );
+    expect(bar).toContain('aria-label="1 phone connected"');
+    expect(bar).toContain('class="phone-icon"');
+    expect(bar).toContain('>1<');
+  });
+
   it('gives menu rows at least 56px and tightens the title', () => {
     const css = readFileSync(join(root, 'src/app.css'), 'utf8');
     const item = css.slice(css.indexOf('.menu-item {'), css.indexOf('.menu-item.is-emphasis'));
@@ -90,9 +117,39 @@ describe('court header', () => {
     expect(hint).toContain('white-space: nowrap');
     expect(hint).toContain('color: #b4bdd4');
     expect(css).not.toContain('.menu-item.has-detail');
+    const launch = css.slice(css.indexOf('.connect-launch {'), css.indexOf('.phone-rows'));
+    expect(launch).toContain('height: 2.75rem');
+    expect(launch).toContain('border: 2px solid #ffffff');
+    expect(launch).toContain('border-radius: 0.7rem');
+    expect(launch).toContain('background: transparent');
     const brand = css.slice(css.indexOf('.brand {'), css.indexOf('.brand-btn'));
     expect(brand).toContain('letter-spacing: 0.08em');
     expect(brand).not.toContain('letter-spacing: 0.16em');
+  });
+
+  it('puts Connect immediately left of the menu in landscape, and the phone button when connected', () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(orientation: landscape)',
+      addEventListener() {},
+      removeEventListener() {},
+    }));
+    const connect: CourtAction = { id: 'connect', label: 'Connect', testId: 'connect-open', onSelect: () => undefined };
+    const withConnect = [connect, ...actions];
+    const html = renderToStaticMarkup(<CourtHeader setLabel="Set 1" onBrand={() => undefined} actions={withConnect} />);
+    const end = html.slice(html.indexOf('class="top-end"'), html.indexOf('class="match-menu"'));
+    expect(end).toContain('class="connect-launch"');
+    expect(end.indexOf('data-testid="connect-open"')).toBeGreaterThan(-1);
+    expect(end.indexOf('data-testid="connect-open"')).toBeLessThan(end.indexOf('data-testid="menu-toggle"'));
+    expect(html.slice(html.indexOf('class="match-menu"'))).not.toContain('connect-open');
+    const live = renderToStaticMarkup(
+      <CourtHeader setLabel="Set 1" onBrand={() => undefined} actions={withConnect} phoneCount={2} onPhones={() => undefined} />,
+    );
+    const liveEnd = live.slice(live.indexOf('class="top-end"'), live.indexOf('class="match-menu"'));
+    expect(liveEnd.indexOf('data-testid="phone-count"')).toBeLessThan(liveEnd.indexOf('data-testid="menu-toggle"'));
+    expect(liveEnd).not.toContain('connect-launch');
+    expect(liveEnd).not.toContain('connect-open');
+    expect(live.slice(live.indexOf('class="match-menu"'))).toContain('data-testid="connect-open"');
+    expect(live).toContain('aria-label="2 phones connected"');
   });
 });
 
@@ -116,6 +173,7 @@ describe('court header in the app', () => {
     expect(html).not.toContain('chip-set');
     expect(html).toContain('data-testid="menu-toggle"');
     expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain('connect-launch');
     const mid = html.slice(html.indexOf('class="mid"'), html.indexOf('class="team team-b"'));
     expect(mid).not.toContain('Set 1');
   });

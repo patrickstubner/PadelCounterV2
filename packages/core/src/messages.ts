@@ -1,21 +1,37 @@
+/** Hello `protocol` the worker accepts. Older phones are told to update. */
+export const LIVE_PROTOCOL = 2;
+
 /** Fixed sentences shared by the server and the UI. The client renders these, not free text from the network. */
 export const ROOM_MESSAGES = {
-  match_full: 'This match already has 4 players.',
+  match_full: 'This match is full.',
   expired: 'This code has expired. Ask for a new one.',
   bad_token: 'This code is not valid.',
+  join_code: 'That code did not work.',
   revoked: 'This code is no longer valid. Ask for a new one.',
+  removed: 'You were removed from this match. Ask the others for a new code.',
+  join_removed: 'This phone was removed from this match. Ask the others for a new code.',
   spectator_not_available: 'View-only links are not available yet.',
   forbidden: 'You cannot change the score from this connection.',
   not_applied: 'That change was not applied.',
+  score_kept: 'The other phone already changed this match. This phone is using that score.',
   slow_down: 'Too many changes. Wait a moment.',
+  code_limited: 'Too many tries from this network. Use the QR link instead.',
   upgrade_required: 'Update the app to keep scoring.',
   unavailable: 'This match is not available.',
   not_configured: 'Live sharing is not configured in this build.',
   offline: 'The live server did not answer. The score on this device is unchanged.',
   device_daily_limit: "You've reached 10 new matches today on this device.",
   network_daily_limit: 'Too many new matches from this network today.',
+  join_device_limit: 'Too many connection attempts from this device. Wait a minute.',
+  join_network_limit: 'Too many failed connection attempts from this network. Wait a minute.',
+  invalid_device: 'This device id is not valid.',
   closed: 'This match is closed. It can no longer be scored.',
   reconnect_unavailable: 'The previous players can no longer be reconnected. Share a new code.',
+  invite_limited: 'This match has had too many new codes. Wait a while.',
+  carry_limited: 'These phones were already moved. Start again with a new code.',
+  kick_refused: 'That phone cannot be removed.',
+  kick_limited: 'Too many phones removed. Wait a while.',
+  leave_limited: 'Too many attempts to leave. Wait a while.',
 } as const;
 
 export type RoomCode = keyof typeof ROOM_MESSAGES;
@@ -31,6 +47,7 @@ const CLOSE_CODES: ReadonlySet<RoomCode> = new Set([
   'bad_token',
   'expired',
   'revoked',
+  'removed',
   'spectator_not_available',
   'upgrade_required',
   'match_full',
