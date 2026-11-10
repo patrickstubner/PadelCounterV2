@@ -586,10 +586,11 @@ Scope: the 2.3.7 new-match dialog (`packages/core/src/policy.ts`, `apps/web/src/
 
 ## Review 35, 2026-11-10
 
-Scope: the 2.3.8 third set after a 2–0 win (`packages/core/src/rules.ts` `canScoreGame`), checked on branch `fix/third-set-after-decided` from `97ab31b`.
+Scope: the 2.3.8 third set after a 2–0 win (`packages/core/src/rules.ts` `canScoreGame`) and games scored while a carried new match connects (`apps/web/src/live/useLive.ts`, `apps/web/src/live/protocol.ts`), checked on branch `fix/third-set-after-decided` from `97ab31b`.
 
 - P35-01, Info. `canScoreGame` no longer closes plus because the match is already won. It still closes plus after End match and on a finished set, and `isPlausibleSetScore` still bounds every set. The worker (`room.ts`) uses the same check, so a live match now accepts a plus on the empty third set of a 2–0 win from an admitted phone. Who may score, the claim check, and the message rate limit are unchanged. The winner is still `matchWinner`, the first team to two sets, so a third set cannot change it.
 - P35-02, Info. No new input path, endpoint, storage key, dependency, or secret. Continue from History keeps its existing reopen rights (`canReopen`).
+- P35-04, Info. Games scored between creating a live match and its first snapshot (`eventsAfterShare` in `apps/web/src/live/protocol.ts`, used in `useLive.ts`) are sent through the same sender as a new tap, with a claim from the current court and the same `canScoreGame` check. Only events this phone recorded itself after the posted log are used, never server data, and none when another New match happened in between. The worker still checks each event and its claim. No new endpoint, message type, or storage key.
 - P35-03, Low, existing. `pnpm audit` on 2026-11-10 still reports only GHSA-gcqx-w48m-w2h4 in `deepmerge` 4.3.1 (build-time, through `workbox-build`), as in P34-04. No patched version exists. Not changed in this version.
 
 ## Out of scope
