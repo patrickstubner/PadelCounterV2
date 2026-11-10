@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMatch, matchReducer } from './reducer';
 import {
+  lastScoreChangeAt,
   HISTORY_RETAIN_MS,
   HOST_ACTOR,
   JOINS_PER_DEVICE,
@@ -116,7 +117,7 @@ describe('reconnect offer', () => {
 describe('new match while one is open', () => {
   it('asks the host to finish, with the reconnect toggle only inside the hour', () => {
     const recent = planNewMatch({ host: true, open: true, lastEventAt: NOW, now: NOW + 60_000, coPlayers: 2 });
-    expect(recent).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false, askCarry: true });
+    expect(recent).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false, askCarry: true, carrySelected: true });
     const alone = planNewMatch({ host: true, open: true, lastEventAt: NOW, now: NOW + 60_000, coPlayers: 0 });
     expect(alone.reconnectSelected).toBe(false);
     expect(alone.showReconnect).toBe(true);
@@ -128,7 +129,44 @@ describe('new match while one is open', () => {
       now: NOW + RECONNECT_WINDOW_MS + 1,
       coPlayers: 2,
     });
-    expect(stale).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false, askCarry: true });
+    expect(stale).toEqual({ kind: 'finish', showReconnect: false, reconnectSelected: false, askCarry: true, carrySelected: false });
+  });
+
+  it('ticks the carry boxes from the last score change, not the last event or the match start', () => {
+    const scored = NOW;
+    const renamedLater = NOW + RECONNECT_WINDOW_MS;
+    const now = NOW + RECONNECT_WINDOW_MS + 1;
+    const stale = planNewMatch({ host: true, open: true, lastEventAt: renamedLater, lastScoreAt: scored, now, coPlayers: 1 });
+    expect(stale.carrySelected).toBe(false);
+    expect(stale.askCarry).toBe(true);
+    const fresh = planNewMatch({ host: true, open: true, lastEventAt: NOW, lastScoreAt: now - 10 * 60_000, now, coPlayers: 1 });
+    expect(fresh.carrySelected).toBe(true);
+    const edge = planNewMatch({ host: true, open: true, lastEventAt: NOW, lastScoreAt: NOW, now: NOW + RECONNECT_WINDOW_MS, coPlayers: 0 });
+    expect(edge.carrySelected).toBe(true);
+    const noScore = planNewMatch({ host: true, open: true, lastEventAt: NOW, lastScoreAt: null, now: NOW + 5_000, coPlayers: 0 });
+    expect(noScore.carrySelected).toBe(true);
+    expect(planNewMatch({ host: true, open: false, lastEventAt: NOW, lastScoreAt: NOW, now: now + RECONNECT_WINDOW_MS, coPlayers: 0 }).carrySelected).toBe(false);
+  });
+
+  it('finds the last plus or minus of the current match only', () => {
+    expect(lastScoreChangeAt([])).toBeNull();
+    expect(lastScoreChangeAt([
+      { type: 'game/increment', at: 10 },
+      { type: 'game/decrement', at: 30 },
+      { type: 'team/rename', at: 50 },
+      { type: 'set/select', at: 60 },
+      { type: 'serve/set', at: 70 },
+    ])).toBe(30);
+    expect(lastScoreChangeAt([
+      { type: 'game/increment', at: 10 },
+      { type: 'match/new', at: 20 },
+      { type: 'team/rename', at: 25 },
+    ])).toBeNull();
+    expect(lastScoreChangeAt([
+      { type: 'game/increment', at: 10 },
+      { type: 'match/new', at: 20 },
+      { type: 'game/increment', at: 40 },
+    ])).toBe(40);
   });
 
   it('lets a non-host leave without ending the shared match or moving the other phones', () => {
@@ -137,6 +175,7 @@ describe('new match while one is open', () => {
       showReconnect: false,
       reconnectSelected: false,
       askCarry: false,
+      carrySelected: true,
     });
     expect(planNewMatch({ host: false, open: true, lastEventAt: NOW, now: NOW, coPlayers: 0 }).askCarry).toBe(false);
   });

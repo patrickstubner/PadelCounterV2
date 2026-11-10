@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.7
+
+- New match has two buttons, Cancel and Finish & new. Take phones and Just this phone are gone. Instead the dialog shows large tick boxes: “Take the connected phones along” when another phone has joined, and “Keep team names (…)” when a team name was typed. A name that is still Team A or Team B does not count. With neither, the dialog is the plain finish question as before.
+- Both boxes are ticked when the last plus or minus on this match was at most an hour ago. Renaming, choosing a set or a server does not count. After an hour the boxes are still shown, but clear. A match without any score uses its last change.
+- Kept names start the new match at 0–0. A box that is cleared is not applied: the new match is Team A and Team B, or the other phones are not moved.
+
 ## 2.3.6
 
 - Minus puts the server back when it takes away the last game. At 6–6 the note names the server. Plus to 7–6 asks the other team who serves. Minus returns to 6–6 and that same server, including a step back into the previous set. Both phones of a live match show that same server. Minus on an earlier game, while a later game stays, keeps the usual serve step. A later Minus does not put back the server from before that earlier game.

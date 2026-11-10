@@ -28,7 +28,7 @@ describe('stay-awake range requests', () => {
       sourcemap: false,
       clientsClaim: true,
       skipWaiting: true,
-      cacheId: 'padel-counter-v2-2.3.6',
+      cacheId: 'padel-counter-v2-2.3.7',
       disableDevLogs: true,
       runtimeCaching: stayAwakeRuntimeCaching,
     });
