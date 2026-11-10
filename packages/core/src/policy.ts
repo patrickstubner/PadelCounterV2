@@ -131,6 +131,23 @@ export function lastChangeAt(createdAt: number, eventTimes: readonly number[]): 
   return last;
 }
 
+/**
+ * Last plus or minus on the current match, or null when this match has no score change yet.
+ * Events before the latest new match belong to the previous match and do not count.
+ */
+export function lastScoreChangeAt(events: readonly { readonly type: string; readonly at: number }[]): number | null {
+  let last: number | null = null;
+  for (const event of events) {
+    if (event.type === 'match/new' || event.type === 'match/reset') {
+      last = null;
+      continue;
+    }
+    if (event.type !== 'game/increment' && event.type !== 'game/decrement') continue;
+    if (Number.isInteger(event.at) && (last === null || event.at > last)) last = event.at;
+  }
+  return last;
+}
+
 export interface CarryInvite {
   readonly tokenHash: string;
   readonly host: boolean;
@@ -260,6 +277,11 @@ export interface NewMatchPlan {
    * A guest leaves on this phone only. They cannot move the court.
    */
   readonly askCarry: boolean;
+  /**
+   * Default for the carry checkboxes (phones and team names).
+   * True when the last score change was at most an hour ago.
+   */
+  readonly carrySelected: boolean;
 }
 
 /**
@@ -279,12 +301,15 @@ export function planNewMatch(input: {
   readonly host: boolean;
   readonly open: boolean;
   readonly lastEventAt: number;
+  /** Last plus or minus on this match. Null or missing falls back to {@link lastEventAt}. */
+  readonly lastScoreAt?: number | null;
   readonly now: number;
   readonly coPlayers: number;
 }): NewMatchPlan {
   const askCarry = input.host && input.open && input.coPlayers > 0;
-  if (!input.host) return { kind: 'leave', showReconnect: false, reconnectSelected: false, askCarry: false };
-  if (!input.open) return { kind: 'reset', showReconnect: false, reconnectSelected: false, askCarry: false };
+  const carrySelected = offerReconnect(input.lastScoreAt ?? input.lastEventAt, input.now);
+  if (!input.host) return { kind: 'leave', showReconnect: false, reconnectSelected: false, askCarry: false, carrySelected };
+  if (!input.open) return { kind: 'reset', showReconnect: false, reconnectSelected: false, askCarry: false, carrySelected };
   const recent = offerReconnect(input.lastEventAt, input.now);
   const coPlayers = input.coPlayers > 0;
   return {
@@ -292,5 +317,6 @@ export function planNewMatch(input: {
     showReconnect: recent && !askCarry,
     reconnectSelected: recent && coPlayers && !askCarry,
     askCarry,
+    carrySelected,
   };
 }

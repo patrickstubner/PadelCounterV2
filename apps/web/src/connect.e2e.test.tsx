@@ -528,6 +528,99 @@ describe('connect overlay and scanned join', () => {
     expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
   });
 
+  const hostWithPhone = async (scoredAgo: number) => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const scoredAt = Date.now() - scoredAgo;
+    snapshot = {
+      schemaVersion: 2,
+      base: createMatch(scoredAt - 1_000, MATCH),
+      events: [
+        { type: 'team/rename', team: 'a', name: 'Anna & Ben', at: scoredAt - 500, by: 'host' },
+        { type: 'game/increment', team: 'a', at: scoredAt, by: 'host' },
+      ],
+    };
+    snapshotHost = true;
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('show-qr');
+    await waitFor(() => document.querySelector('.team-a .team-name')?.textContent === 'Anna & Ben');
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-testid="connect-close-x"]')?.click();
+    });
+    fetchCalls.splice(0);
+  };
+
+  const checkbox = (testId: string) => document.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`);
+
+  it('ticks phones and names inside the hour and offers only cancel and new', async () => {
+    await hostWithPhone(10 * 60_000);
+    await press('new-match');
+    expect(checkbox('carry-phones')?.checked).toBe(true);
+    expect(checkbox('carry-names')?.checked).toBe(true);
+    expect(document.body.textContent).toContain('Take the connected phones along');
+    expect(document.body.textContent).toContain('Keep team names (Anna & Ben · Team B)');
+    const dialog = document.querySelector('dialog[aria-labelledby="new-match-title"]');
+    expect([...(dialog?.querySelectorAll('button') ?? [])].map((button) => button.dataset.testid)).toEqual([
+      'cancel-new-match',
+      'finish-and-new',
+    ]);
+    expect(document.querySelector('[data-testid="take-phones"]')).toBeNull();
+    expect(document.querySelector('[data-testid="new-match-alone"]')).toBeNull();
+    await press('finish-and-new');
+    await waitFor(() => fetchCalls.some((call) => call.url.endsWith('/carry')));
+    const created = fetchCalls.find((call) => call.url.endsWith('/matches'));
+    expect(String(created?.init?.body)).toContain('Anna & Ben');
+    expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Anna & Ben');
+    expect(scoreA()).toContain('0');
+  });
+
+  it('leaves both boxes off after an hour, and applies only what is ticked', async () => {
+    await hostWithPhone(61 * 60_000);
+    await press('new-match');
+    expect(checkbox('carry-phones')?.checked).toBe(false);
+    expect(checkbox('carry-names')?.checked).toBe(false);
+    await act(async () => {
+      checkbox('carry-names')?.click();
+    });
+    expect(checkbox('carry-names')?.checked).toBe(true);
+    await press('finish-and-new');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(fetchCalls.some((call) => call.url.endsWith('/carry'))).toBe(false);
+    expect(fetchCalls.some((call) => call.url.endsWith('/matches'))).toBe(false);
+    expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Anna & Ben');
+    expect(scoreA()).toContain('0');
+  });
+
+  it('does not take the phones or the names when both boxes are cleared', async () => {
+    await hostWithPhone(5 * 60_000);
+    await press('new-match');
+    await act(async () => {
+      checkbox('carry-phones')?.click();
+      checkbox('carry-names')?.click();
+    });
+    await press('finish-and-new');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(fetchCalls.some((call) => call.url.endsWith('/carry'))).toBe(false);
+    expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Team A');
+  });
+
+  it('cancel keeps the live match and its names', async () => {
+    await hostWithPhone(5 * 60_000);
+    await press('new-match');
+    await press('cancel-new-match');
+    expect(document.querySelector('dialog[aria-labelledby="new-match-title"]')).toBeNull();
+    expect(fetchCalls.some((call) => call.url.endsWith('/carry'))).toBe(false);
+    expect(document.querySelector('.team-a .team-name')?.textContent).toBe('Anna & Ben');
+    expect(scoreA()).toContain('1');
+  });
+
   it('ignores a join fragment while this phone is the live host', async () => {
     (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
     globalThis.fetch = fakeFetch as typeof fetch;

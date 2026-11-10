@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { isOpenMatch, lastChangeAt, otherPhones, planNewMatch, scoreClaimFor, type NewMatchPlan } from '@padel/core';
+import { isOpenMatch, lastChangeAt, lastScoreChangeAt, otherPhones, planNewMatch, scoreClaimFor, type NewMatchPlan } from '@padel/core';
 import { detailHistoryState, joinHistoryState, matchesHistoryState, privacyHistoryState, screenFromHistory, type ArchiveScreen } from './archiveNav';
-import { ConfirmDialog } from './components/ConfirmDialog';
+import { ConfirmDialog, type DialogCheck } from './components/ConfirmDialog';
 import { ConnectPage } from './components/ConnectPage';
 import { JoinMatchPage } from './components/JoinMatchPage';
 import { CourtHeader, type CourtAction } from './components/CourtHeader';
@@ -18,7 +18,7 @@ import { fanfareEnabled, playFanfare, setFanfareEnabled, shouldPlayFanfare, stop
 import { bindCourtTaps, hapticEnabled, needsIosHapticSwitch, pulseHaptic, setHapticEnabled, supportsVibrate } from './domain/haptic';
 import { appendEvent, describeEvent, replay } from './domain/log';
 import { continuationLog, continueCopy, continueDecision, type ContinueKind } from './domain/continue';
-import { commitNewMatch, newMatchCopy } from './domain/newMatch';
+import { carryLabels, carryOffer, commitNewMatch, newMatchCopy, type CarryChoice, type CarryOffer } from './domain/newMatch';
 import {
   acknowledgeCelebrated,
   celebrationKey,
@@ -84,6 +84,9 @@ export function App() {
   const [confirming, setConfirming] = useState<'end' | null>(null);
   const [pendingPlan, setPendingPlan] = useState<NewMatchPlan | null>(null);
   const [reconnectChoice, setReconnectChoice] = useState(false);
+  const [pendingOffer, setPendingOffer] = useState<CarryOffer | null>(null);
+  const [carryPhones, setCarryPhones] = useState(false);
+  const [carryNames, setCarryNames] = useState(false);
   const [fanfareOn, setFanfareOn] = useState(() => {
     try {
       return typeof localStorage === 'undefined' ? true : fanfareEnabled(localStorage);
@@ -434,12 +437,17 @@ export function App() {
           host: room.status !== 'live' || room.host,
           open: isOpenMatch(state),
           lastEventAt: lastChangeAt(state.createdAt, match.log.events.map((event) => event.at)),
+          lastScoreAt: lastScoreChangeAt(match.log.events),
           now: Date.now(),
           coPlayers: room.status === 'live'
             ? otherPhones({ phones: room.phones, onlinePlayers: room.players })
             : 0,
         });
+        const offer = carryOffer(plan, state.teams);
         setReconnectChoice(plan.reconnectSelected);
+        setCarryPhones(offer.phones && offer.selected);
+        setCarryNames(offer.names !== null && offer.selected);
+        setPendingOffer(offer);
         setPendingPlan(plan);
       },
     },
@@ -493,11 +501,11 @@ export function App() {
         : []),
   ];
 
-  const commitPlanned = (plan: NewMatchPlan, takePhones: boolean) => {
-    const acting = takePhones ? { ...plan, kind: 'finish' as const } : plan;
+  const commitPlanned = (plan: NewMatchPlan, offer: CarryOffer, choice: CarryChoice) => {
+    const takePhones = plan.askCarry && offer.phones && choice.phones;
     const at = Date.now();
-    const by = acting.kind === 'leave' ? deviceId(localStorage) : 'host';
-    const commit = commitNewMatch(acting, at, by);
+    const by = plan.kind === 'leave' ? deviceId(localStorage) : 'host';
+    const commit = commitNewMatch(plan, at, by, choice.names ? offer.names : null);
     const endEvent = commit.events[0] ?? { type: 'match/end' as const, at, by };
     const previous = commit.endOnServer && room.status === 'live'
       ? room.finishShared(endEvent, scoreClaimFor(replay(match.log), endEvent))
@@ -508,10 +516,11 @@ export function App() {
     match.recordAll(commit.events);
     if (takePhones && previous) {
       room.share(shared, { previousHostToken: previous, carry: true });
-    } else if (!takePhones && plan.showReconnect && reconnectChoice && previous) {
+    } else if (!plan.askCarry && plan.showReconnect && reconnectChoice && previous) {
       room.share(shared, { previousHostToken: previous, carry: true });
     }
   };
+
 
   const taps = bindCourtTaps(state.activeSet, match);
   const hapticMode = !hapticOn ? 'off' : needsIosHapticSwitch() ? 'ios' : supportsVibrate() ? 'vibrate' : 'off';
@@ -665,35 +674,57 @@ export function App() {
               ? 'Disconnected from the live match. Points stay on this phone.'
               : ''}
       </p>
-      {pendingPlan ? (
-        <ConfirmDialog
-          titleId="new-match-title"
-          title={newMatchCopy(pendingPlan).title}
-          body={newMatchCopy(pendingPlan).body}
-          confirmLabel={newMatchCopy(pendingPlan).confirmLabel}
-          confirmTestId={newMatchCopy(pendingPlan).confirmTestId}
-          cancelTestId="cancel-new-match"
-          check={pendingPlan.showReconnect ? {
+      {pendingPlan && pendingOffer ? (() => {
+        const copy = newMatchCopy(pendingPlan, pendingOffer);
+        const labels = carryLabels(pendingOffer.names ?? {});
+        const checks: DialogCheck[] = [];
+        if (pendingOffer.phones) {
+          checks.push({
+            label: labels.phones,
+            hint: labels.phonesHint,
+            checked: carryPhones,
+            testId: 'carry-phones',
+            onChange: setCarryPhones,
+          });
+        } else if (pendingPlan.showReconnect) {
+          checks.push({
             label: 'Reconnect players from last match',
             checked: reconnectChoice,
             testId: 'reconnect-players',
             onChange: setReconnectChoice,
-          } : undefined}
-          alternateLabel={newMatchCopy(pendingPlan).alternateLabel}
-          alternateTestId={newMatchCopy(pendingPlan).alternateTestId}
-          onCancel={() => setPendingPlan(null)}
-          onAlternate={() => {
-            const plan = pendingPlan;
-            setPendingPlan(null);
-            commitPlanned(plan, false);
-          }}
-          onConfirm={() => {
-            const plan = pendingPlan;
-            setPendingPlan(null);
-            commitPlanned(plan, plan.askCarry);
-          }}
-        />
-      ) : null}
+          });
+        }
+        if (pendingOffer.names) {
+          checks.push({
+            label: labels.names,
+            checked: carryNames,
+            testId: 'carry-names',
+            onChange: setCarryNames,
+          });
+        }
+        const close = () => {
+          setPendingPlan(null);
+          setPendingOffer(null);
+        };
+        return (
+          <ConfirmDialog
+            titleId="new-match-title"
+            title={copy.title}
+            body={copy.body}
+            confirmLabel={copy.confirmLabel}
+            confirmTestId={copy.confirmTestId}
+            cancelTestId="cancel-new-match"
+            checks={checks}
+            onCancel={close}
+            onConfirm={() => {
+              const plan = pendingPlan;
+              const offer = pendingOffer;
+              close();
+              commitPlanned(plan, offer, { phones: carryPhones, names: carryNames });
+            }}
+          />
+        );
+      })() : null}
       {phonesOpen && room.status === 'live' ? (
         <PhoneList
           phones={room.phones}

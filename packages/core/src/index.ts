@@ -159,6 +159,7 @@ export {
   isOpenMatch,
   joinWindow,
   lastChangeAt,
+  lastScoreChangeAt,
   offerReconnect,
   otherPhones,
   planNewMatch,
