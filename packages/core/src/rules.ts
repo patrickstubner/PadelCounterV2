@@ -145,11 +145,13 @@ export function canIncrement(score: SetScore, team: TeamId): boolean {
 }
 
 /**
- * A new plus is closed when this set is already won, when the match is already won,
- * and after End match. Replay of a stored log does not use this. Minus stays open.
+ * A new plus is closed when this set is already won and after End match.
+ * A match won 2–0 keeps plus open on the third set, so that set can still be
+ * recorded. The winner stays the first team to two sets ({@link matchWinner}).
+ * Replay of a stored log does not use this. Minus stays open.
  */
 export function canScoreGame(state: MatchState, team: TeamId): boolean {
-  if (state.ended || matchWinner(state.sets) !== null) return false;
+  if (state.ended) return false;
   return canIncrement(state.sets[state.activeSet], team);
 }
 

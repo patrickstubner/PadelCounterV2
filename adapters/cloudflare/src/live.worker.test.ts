@@ -1,4 +1,4 @@
-import { CODE_ALARM_GLOBAL, CODE_ATTEMPTS_PER_PREFIX, LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, joinWindow, matchReducer, parseLiveTeamName, parseMatchLog, replayScore, scoreBoard, scoreClaimFor, type MatchEvent, type MatchState, type ScoreBoard, type ScoreClaim, type TeamId } from '@padel/core';
+import { CODE_ALARM_GLOBAL, CODE_ATTEMPTS_PER_PREFIX, LIVE_PROTOCOL, MAX_MINTED_TOKENS, ROOM_MESSAGES, createMatch, joinWindow, matchReducer, matchWinner, parseLiveTeamName, parseMatchLog, replayScore, scoreBoard, scoreClaimFor, type MatchEvent, type MatchState, type ScoreBoard, type ScoreClaim, type TeamId } from '@padel/core';
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
@@ -1143,22 +1143,34 @@ describe('offline score reconcile in the durable object', () => {
     expect(board.sets[1]).toEqual({ a: 5, b: 1 });
   });
 
-  it('rejects a plus in the empty third set after 6:0 and 6:0', async () => {
+  it('accepts plus and minus in the empty third set after 6:0 and 6:0 and keeps the winner', async () => {
     const device = 'd23100003000000000000000000000000';
     const created = await createLive(device, Array.from({ length: 12 }, () => 'a' as const));
+    expect(matchWinner(created.state.sets)).toBe('a');
     const host = await connect(created.hostToken, device);
     const choose: MatchEvent = { type: 'set/select', index: 2, at: Date.now() };
     const selected = await push(host.ws, host.messages, stepId(310), choose, scoreClaimFor(created.state, choose));
     expect(selected.type).toBe('event');
-    const onThird = matchReducer(created.state, choose);
-    const plus: MatchEvent = { type: 'game/increment', team: 'a', at: Date.now() };
-    const claim = scoreClaimFor(onThird, plus);
-    expect(claim?.after.sets[2]).toEqual({ a: 1, b: 0 });
-    const refused = await push(host.ws, host.messages, stepId(311), plus, claim);
-    expect(refused).toMatchObject({ type: 'error', code: 'not_applied' });
+    let court = matchReducer(created.state, choose);
+    const plus: MatchEvent = { type: 'game/increment', team: 'b', at: Date.now() };
+    const claim = scoreClaimFor(court, plus);
+    expect(claim?.after.sets[2]).toEqual({ a: 0, b: 1 });
+    const accepted = await push(host.ws, host.messages, stepId(311), plus, claim);
+    expect(accepted.type).toBe('event');
+    court = matchReducer(court, plus);
+    const minus: MatchEvent = { type: 'game/decrement', team: 'b', at: Date.now() };
+    const taken = await push(host.ws, host.messages, stepId(312), minus, scoreClaimFor(court, minus));
+    expect(taken.type).toBe('event');
+    court = matchReducer(court, minus);
+    const again: MatchEvent = { type: 'game/increment', team: 'b', at: Date.now() };
+    const kept = await push(host.ws, host.messages, stepId(313), again, scoreClaimFor(court, again));
+    expect(kept.type).toBe('event');
     const board = await storedBoard(created.hostToken, device);
-    expect(board.sets[2]).toEqual({ a: 0, b: 0 });
+    expect(board.sets[0]).toEqual({ a: 6, b: 0 });
+    expect(board.sets[1]).toEqual({ a: 6, b: 0 });
+    expect(board.sets[2]).toEqual({ a: 0, b: 1 });
     expect(board.activeSet).toBe(2);
+    expect(matchWinner(board.sets)).toBe('a');
   });
 
   it('rejects a plus at 6:4, 7:5, and 7:6', async () => {
