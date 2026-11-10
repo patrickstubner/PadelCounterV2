@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.3.8
+
+- After a 2–0 win, tap Set 3 and plus works again, so the third set can still be recorded. Minus takes a game back there as usual. The winner stays the team that won the first two sets, even when the other team wins the third set. This also works on a 2–0 match put back on the court with Continue from History. Plus still stops on a finished set and after End match. 2.3.1 had closed plus on that third set.
+- Finish & new with the connected phones taken along no longer sets the new match back to 0–0. Games scored on this phone while the new match is still connecting are sent once it is connected, so phones that join later show that score. Phones that follow only join the new match. They do not start or reset a match of their own.
+
 ## 2.3.7
 
 - New match has two buttons, Cancel and Finish & new. Take phones and Just this phone are gone. Instead the dialog shows large tick boxes: “Take the connected phones along” when another phone has joined, and “Keep team names (…)” when a team name was typed. A name that is still Team A or Team B does not count. With neither, the dialog is the plain finish question as before.

@@ -189,7 +189,7 @@ describe('manual corrections stay on plausible scores', () => {
     expect(canIncrement({ a: 5, b: 5 }, 'b')).toBe(true);
   });
 
-  it('blocks a new plus when the match is already won, including the empty third set', () => {
+  it('blocks plus on the won second set but opens the empty third set after 2–0', () => {
     let state = createMatch(1_700_000_000_000, '00000000-0000-4000-8000-000000000001');
     for (let i = 0; i < 12; i += 1) {
       state = matchReducer(state, { type: 'game/increment', team: 'a', at: state.updatedAt + 1 });
@@ -199,8 +199,10 @@ describe('manual corrections stay on plausible scores', () => {
     expect(canScoreGame(state, 'b')).toBe(false);
     const third = matchReducer(state, { type: 'set/select', index: 2, at: state.updatedAt + 1 });
     expect(third.sets[2]).toEqual({ a: 0, b: 0 });
-    expect(canScoreGame(third, 'a')).toBe(false);
-    expect(canScoreGame(third, 'b')).toBe(false);
+    // Regression guard: 2.3.1 closed plus here because the match was already won.
+    expect(canScoreGame(third, 'a')).toBe(true);
+    expect(canScoreGame(third, 'b')).toBe(true);
+    expect(canScoreGame({ ...third, ended: true }, 'b')).toBe(false);
     const undone = matchReducer(state, { type: 'game/decrement', team: 'a', at: state.updatedAt + 2 });
     expect(matchWinner(undone.sets)).toBeNull();
     expect(canScoreGame(undone, 'b')).toBe(true);

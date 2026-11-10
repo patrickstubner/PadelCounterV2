@@ -1,5 +1,5 @@
 /** @vitest-environment happy-dom */
-import { ROOM_MESSAGES, createMatch } from '@padel/core';
+import { ROOM_MESSAGES, assignMatchId, createMatch, parseMatchLog } from '@padel/core';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -38,6 +38,10 @@ let snapshot: unknown = null;
 let snapshotHost = false;
 let inviteFails = 0;
 let blockJoin = false;
+/** When set, /join waits for this before it answers. */
+let joinGate: Promise<void> | null = null;
+/** When true, POST /matches becomes the snapshot of the new room, as the worker stores it. */
+let mirrorCreate = false;
 
 class FakeSocket {
   static readonly CONNECTING = 0;
@@ -101,6 +105,7 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   const url = String(input);
   fetchCalls.push({ url, init });
   if (url.endsWith('/join')) {
+    if (joinGate) await joinGate;
     if (blockJoin) return Response.json({ error: 'offline' }, { status: 503 });
     if (joinMode === 'expired') return Response.json({ error: 'expired', message: '<b>expired</b>' }, { status: 401 });
     if (joinMode === 'bad') return Response.json({ error: 'bad_token', message: '<img src=x onerror=alert(1)>' }, { status: 401 });
@@ -115,6 +120,11 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   if (url.endsWith('/matches')) {
     if (createMode === 'down') {
       return Response.json({ error: 'not_configured', message: '<script>alert(1)</script>' }, { status: 503 });
+    }
+    if (mirrorCreate) {
+      const posted = parseMatchLog((JSON.parse(String(init?.body)) as { log?: unknown }).log);
+      const stored = posted ? assignMatchId(posted, createdMatchId) : null;
+      if (stored) snapshot = stored;
     }
     return Response.json({ matchId: createdMatchId, hostToken: HOST }, { status: 201 });
   }
@@ -191,6 +201,8 @@ describe('connect overlay and scanned join', () => {
     snapshotHost = false;
     inviteFails = 0;
     blockJoin = false;
+    joinGate = null;
+    mirrorCreate = false;
     createdMatchId = MATCH;
     vi.mocked(syncCourtChrome).mockClear();
     localStorage.clear();
@@ -577,6 +589,56 @@ describe('connect overlay and scanned join', () => {
     expect(scoreA()).toContain('0');
   });
 
+  it('keeps games scored on the host while the carried new match is still connecting', async () => {
+    await hostWithPhone(5 * 60_000);
+    const NEXT = '22222222-2222-4222-8222-222222222222';
+    createdMatchId = NEXT;
+    mirrorCreate = true;
+    let release: () => void = () => undefined;
+    joinGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const socketsBefore = sockets.length;
+    await press('new-match');
+    expect(checkbox('carry-phones')?.checked).toBe(true);
+    await press('finish-and-new');
+    await waitFor(() => fetchCalls.some((call) => call.url.endsWith('/matches')));
+    // The host scores before its new socket is up, as on a slow court network.
+    await press('increment-a');
+    await press('increment-a');
+    await press('increment-b');
+    const local = () => replay(JSON.parse(localStorage.getItem('pcv2:log') ?? 'null'));
+    expect(local().sets[0]).toEqual({ a: 2, b: 1 });
+    release();
+    await waitFor(() => sockets.length > socketsBefore && (sockets.at(-1)?.sent.filter((entry) => entry.includes('"game/increment"')).length ?? 0) >= 1);
+    await waitFor(() => fetchCalls.some((call) => call.url.endsWith('/carry')));
+    const hostSocket = sockets.at(-1);
+    if (!hostSocket) throw new Error('missing host socket');
+    // Regression guard: the first snapshot of the new room (0–0) replaced these games.
+    expect(local().matchId).toBe(NEXT);
+    expect(local().sets[0]).toEqual({ a: 2, b: 1 });
+    // The server acks each point. Later phones join while that happens.
+    for (let round = 0; round < 3; round += 1) {
+      const sent = hostSocket.sent
+        .map((entry) => JSON.parse(entry) as { type?: string; eventId?: string; event?: { type?: string } })
+        .filter((entry) => entry.type === 'event');
+      const next = sent[round];
+      if (!next?.eventId || !next.event) break;
+      await act(async () => {
+        hostSocket.onmessage?.({ data: JSON.stringify({ type: 'event', eventId: next.eventId, seq: round + 1, players: 2 + round, event: next.event }) });
+        hostSocket.onmessage?.({ data: JSON.stringify({ type: 'presence', players: 2 + round }) });
+      });
+    }
+    const sentTypes = hostSocket.sent
+      .map((entry) => JSON.parse(entry) as { type?: string; event?: { type?: string; team?: string } })
+      .filter((entry) => entry.type === 'event')
+      .map((entry) => `${entry.event?.type}:${entry.event?.team}`);
+    expect(sentTypes).toEqual(['game/increment:a', 'game/increment:a', 'game/increment:b']);
+    expect(hostSocket.sent.some((entry) => entry.includes('match/new') || entry.includes('match/reset'))).toBe(false);
+    expect(local().sets[0]).toEqual({ a: 2, b: 1 });
+    expect(scoreA()).toContain('2');
+  });
+
   it('leaves both boxes off after an hour, and applies only what is ticked', async () => {
     await hostWithPhone(61 * 60_000);
     await press('new-match');
@@ -724,6 +786,48 @@ describe('connect overlay and scanned join', () => {
     expect(joins).toHaveLength(joinsBefore + 1);
     expect(sockets[0]?.sent.some((entry) => entry.includes('"decline_move"'))).toBe(false);
     expect(String(joins.at(-1)?.init?.headers && new Headers(joins.at(-1)?.init?.headers).get('authorization'))).toContain(moved);
+  });
+
+  it('a carried phone follows the new match with its current score and sends no reset of its own', async () => {
+    (globalThis as { __PADEL_TEST_API__?: string }).__PADEL_TEST_API__ = API;
+    globalThis.fetch = fakeFetch as typeof fetch;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    snapshot = liveLog();
+    const view = await mount();
+    mounted.push(view);
+    await press('connect-open');
+    await press('scan-qr');
+    const input = document.querySelector<HTMLInputElement>('[data-testid="match-code-input"]');
+    if (!input) throw new Error('code field missing');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'k7m42qab');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await press('join-by-code');
+    await waitFor(() => scoreA().includes('4'));
+    // The host already scored 2–1 in the new match before this phone follows it.
+    const NEXT = '33333333-3333-4333-8333-333333333333';
+    snapshot = {
+      schemaVersion: 2,
+      base: createMatch(Date.now() - 60_000, NEXT),
+      events: [
+        { type: 'game/increment', team: 'a', at: Date.now() - 30_000, by: 'host' },
+        { type: 'game/increment', team: 'a', at: Date.now() - 20_000, by: 'host' },
+        { type: 'game/increment', team: 'b', at: Date.now() - 10_000, by: 'host' },
+      ],
+    };
+    const before = sockets.length;
+    await act(async () => {
+      sockets[0]?.onmessage?.({ data: JSON.stringify({ type: 'match_moved', token: 'bbbbbbbbbbbbbbbbbbbbbb', seat: 'p3' }) });
+    });
+    await waitFor(() => sockets.length > before && sockets.at(-1)?.sent.some((entry) => entry.includes('"hello"')) === true);
+    const local = () => replay(JSON.parse(localStorage.getItem('pcv2:log') ?? 'null'));
+    await waitFor(() => local().matchId === NEXT);
+    expect(local().sets[0]).toEqual({ a: 2, b: 1 });
+    const followed = sockets.at(-1);
+    expect(followed?.sent.map((entry) => (JSON.parse(entry) as { type?: string }).type)).toEqual(['hello']);
+    expect(fetchCalls.some((call) => call.url.endsWith('/matches') || call.url.endsWith('/carry'))).toBe(false);
   });
 
   it('follows a join offer the same way as a move', async () => {

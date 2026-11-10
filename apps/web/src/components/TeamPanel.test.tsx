@@ -70,7 +70,7 @@ describe('serve marker', () => {
 });
 
 describe('plus and minus controls', () => {
-  it('disables plus for both teams when the match is already won and keeps minus', () => {
+  it('disables plus on the won second set of a 2–0 match, keeps minus, and opens plus on set 3', () => {
     let state = createMatch(1_700_000_000_000, '00000000-0000-4000-8000-000000000001');
     for (let i = 0; i < 12; i += 1) {
       state = matchReducer(state, { type: 'game/increment', team: 'a', at: state.updatedAt + 1 });
@@ -92,12 +92,27 @@ describe('plus and minus controls', () => {
     expect(tag('decrement-a')).not.toContain('disabled');
     expect(tag('decrement-b')).toContain('disabled');
 
+    // Regression guard: 2.3.1 left both plus buttons disabled on the empty third set of a 2–0 win.
+    const onThird = { ...state, activeSet: 2 as const };
     const third = renderToStaticMarkup(
-      <TeamPanel team="b" state={{ ...state, activeSet: 2 }} onIncrement={noop} onDecrement={noop} onRename={noop} onSelectSet={noop} onServe={noop} />,
+      <>
+        <TeamPanel team="a" state={onThird} onIncrement={noop} onDecrement={noop} onRename={noop} onSelectSet={noop} onServe={noop} />
+        <TeamPanel team="b" state={onThird} onIncrement={noop} onDecrement={noop} onRename={noop} onSelectSet={noop} onServe={noop} />
+      </>,
     );
-    const thirdPlus = third.slice(third.indexOf('data-testid="increment-b"'), third.indexOf('>', third.indexOf('data-testid="increment-b"')));
-    expect(thirdPlus).toContain('disabled');
-    expect(thirdPlus).toContain('aria-disabled="true"');
+    const thirdTag = (id: string) => {
+      const at = third.indexOf(`data-testid="${id}"`);
+      return third.slice(at, third.indexOf('>', at));
+    };
+    expect(thirdTag('increment-a')).not.toContain('disabled');
+    expect(thirdTag('increment-b')).not.toContain('disabled');
+    expect(thirdTag('increment-b')).not.toContain('aria-disabled');
+
+    const ended = renderToStaticMarkup(
+      <TeamPanel team="b" state={{ ...onThird, ended: true }} onIncrement={noop} onDecrement={noop} onRename={noop} onSelectSet={noop} onServe={noop} />,
+    );
+    const endedPlus = ended.slice(ended.indexOf('data-testid="increment-b"'), ended.indexOf('>', ended.indexOf('data-testid="increment-b"')));
+    expect(endedPlus).toContain('disabled');
   });
 
   it('widens only the portrait buttons and keeps a bold high-contrast sign there', () => {

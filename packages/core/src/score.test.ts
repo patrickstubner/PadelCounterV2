@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isValidStoredName, parseLiveTeamName, sanitizeTeamName } from './names';
 import { connectionCloses } from './messages';
 import { createMatch, assignMatchId, matchReducer, replayScore } from './reducer';
-import { canScoreGame, matchWinner, setWinner } from './rules';
+import { canScoreGame, canTakeGame, matchResult, matchWinner, setWinner } from './rules';
 import { parseMatchLog, parseStoredEvent } from './parse';
 import type { MatchEvent } from './types';
 
@@ -36,6 +36,69 @@ describe('scoring without undo', () => {
     expect(matchWinner(state.sets)).toBe('a');
   });
 
+  it('keeps plus open on the third set after 2–0 and keeps the first team to two sets as winner', () => {
+    let state = createMatch(T0);
+    let at = T0;
+    for (let i = 0; i < 12; i += 1) state = matchReducer(state, { type: 'game/increment', team: 'a', at: ++at });
+    expect(state.sets[0]).toEqual({ a: 6, b: 0 });
+    expect(state.sets[1]).toEqual({ a: 6, b: 0 });
+    expect(state.activeSet).toBe(1);
+    expect(matchWinner(state.sets)).toBe('a');
+    expect(canScoreGame(state, 'a')).toBe(false);
+    expect(canScoreGame(state, 'b')).toBe(false);
+
+    state = matchReducer(state, { type: 'set/select', index: 2, at: ++at });
+    expect(canScoreGame(state, 'a')).toBe(true);
+    expect(canScoreGame(state, 'b')).toBe(true);
+    expect(canTakeGame(state, 'b')).toBe(false);
+    for (let i = 0; i < 6; i += 1) {
+      expect(canScoreGame(state, 'b')).toBe(true);
+      state = matchReducer(state, { type: 'game/increment', team: 'b', at: ++at });
+    }
+    expect(state.sets[2]).toEqual({ a: 0, b: 6 });
+    expect(state.activeSet).toBe(2);
+    expect(matchWinner(state.sets)).toBe('a');
+    expect(matchResult(state)).toEqual({ kind: 'winner', team: 'a' });
+    expect(canScoreGame(state, 'a')).toBe(false);
+    expect(canScoreGame(state, 'b')).toBe(false);
+
+    expect(canTakeGame(state, 'b')).toBe(true);
+    state = matchReducer(state, { type: 'game/decrement', team: 'b', at: at + 1 });
+    expect(state.sets[2]).toEqual({ a: 0, b: 5 });
+    expect(state.sets[1]).toEqual({ a: 6, b: 0 });
+    expect(canScoreGame(state, 'a')).toBe(true);
+    expect(matchWinner(state.sets)).toBe('a');
+  });
+
+  it('still plays a 1–1 third set as the decider', () => {
+    let state = createMatch(T0);
+    let at = T0;
+    for (let i = 0; i < 6; i += 1) state = matchReducer(state, { type: 'game/increment', team: 'a', at: ++at });
+    for (let i = 0; i < 6; i += 1) state = matchReducer(state, { type: 'game/increment', team: 'b', at: ++at });
+    expect(state.activeSet).toBe(2);
+    expect(matchWinner(state.sets)).toBeNull();
+    expect(canScoreGame(state, 'b')).toBe(true);
+    for (let i = 0; i < 5; i += 1) state = matchReducer(state, { type: 'game/increment', team: 'b', at: ++at });
+    state = matchReducer(state, { type: 'game/decrement', team: 'b', at: ++at });
+    expect(state.sets[2]).toEqual({ a: 0, b: 4 });
+    for (let i = 0; i < 2; i += 1) state = matchReducer(state, { type: 'game/increment', team: 'b', at: ++at });
+    expect(state.sets[2]).toEqual({ a: 0, b: 6 });
+    expect(matchWinner(state.sets)).toBe('b');
+    expect(canScoreGame(state, 'a')).toBe(false);
+  });
+
+  it('keeps plus closed after End match, also on an open third set of a 2–0 win', () => {
+    let state = createMatch(T0);
+    let at = T0;
+    for (let i = 0; i < 12; i += 1) state = matchReducer(state, { type: 'game/increment', team: 'a', at: ++at });
+    state = matchReducer(state, { type: 'set/select', index: 2, at: ++at });
+    state = matchReducer(state, { type: 'match/end', at: ++at });
+    expect(canScoreGame(state, 'b')).toBe(false);
+    expect(matchReducer(state, { type: 'game/increment', team: 'b', at: ++at })).toBe(state);
+    state = matchReducer(state, { type: 'match/resume', at: at + 1 });
+    expect(canScoreGame(state, 'b')).toBe(true);
+  });
+
   it('replays a stored plus on a finished set the same way, even when a new plus is closed', () => {
     const base = createMatch(T0);
     const onFinished: MatchEvent[] = [];
@@ -57,7 +120,8 @@ describe('scoring without undo', () => {
     const openThird = replayScore(base, decided);
     expect(matchWinner(openThird.sets)).toBe('a');
     expect(openThird.sets[2]).toEqual({ a: 0, b: 0 });
-    expect(canScoreGame(openThird, 'b')).toBe(false);
+    expect(canScoreGame(openThird, 'b')).toBe(true);
+    expect(canScoreGame(openThird, 'a')).toBe(true);
     decided.push({ type: 'game/increment', team: 'b', at: at + 1 });
     const withThird = replayScore(base, decided);
     expect(withThird.sets[1]).toEqual({ a: 6, b: 0 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ROOM_MESSAGES } from '@padel/core';
-import { JOIN_KEY, copyPlainCode, interpretMessage, isTerminalCode, isTerminalMessage, joinCodeLink, joinLink, matchCodeShareText, onlineRetryAllowed, parseJoinCodeHash, parseJoinHash, readJoinToken, reconnectDelayMs, sendMatchCode, shouldResumeSocket, socketUrl, tokenFromJoinQr, unackedAfterSnapshot } from './protocol';
+import { ROOM_MESSAGES, createMatch, type MatchEvent, type MatchLog } from '@padel/core';
+import { JOIN_KEY, copyPlainCode, eventsAfterShare, interpretMessage, isTerminalCode, isTerminalMessage, joinCodeLink, joinLink, matchCodeShareText, onlineRetryAllowed, parseJoinCodeHash, parseJoinHash, readJoinToken, reconnectDelayMs, sendMatchCode, shouldResumeSocket, socketUrl, tokenFromJoinQr, unackedAfterSnapshot } from './protocol';
 
 const ID = '00000000-0000-4000-8000-0000000000aa';
 const TOKEN = 'abcdefghijklmnopqrstuv';
@@ -440,5 +440,34 @@ describe('scanned join url', () => {
     expect(readJoinToken(location, history, null)).toEqual({ ok: true, token: TOKEN });
     expect(calls).toEqual([[{ padelArchive: 'court' }, '', '/PadelCounterV2/']]);
     expect(JSON.stringify(calls)).not.toContain(TOKEN);
+  });
+});
+
+describe('games scored while a new live match connects', () => {
+  const BASE = '00000000-0000-4000-8000-0000000000bb';
+  const log = (events: MatchEvent[]): MatchLog => ({ schemaVersion: 2, base: createMatch(1_700_000_000_000, BASE), events });
+  const posted: MatchEvent[] = [
+    { type: 'match/end', at: 1_700_000_000_010, by: 'host' },
+    { type: 'match/new', matchId: '00000000-0000-4000-8000-0000000000cc', at: 1_700_000_000_011, by: 'host' },
+  ];
+
+  it('returns only the events recorded after the posted log, in order', () => {
+    const later: MatchEvent[] = [
+      { type: 'game/increment', team: 'a', at: 1_700_000_000_020 },
+      { type: 'serve/set', team: 'b', player: 1, at: 1_700_000_000_021 },
+      { type: 'game/increment', team: 'b', at: 1_700_000_000_022 },
+    ];
+    expect(eventsAfterShare(log([...posted, ...later]), { baseId: BASE, count: posted.length })).toEqual(later);
+  });
+
+  it('returns nothing without a posted share, for another chain, a shorter log, or another new match', () => {
+    const plus: MatchEvent = { type: 'game/increment', team: 'a', at: 1_700_000_000_020 };
+    expect(eventsAfterShare(log([...posted, plus]), null)).toEqual([]);
+    expect(eventsAfterShare(log([...posted, plus]), { baseId: '00000000-0000-4000-8000-0000000000dd', count: 2 })).toEqual([]);
+    expect(eventsAfterShare(log(posted), { baseId: BASE, count: 2 })).toEqual([]);
+    expect(eventsAfterShare(log([posted[0]!]), { baseId: BASE, count: 2 })).toEqual([]);
+    expect(eventsAfterShare(log([...posted, plus]), { baseId: BASE, count: -1 })).toEqual([]);
+    const again: MatchEvent = { type: 'match/new', matchId: '00000000-0000-4000-8000-0000000000ee', at: 1_700_000_000_030 };
+    expect(eventsAfterShare(log([...posted, plus, again]), { baseId: BASE, count: 2 })).toEqual([]);
   });
 });

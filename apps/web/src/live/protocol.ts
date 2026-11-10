@@ -2,6 +2,7 @@ import {
   canonicalCausalId,
   canonicalEventId,
   connectionCloses,
+  isNewMatchEvent,
   liveTeamSide,
   parseLiveTeamName,
   HOST_TOKEN_TTL_MS,
@@ -109,6 +110,30 @@ export function unackedAfterSnapshot<T>(
     kept.push({ ...item, matchId });
   }
   return kept;
+}
+
+/** What this phone posted when it created a live match. */
+export interface PostedShare {
+  /** First match id of the chain the posted log starts from. */
+  readonly baseId: string;
+  /** Events in the posted log. */
+  readonly count: number;
+}
+
+/**
+ * Court events this phone recorded after it posted a new live match and before
+ * that room's first snapshot arrived. The host can score while the new room is
+ * still connecting, for example right after Finish & new. The snapshot is the
+ * posted log, so these games are not in it and are sent after it instead.
+ * A different chain, a shorter log, or another New match in between gives none.
+ */
+export function eventsAfterShare(local: MatchLog, posted: PostedShare | null): MatchEvent[] {
+  if (!posted) return [];
+  if (local.base.matchId !== posted.baseId) return [];
+  if (!Number.isInteger(posted.count) || posted.count < 0 || local.events.length <= posted.count) return [];
+  const later = local.events.slice(posted.count);
+  if (later.some((event) => isNewMatchEvent(event))) return [];
+  return later;
 }
 
 export const JOIN_KEY = 'pcv2:join';

@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
 import { saveArchive, type ArchivedMatch } from './domain/archive';
 import { appendEvent, createLog, replay } from './domain/log';
-import { STORAGE_KEY, serializeLog } from './domain/persistence';
+import { STORAGE_KEY, loadLog, serializeLog } from './domain/persistence';
+import { matchWinner } from './domain/rules';
 import type { TeamId } from './domain/types';
 
 const T0 = 1_700_000_000_000;
@@ -66,6 +67,19 @@ async function press(testId: string): Promise<void> {
   });
 }
 
+/** The saved court, so a flip animation in the digits cannot hide the real score. */
+function court() {
+  const log = loadLog(localStorage);
+  if (!log) throw new Error('missing court log');
+  return replay(log);
+}
+
+function plus(team: TeamId): HTMLButtonElement {
+  const node = document.querySelector(`[data-testid="increment-${team}"]`);
+  if (!(node instanceof HTMLButtonElement)) throw new Error(`missing plus ${team}`);
+  return node;
+}
+
 function scoreA(): string {
   return document.querySelector('[data-testid="current-a"]')?.textContent ?? '';
 }
@@ -112,6 +126,28 @@ describe('continue from history', () => {
     expect(document.body.textContent).toContain('a set is still open');
     await press('confirm-continue');
     expect(document.querySelector('[data-testid="active-set"]')?.textContent).toContain('Set 3');
+    // Regression guard: 2.3.1 left plus disabled here, so the reactivated 2–0 match could not record set 3.
+    expect(court().activeSet).toBe(2);
+    expect(plus('a').disabled).toBe(false);
+    expect(plus('b').disabled).toBe(false);
+    for (let i = 0; i < 6; i += 1) {
+      expect(plus('b').disabled).toBe(false);
+      await press('increment-b');
+    }
+    expect(court().sets).toEqual([{ a: 6, b: 0 }, { a: 6, b: 0 }, { a: 0, b: 6 }]);
+    expect(matchWinner(court().sets)).toBe('a');
+    expect(document.body.textContent).toContain('Win · Lobos');
+    expect(document.body.textContent).not.toContain('Win · Team B');
+    expect(plus('a').disabled).toBe(true);
+    expect(plus('b').disabled).toBe(true);
+    await press('decrement-b');
+    expect(court().sets[2]).toEqual({ a: 0, b: 5 });
+    expect(court().sets[1]).toEqual({ a: 6, b: 0 });
+    expect(plus('a').disabled).toBe(false);
+    await press('increment-a');
+    expect(court().sets[2]).toEqual({ a: 1, b: 5 });
+    expect(matchWinner(court().sets)).toBe('a');
+    expect(document.body.textContent).toContain('Win · Lobos');
     await unmount(twoNil.root, twoNil.container);
     mounted.pop();
 
@@ -122,6 +158,29 @@ describe('continue from history', () => {
     await press('history-open');
     await press('match-row');
     expect(document.querySelector('[data-testid="continue-match"]')).toBeNull();
+  });
+
+  it('opens plus on set 3 of a 2–0 win on the court and keeps the winner', async () => {
+    let log = createLog(T0, CURRENT, { a: 'Lobos', b: 'Team B' });
+    for (const team of [...six('a'), ...six('a')]) {
+      log = appendEvent(log, { type: 'game/increment', team, at: T0 + log.events.length + 1 });
+    }
+    localStorage.setItem(STORAGE_KEY, serializeLog(log));
+    const view = await mount();
+    mounted.push(view);
+    expect(court().activeSet).toBe(1);
+    expect(plus('a').disabled).toBe(true);
+    expect(plus('b').disabled).toBe(true);
+    await press('set-b-3');
+    expect(court().activeSet).toBe(2);
+    expect(plus('a').disabled).toBe(false);
+    expect(plus('b').disabled).toBe(false);
+    await press('increment-b');
+    await press('increment-b');
+    await press('decrement-b');
+    expect(court().sets[2]).toEqual({ a: 0, b: 1 });
+    expect(matchWinner(court().sets)).toBe('a');
+    expect(document.body.textContent).toContain('Win · Lobos');
   });
 
   it('does not show the celebration again after continue', async () => {
@@ -145,7 +204,7 @@ describe('continue from history', () => {
     await press('confirm-continue');
     expect(document.querySelector('[data-testid="victory"]')).toBeNull();
     await press('increment-b');
-    expect(document.querySelector('[data-testid="current-b"]')?.textContent).toBe('0');
+    expect(court().sets[2]).toEqual({ a: 0, b: 1 });
     expect(document.querySelector('[data-testid="victory"]')).toBeNull();
   });
 });

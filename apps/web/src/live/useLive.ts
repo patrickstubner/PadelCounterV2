@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { HOST_TOKEN_TTL_MS, isJoinToken, isPublicSeat, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, sameBoard, scoreBoard, type CausalEvent, type MatchEvent, type MatchLog, type PublicPhone, type ScoreClaim } from '@padel/core';
+import { HOST_TOKEN_TTL_MS, canScoreGame, isJoinToken, isPublicSeat, isRoomCode, isScoreEvent, isUuid, JOIN_TOKEN_TTL_MS, LIVE_PROTOCOL, MAX_PENDING_EVENTS, planMerge, replayScore, ROOM_MESSAGES, normalizeJoinCode, prepareLiveLog, sameBoard, scoreBoard, scoreClaimFor, type CausalEvent, type MatchEvent, type MatchLog, type PublicPhone, type ScoreClaim } from '@padel/core';
 import { localScoreAhead } from '../domain/archive';
 import { DEVICE_KEY, clearLegacyDeviceId, deviceId, legacyDeviceId, rememberedDeviceId } from '../domain/device';
 import { createMatchId } from '../domain/id';
@@ -7,6 +7,7 @@ import type { LiveSend } from '../hooks/useMatch';
 import {
   ACK_MS,
   canonicalEventId,
+  eventsAfterShare,
   forgetJoinToken,
   HIDE_RECONNECT_MS,
   interpretMessage,
@@ -22,6 +23,7 @@ import {
   socketUrl,
   unackedAfterSnapshot,
   type PendingLiveEvent,
+  type PostedShare,
 } from './protocol';
 
 export interface ShareOptions {
@@ -166,6 +168,8 @@ export function useLive(
   const keptRetry = useRef(new Set<string>());
   const headRef = useRef<string | null>(null);
   const logIdsRef = useRef<string[]>([]);
+  /** Set while a match this phone just created waits for its first snapshot. */
+  const postedRef = useRef<PostedShare | null>(null);
   const readLogRef = useRef(readLog);
   const pendingRef = useRef(pendingRestore);
   readLogRef.current = readLog;
@@ -441,6 +445,23 @@ export function useLive(
     };
   };
 
+  /**
+   * Games recorded on this phone between creating a live match and its first
+   * snapshot go to the room the same way as a new tap, in order, on top of the
+   * snapshot. The snapshot never sets them back to the posted score.
+   */
+  const sendScoredMeanwhile = (events: readonly MatchEvent[]) => {
+    for (const event of events) {
+      const send = liveRef.current;
+      if (!send) return;
+      const current = replayScore(readLogRef.current().base, readLogRef.current().events);
+      if (event.type === 'game/increment' && !canScoreGame(current, event.team)) continue;
+      const claim = isScoreEvent(event.type) ? scoreClaimFor(current, event) : null;
+      if (isScoreEvent(event.type) && !claim) continue;
+      send(event, claim);
+    }
+  };
+
   const flushQueued = (ws: WebSocket) => {
     if (!readyRef.current) return;
     const rest: PendingPoint[] = [];
@@ -531,6 +552,7 @@ export function useLive(
     }
     dropToken();
     clearPending();
+    postedRef.current = null;
     clearWake();
     showLocalCourt();
     generation.current += 1;
@@ -831,7 +853,10 @@ export function useLive(
         }
         if (notice.kind === 'log') {
           const local = readLogRef.current();
-          if (localScoreAhead(local, notice.log)) {
+          const posted = postedRef.current;
+          postedRef.current = null;
+          const scoredMeanwhile = notice.host ? eventsAfterShare(local, posted) : [];
+          if (scoredMeanwhile.length === 0 && localScoreAhead(local, notice.log)) {
             archiveLocal(local);
             setKeptNote(true);
           }
@@ -871,6 +896,7 @@ export function useLive(
             conflictNote.current = false;
             if (merged === 'ambiguous') noteError(ROOM_MESSAGES.score_kept);
           }
+          sendScoredMeanwhile(scoredMeanwhile);
         }
       };
       ws.onerror = () => {
@@ -1160,6 +1186,7 @@ export function useLive(
       const ws = socketRef.current;
       dropToken();
       clearPending();
+      postedRef.current = null;
       clearWake();
       showLocalCourt();
       liveRef.current = null;
@@ -1247,6 +1274,7 @@ export function useLive(
           return;
         }
         const liveLog = prepareLiveLog(log);
+        postedRef.current = { baseId: log.base.matchId, count: log.events.length };
         setStatus('connecting');
         setError(null);
         try {
@@ -1262,12 +1290,14 @@ export function useLive(
             }),
           });
           if (!response.ok) {
+            postedRef.current = null;
             setError(await errorText(response));
             setStatus('off');
             return;
           }
           const body = (await response.json()) as { matchId?: unknown; hostToken?: unknown };
           if (typeof body.matchId !== 'string' || typeof body.hostToken !== 'string') {
+            postedRef.current = null;
             setError(ROOM_MESSAGES.offline);
             setStatus('off');
             return;
@@ -1295,6 +1325,7 @@ export function useLive(
           }
           await publishQr(body.matchId, body.hostToken);
         } catch {
+          postedRef.current = null;
           setError(ROOM_MESSAGES.offline);
           setStatus('off');
         }
