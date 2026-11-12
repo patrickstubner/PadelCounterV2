@@ -13,7 +13,7 @@
     "@padel/core": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.4.9",
+    "@cloudflare/vitest-plugin": "1.6.0",
     "@cloudflare/workers-types": "5.20261107.1",
     "@types/node": "26.6.5",
     "typescript": "6.0.3",
