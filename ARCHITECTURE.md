@@ -27,20 +27,25 @@ adapters/cloudflare ─────┘     rules · reducer/replayScore · parse
 |---|---|---|---|
 | Lokales Log | 2 (v1 wird migriert) | `packages/core/src/types.ts` `SCHEMA_VERSION` | Neue Felder optional lesen, dann schreiben (ADR-001) |
 | Archiv | 1 | `apps/web/src/domain/archive.ts` | ungültige Einträge einzeln überspringen (ADR-001) |
-| Live-Protokoll | 2 | `packages/core/src/messages.ts` `LIVE_PROTOCOL` | Ältere Clients bekommen `upgrade_required` |
-| D1 | Migrationen 0001–0008 | `adapters/cloudflare/migrations` | nur additiv, vor dem Worker-Deploy |
+| Live-Protokoll | 2 | `packages/core/src/messages.ts` `LIVE_PROTOCOL` (auch in `version.json` und `/health`) | Ältere Clients bekommen `upgrade_required` |
+| D1 | Migrationen 0001–0008 | `adapters/cloudflare/migrations` | nur additiv, vor dem Worker-Deploy; `scripts/check-migrations.mjs` |
 
 ## Deploy
 - **PR/Push:** Die CI führt Lint, Typecheck, vitest, Playwright, Build/Dry-run und Audit aus.
-- **Push main:** Staging (D1-Migrationen + Worker), danach der Smoke-Test (geplant, ADR-002).
+- **Push main:** Staging (D1-Migrationen + Worker), danach der Smoke-Test `adapters/cloudflare/scripts/smoke.mjs` (ADR-002).
 - **workflow_dispatch:**
-  - Gate «gleicher SHA grün» (geplant).
+  - Release-Gate `scripts/check-release-gate.mjs`: CI und Staging-Smoke für denselben SHA grün.
   - Prod-Worker, danach GitHub Pages.
   - Danach der Smoke-Test.
 - **Rollback:**
   - Worker per `wrangler rollback`.
   - Pages per Re-Run des vorigen Commits.
   - Migrationen werden nie zurückgerollt.
+
+## Regressionsnetze
+- Speicher-Fixtures `packages/core/fixtures/compat/` → `apps/web/src/domain/compat.test.ts`
+- Score-Sequenzen `packages/core/fixtures/score/` → `scoreGolden.test.ts`, Properties `scoreProperties.test.ts`
+- Parser-Parität `apps/web/src/domain/parserParity.test.ts` (Abweichung team/rename dokumentiert, P-02)
 
 ## Entscheide
 ADR-001 (lokale Daten nie überschreiben), ADR-002 (Deploy-Gates), ADR-003 (Kompatibilitäts-Fixtures), ADR-004 (ein Parser im Kern). Alle vorgeschlagen am 15.11.2026.

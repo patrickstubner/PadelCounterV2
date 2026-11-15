@@ -23,9 +23,12 @@
   - `pnpm test` (inkl. Playwright)
   - `pnpm build`
   - `pnpm audit --audit-level=moderate`
+  - `node adapters/cloudflare/scripts/check-migrations.mjs`
+  - Smoke lokal: siehe docs/DEPLOY.md Schritt 12
+  - `actionlint` für Workflow-Änderungen
 - Pflicht-Checks:
   - core importiert nichts aus react, cloudflare:* oder node:* (ESLint).
-  - Kompatibilitäts-Fixtures in `packages/core/fixtures/compat/` werden **nie geändert**, nur ergänzt.
+  - Fixtures in `packages/core/fixtures/compat/` und `packages/core/fixtures/score/` werden **nie geändert**, nur ergänzt.
   - Ein Speicherformat- oder Protokollwechsel braucht einen ADR und neue Fixtures.
   - D1-Migrationen nur additiv (expand/contract).
 - Laufender Betrieb hat Vorrang: Gespeicherte Daten dürfen nie stillschweigend überschrieben werden (ADR-001).
