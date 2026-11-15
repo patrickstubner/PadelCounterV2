@@ -50,6 +50,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Migrate and deploy, or skip
+        id: staging
         working-directory: adapters/cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -70,6 +71,16 @@ jobs:
           printf '%s' "$QUOTA_HMAC_KEY" | pnpm exec wrangler secret put QUOTA_HMAC_KEY --env staging
           pnpm exec wrangler d1 migrations apply DB --env staging --remote
           pnpm exec wrangler deploy --env staging
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
+
+      # ADR-002: /health, Protokoll und WebSocket-Pfad des eben deployten Staging-Workers.
+      # Ohne vars.STAGING_API_URL wird der Schritt übersprungen; das Prod-Gate verlangt einen gelaufenen Smoke-Test.
+      - name: Smoke test
+        if: steps.staging.outputs.deployed == 'true' && vars.STAGING_API_URL != ''
+        env:
+          SMOKE_BASE_URL: ${{ vars.STAGING_API_URL }}
+          SMOKE_RETRIES: '3'
+        run: node adapters/cloudflare/scripts/smoke.mjs
 
   production:
     name: Production worker and pages
@@ -77,6 +88,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
+    # actions: read nur für das Release-Gate (Läufe und Jobs desselben SHA lesen).
+    permissions:
+      contents: read
+      actions: read
     outputs:
       ship: ${{ steps.gate.outputs.ship }}
     steps:
@@ -91,6 +106,14 @@ jobs:
             echo "HEAD does not match github.sha"
             exit 1
           fi
+
+      # ADR-002: Production nur, wenn CI und Staging (mit Smoke-Test) für genau diesen SHA grün sind.
+      - name: Release gate (same SHA green on CI and staging)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GATE_SHA: ${{ github.sha }}
+        run: node adapters/cloudflare/scripts/check-release-gate.mjs
 
       - name: Setup pnpm
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
@@ -130,6 +153,13 @@ jobs:
           pnpm exec wrangler d1 migrations apply DB --env production --remote
           pnpm exec wrangler deploy --env production
           echo "ship=true" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test production worker
+        if: steps.gate.outputs.ship == 'true'
+        env:
+          SMOKE_BASE_URL: ${{ vars.PUBLIC_API_URL }}
+          SMOKE_RETRIES: '3'
+        run: node adapters/cloudflare/scripts/smoke.mjs
 
   pages:
     name: GitHub Pages
@@ -187,3 +217,11 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+
+      - name: Smoke test pages
+        env:
+          SMOKE_BASE_URL: ${{ vars.PUBLIC_API_URL }}
+          SMOKE_PAGES_URL: ${{ steps.deployment.outputs.page_url }}
+          SMOKE_EXPECT_COMMIT: ${{ github.sha }}
+          SMOKE_RETRIES: '6'
+        run: node adapters/cloudflare/scripts/smoke.mjs

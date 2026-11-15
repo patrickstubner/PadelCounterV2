@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.3.9
+
+- Internal release, nothing changes on the court. New regression nets: frozen storage and score fixtures, property and parser parity tests, a D1 migration lint, `version.json` takes its protocol from `LIVE_PROTOCOL`, a smoke test after every deploy, and a release gate that lets production ship only a commit whose CI and staging smoke test are green.
+
 ## 2.3.8
 
 - After a 2–0 win, tap Set 3 and plus works again, so the third set can still be recorded. Minus takes a game back there as usual. The winner stays the team that won the first two sets, even when the other team wins the third set. This also works on a 2–0 match put back on the court with Continue from History. Plus still stops on a finished set and after End match. 2.3.1 had closed plus on that third set.

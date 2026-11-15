@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { LIVE_PROTOCOL } from '@padel/core';
 import { defineConfig, type RsbuildPlugin } from '@rsbuild/core';
 import { pluginReact } from '@rsbuild/plugin-react';
 import { generateSW } from 'workbox-build';
@@ -57,7 +58,7 @@ const workboxPlugin: RsbuildPlugin = {
         sourcemap: false,
         clientsClaim: true,
         skipWaiting: true,
-        cacheId: 'padel-counter-v2-2.3.8',
+        cacheId: 'padel-counter-v2-2.3.9',
         cleanupOutdatedCaches: true,
         disableDevLogs: true,
         navigateFallback: `${prefix}index.html`,
@@ -72,7 +73,7 @@ const workboxPlugin: RsbuildPlugin = {
       const commit = process.env.GITHUB_SHA ?? 'dev';
       writeFileSync(
         join(dist, 'version.json'),
-        `${JSON.stringify({ version: appVersion, commit, protocol: 2 })}\n`,
+        `${JSON.stringify({ version: appVersion, commit, protocol: LIVE_PROTOCOL })}\n`,
       );
     });
   },

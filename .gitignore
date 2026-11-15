@@ -14,3 +14,8 @@ blob-report/
 .env.*
 !.env.example
 !.dev.vars.example
+
+# Lokale Code-Indizes (Agents-Tools)
+.codegraph/
+graphify-out/
+.serena/

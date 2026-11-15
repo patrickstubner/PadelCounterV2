@@ -1,0 +1,32 @@
+{
+  "matchId": "3f0c2b1a-5d4e-4f60-9a7b-8c9d0e1f2a3b",
+  "activeSet": 1,
+  "sets": [
+    {
+      "a": 6,
+      "b": 4
+    },
+    {
+      "a": 6,
+      "b": 2
+    },
+    {
+      "a": 0,
+      "b": 0
+    }
+  ],
+  "teams": {
+    "a": {
+      "name": "Ana & Bea"
+    },
+    "b": {
+      "name": "Cem & Dani"
+    }
+  },
+  "serve": {
+    "team": "a",
+    "player": 2
+  },
+  "ended": true,
+  "events": 23
+}
