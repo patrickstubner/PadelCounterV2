@@ -1,4 +1,4 @@
-# STATUS.md – Stand 15.11.2026, Basis 85f24e4, Branch chore/regressionsnetze (lokal)
+# STATUS.md – Stand 15.11.2026, Basis 85f24e4, Branch chore/regressionsnetze, Version 2.3.9
 ## Aktuelles Ziel
 Regressionsschutz: Updates dürfen laufende Matches, gespeicherte Daten und verbundene Handys nicht brechen.
 ## Erledigt
