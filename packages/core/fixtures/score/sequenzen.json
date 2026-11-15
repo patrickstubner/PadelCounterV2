@@ -1,0 +1,308 @@
+{
+  "sieg-6-4-6-4": {
+    "seq": "a b a b a b a b a a  a b a b a b a b a a",
+    "expected": {
+      "sets": [
+        {
+          "a": 6,
+          "b": 4
+        },
+        {
+          "a": 6,
+          "b": 4
+        },
+        {
+          "a": 0,
+          "b": 0
+        }
+      ],
+      "activeSet": 1,
+      "serve": null,
+      "ended": false,
+      "matchId": "00000000-0000-4000-8000-0000000000b1",
+      "names": [
+        "Team A",
+        "Team B"
+      ],
+      "result": {
+        "kind": "winner",
+        "team": "a"
+      }
+    }
+  },
+  "tiebreak-7-6-6-0": {
+    "seq": "a b a b a b a b a b b a  a  a a a a a a",
+    "expected": {
+      "sets": [
+        {
+          "a": 7,
+          "b": 6
+        },
+        {
+          "a": 6,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        }
+      ],
+      "activeSet": 1,
+      "serve": null,
+      "ended": false,
+      "matchId": "00000000-0000-4000-8000-0000000000b1",
+      "names": [
+        "Team A",
+        "Team B"
+      ],
+      "result": {
+        "kind": "winner",
+        "team": "a"
+      }
+    }
+  },
+  "satzausgleich-dritter-satz-6-3": {
+    "seq": "a a a a a a  b b b b b b  a b a b a b a a a",
+    "expected": {
+      "sets": [
+        {
+          "a": 6,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 6
+        },
+        {
+          "a": 6,
+          "b": 3
+        }
+      ],
+      "activeSet": 2,
+      "serve": null,
+      "ended": false,
+      "matchId": "00000000-0000-4000-8000-0000000000b1",
+      "names": [
+        "Team A",
+        "Team B"
+      ],
+      "result": {
+        "kind": "winner",
+        "team": "a"
+      }
+    }
+  },
+  "minus-und-null-grenze": {
+    "seq": "-a a a -a b -b -b a",
+    "expected": {
+      "sets": [
+        {
+          "a": 2,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        }
+      ],
+      "activeSet": 0,
+      "serve": null,
+      "ended": false,
+      "matchId": "00000000-0000-4000-8000-0000000000b1",
+      "names": [
+        "Team A",
+        "Team B"
+      ],
+      "result": {
+        "kind": "playing"
+      }
+    }
+  },
+  "minus-schliesst-satz-wieder-auf": {
+    "seq": "a a a a a a -a",
+    "expected": {
+      "sets": [
+        {
+          "a": 5,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        }
+      ],
+      "activeSet": 0,
+      "serve": null,
+      "ended": false,
+      "matchId": "00000000-0000-4000-8000-0000000000b1",
+      "names": [
+        "Team A",
+        "Team B"
+      ],
+      "result": {
+        "kind": "playing"
+      }
+    }
+  },
+  "aufschlag-rotation": {
+    "seq": "sv:a1 a b a b a",
+    "expected": {
+      "sets": [
+        {
+          "a": 3,
+          "b": 2
+        },
+        {
+          "a": 0,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        }
+      ],
+      "activeSet": 0,
+      "serve": {
+        "team": "b",
+        "player": 1
+      },
+      "ended": false,
+      "matchId": "00000000-0000-4000-8000-0000000000b1",
+      "names": [
+        "Team A",
+        "Team B"
+      ],
+      "result": {
+        "kind": "playing"
+      }
+    }
+  },
+  "ende-weiter-zaehlen-gesperrt": {
+    "seq": "a a end a resume a",
+    "expected": {
+      "sets": [
+        {
+          "a": 3,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        }
+      ],
+      "activeSet": 0,
+      "serve": null,
+      "ended": false,
+      "matchId": "00000000-0000-4000-8000-0000000000b1",
+      "names": [
+        "Team A",
+        "Team B"
+      ],
+      "result": {
+        "kind": "playing"
+      }
+    }
+  },
+  "neues-match-setzt-zurueck": {
+    "seq": "a a b new:00000000-0000-4000-8000-0000000000b2 a",
+    "expected": {
+      "sets": [
+        {
+          "a": 1,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        }
+      ],
+      "activeSet": 0,
+      "serve": null,
+      "ended": false,
+      "matchId": "00000000-0000-4000-8000-0000000000b2",
+      "names": [
+        "Team A",
+        "Team B"
+      ],
+      "result": {
+        "kind": "playing"
+      }
+    }
+  },
+  "satzwahl-manuell": {
+    "seq": "s1 b b s0 a",
+    "expected": {
+      "sets": [
+        {
+          "a": 1,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 2
+        },
+        {
+          "a": 0,
+          "b": 0
+        }
+      ],
+      "activeSet": 0,
+      "serve": null,
+      "ended": false,
+      "matchId": "00000000-0000-4000-8000-0000000000b1",
+      "names": [
+        "Team A",
+        "Team B"
+      ],
+      "result": {
+        "kind": "playing"
+      }
+    }
+  },
+  "umbenennen": {
+    "seq": "rn:a:Neu a",
+    "expected": {
+      "sets": [
+        {
+          "a": 1,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        },
+        {
+          "a": 0,
+          "b": 0
+        }
+      ],
+      "activeSet": 0,
+      "serve": null,
+      "ended": false,
+      "matchId": "00000000-0000-4000-8000-0000000000b1",
+      "names": [
+        "Neu",
+        "Team B"
+      ],
+      "result": {
+        "kind": "playing"
+      }
+    }
+  }
+}
