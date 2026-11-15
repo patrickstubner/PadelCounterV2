@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 2,
+  "base": {
+    "schemaVersion": 2,
+    "matchId": "7a6b5c4d-3e2f-4a1b-8c0d-9e8f7a6b5c4d",
+    "revision": 0,
+    "createdAt": 1762086400000,
+    "updatedAt": 1762086400000,
+    "teams": {
+      "a": {
+        "name": "Team A"
+      },
+      "b": {
+        "name": "Team B"
+      }
+    },
+    "sets": [
+      {
+        "a": 0,
+        "b": 0
+      },
+      {
+        "a": 0,
+        "b": 0
+      },
+      {
+        "a": 0,
+        "b": 0
+      }
+    ],
+    "activeSet": 0,
+    "serve": null,
+    "serveAsk": null,
+    "servePrompt": false,
+    "ended": false
+  },
+  "events": [
+    {
+      "type": "game/increment",
+      "team": "a",
+      "at": 1762086430000
+    },
+    {
+      "type": "game/increment",
+      "team": "a",
+      "at": 1762086460000
+    },
+    {
+      "type": "game/increment",
+      "team": "a",
+      "at": 1762086490000
+    },
+    {
+      "type": "game/increment",
+      "team": "a",
+      "at": 1762086520000
+    },
+    {
+      "type": "game/increment",
+      "team": "a",
+      "at": 1762086550000
+    },
+    {
+      "type": "game/increment",
+      "team": "a",
+      "at": 1762086580000
+    },
+    {
+      "type": "game/increment",
+      "team": "b",
+      "at": 1762086640000
+    },
+    {
+      "type": "game/increment",
+      "team": "b",
+      "at": 1762086670000
+    },
+    {
+      "type": "game/increment",
+      "team": "b",
+      "at": 1762086700000
+    },
+    {
+      "type": "game/increment",
+      "team": "b",
+      "at": 1762086730000
+    },
+    {
+      "type": "game/increment",
+      "team": "b",
+      "at": 1762086760000
+    },
+    {
+      "type": "game/increment",
+      "team": "b",
+      "at": 1762086790000
+    },
+    {
+      "type": "game/increment",
+      "team": "a",
+      "at": 1762086850000
+    },
+    {
+      "type": "game/increment",
+      "team": "b",
+      "at": 1762086880000
+    },
+    {
+      "type": "game/increment",
+      "team": "a",
+      "at": 1762086910000
+    },
+    {
+      "type": "game/increment",
+      "team": "b",
+      "at": 1762086940000
+    }
+  ]
+}
