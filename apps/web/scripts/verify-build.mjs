@@ -120,4 +120,12 @@ for (const file of walk(dist)) {
   }
 }
 
+const messagesSource = readFileSync(join(root, '../../packages/core/src/messages.ts'), 'utf8');
+const protocolMatch = messagesSource.match(/export const LIVE_PROTOCOL = (\d+);/);
+if (!protocolMatch) fail('LIVE_PROTOCOL missing from packages/core/src/messages.ts');
+const versionInfo = JSON.parse(readFileSync(join(dist, 'version.json'), 'utf8'));
+if (versionInfo.protocol !== Number(protocolMatch[1])) {
+  fail(`version.json protocol ${versionInfo.protocol} differs from LIVE_PROTOCOL ${protocolMatch[1]}`);
+}
+
 console.log('verify-build: ok');
