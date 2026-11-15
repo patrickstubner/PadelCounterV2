@@ -173,7 +173,7 @@ ORIGIN="https://patrickstubner.github.io"
 curl -fsS "$BASE/health"
 ```
 
-Expect `200` and JSON with `"ok": true`, `"service": "padel-counter"`, and `"protocol": 1`.
+Expect `200` and JSON with `"ok": true`, `"service": "padel-counter"`, and `"protocol": 2`.
 
 `POST /matches` expects `201`. The body is a device id (`d` plus 8 hex digits) and a schema 2 log. The server replaces `matchId`. Names are NFC, trimmed, and 1–20 code points. `createdAt` and `updatedAt` are positive integers below `10000000000000`.
 
@@ -234,15 +234,43 @@ curl -sS -o /tmp/padel-ws-origin.json -w "%{http_code}\n" \
   "$BASE/ws/$TICKET"
 ```
 
-Open a WebSocket to `wss://padel-counter-staging.<workers.dev subdomain>.workers.dev/ws/$TICKET` with `Origin: https://patrickstubner.github.io`. Expect HTTP `101`. `curl` does not complete this handshake or read the frames; use a WebSocket client such as `websocat`. The first client message is `{"type":"hello","protocol":1,"token":"<invite token>","device":"d00000002000000000000000000000000"}`. The server then sends a text frame `{ "type": "snapshot", "protocol": 1, ... }` and a text frame `{ "type": "presence", "players": <number> }`. A second upgrade with the same ticket expects `401` and `bad_token`.
+Open a WebSocket to `wss://padel-counter-staging.<workers.dev subdomain>.workers.dev/ws/$TICKET` with `Origin: https://patrickstubner.github.io`. Expect HTTP `101`. `curl` does not complete this handshake or read the frames; use a WebSocket client such as `websocat`. The first client message is `{"type":"hello","protocol":2,"token":"<invite token>","device":"d00000002000000000000000000000000"}`. The server then sends a text frame `{ "type": "snapshot", "protocol": 2, ... }` and a text frame `{ "type": "presence", "players": <number> }`. A second upgrade with the same ticket expects `401` and `bad_token`.
 
 Then open the court, share a match, and join from a second browser only after production Pages has the `PUBLIC_API_URL` from step 9. A staging worker and the published court are different hosts until that variable is the production origin and Pages has been deployed.
+
+### Automated smoke test
+
+After every staging deploy the Deploy workflow runs `adapters/cloudflare/scripts/smoke.mjs` (ADR-002). It has no side effects: it creates no match and no ticket.
+
+- `GET /health` expects `200`, `"ok": true` and `protocol` equal to `LIVE_PROTOCOL` in `packages/core/src/messages.ts`.
+- `GET /ws/<random ticket>` with the Pages origin and no `Upgrade` header expects `426` and `upgrade_required`.
+- The same path with `Upgrade: websocket` expects `401` and `bad_token`. An unknown ticket must never reach a room.
+- After the Pages deploy it also reads `version.json` and expects the same `protocol` and the deployed commit.
+
+The full `hello` with `LIVE_PROTOCOL - 1` needs a real ticket. The worker tests cover it in CI (`live.worker.test.ts`).
+
+**Owner must do (once):** set the repository variable `STAGING_API_URL`, otherwise the smoke step is skipped and the production gate (step 13) stays closed:
+
+```sh
+gh variable set STAGING_API_URL --body "https://padel-counter-staging.<workers.dev subdomain>.workers.dev" --repo patrickstubner/PadelCounterV2
+```
+
+Run it locally against `wrangler dev`:
+
+```sh
+cd adapters/cloudflare
+pnpm exec wrangler d1 migrations apply DB --env dev --local
+pnpm exec wrangler dev --env dev --local --port 8799 &
+SMOKE_BASE_URL=http://127.0.0.1:8799 node scripts/smoke.mjs
+```
 
 ## 13. Production deploy
 
 **Owner must do (browser/account).**
 
 On `main`, run the Deploy workflow with “Run workflow”. Nothing in `production` asks for a reviewer. The job checks that the deployment branch policy is custom and contains only `main`, checks out that exact commit, migrates `padel-counter`, deploys the worker `padel-counter`, and, when `DEPLOY_PAGES` is `true`, publishes GitHub Pages for the same commit. Do not run it for a commit that has not passed CI. Do not mark a pull request ready just to deploy.
+
+Release gate (ADR-002): before it migrates or deploys, the production job runs `adapters/cloudflare/scripts/check-release-gate.mjs`. It reads the GitHub Actions API with the job token (`actions: read`) and stops unless, for exactly `github.sha`, the CI push run succeeded and a Deploy push run has the job `Staging worker` and its step `Smoke test` green. A skipped smoke test does not count. If the gate stops, wait for the staging run of that commit or fix it, then run the workflow again. There is no override on purpose. After the production worker the job runs the smoke test against `vars.PUBLIC_API_URL`, and after Pages it checks `version.json`.
 
 ## 14. Usage and billing notifications
 
@@ -275,3 +303,21 @@ Durable Objects on Workers Free, from [Durable Objects pricing](https://develope
 - Per object: one object is single-threaded with a soft limit of 1,000 requests per second, and the Limits page lists a 2 MB cap for a row, string or blob and 10 GB of storage per object. Its text about a full object mentions 1 GB on the Free plan, which the table does not show. The Free account total of 5 GB is the number to rely on. CPU per request is 30 seconds by default for a Durable Object, but the Workers Free plan still has 10 milliseconds per request (Limits page above).
 
 Paid only, if this account is later Workers Paid: [Usage-based billing](https://developers.cloudflare.com/billing/understand/usage-based-billing/) (last updated 29 May 2026) describes a Billable Usage notification for a Professional plan or higher, and says the email does not replace the invoice. [Platform Notifications](https://developers.cloudflare.com/notifications/notification-available/) (last updated 21 October 2026) lists Usage Based Billing for Professional plans or higher, with a note that those notifications are for Pay-as-you-go accounts. [Budget alerts](https://developers.cloudflare.com/billing/manage/budget-alerts/) (last updated 29 May 2026) are an account-wide dollar threshold under Billing, then Billable Usage, and they are Pay-as-you-go only. They do not pause usage. Leave all of these unset while the plan is Free.
+
+## 15. Rollback
+
+**Owner must do (account)**, with the Cloudflare token from step 2.
+
+1. Worker: list versions and go back to the last good one. Durable Object storage and D1 stay as they are.
+
+   ```sh
+   cd adapters/cloudflare
+   pnpm exec wrangler deployments list --env production
+   pnpm exec wrangler rollback <version-id> --env production --message "Rollback <grund>"
+   ```
+
+2. Pages: re-run the last good Deploy workflow run (its `pages` job) or revert the commit on `main` and deploy again. The service worker updates phones on their next visit.
+3. D1 migrations are never rolled back. They are additive (expand/contract, `scripts/check-migrations.mjs`), so the older worker still runs on the newer schema.
+4. Live protocol: if the bad release raised `LIVE_PROTOCOL`, phones that already updated get `upgrade_required` from the older worker until the fix is out. Roll forward instead when possible.
+5. Local data: the older app must not overwrite newer local data (ADR-001). Until PC-8 is done, a rollback after a schema bump can lose a phone's local log. Do not bump `SCHEMA_VERSION` without PC-8.
+6. Run the smoke test against production afterwards: `SMOKE_BASE_URL=<production worker> SMOKE_PAGES_URL=https://patrickstubner.github.io/PadelCounterV2/ node scripts/smoke.mjs`.
