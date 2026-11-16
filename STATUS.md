@@ -1,31 +1,39 @@
-# STATUS.md – Stand 15.11.2026, Basis 85f24e4, Branch chore/regressionsnetze, Version 2.3.9
+# STATUS.md – Stand 16.11.2026, Commit bc78fc3, Version 2.3.9
+
 ## Aktuelles Ziel
-Regressionsschutz: Updates dürfen laufende Matches, gespeicherte Daten und verbundene Handys nicht brechen.
+Regressionsschutz: Updates dürfen laufende Matches, gespeicherte Daten und verbundene Handys nicht brechen. Ab 27.11.2026 nur kleine Anpassungen (Reserve-Kontingent).
+
 ## Erledigt
-- 2.3.8 live: Dritter Satz nach 2:0 zählbar, Neues Match beim Verbinden (PR #47, 10.11.2026)
-- Architekturprüfung lokal ohne Cloud Agent (15.11.2026, /workspace/padelcounterv2-architektur)
-- PC-1 Doku, ADR-001..004 (vorgeschlagen) in docs/adr, Index-Ordner in .gitignore
-- PC-2 Speicher-Fixtures (Log v1/v2, Archiv v1) in packages/core/fixtures/compat, Soll ADR-001 als it.fails
-- PC-3 Score-Golden-Sequenzen, Property-Tests, Parser-Parität web/core
-- PC-4 version.json-Protokoll aus LIVE_PROTOCOL, verify-build prüft
-- PC-5 Migrations-Test auf leerer D1, Lint «kein DROP/RENAME ohne ADR»
-- PC-6 Smoke-Test nach Staging, Prod-Worker und Pages (lokal gegen wrangler dev grün)
-- PC-7 Release-Gate gleicher SHA, Rollback-Abschnitt in docs/DEPLOY.md
+- 2.3.9 auf `main` (PR #48, 15.11.2026): Regressionsnetze PC-1 bis PC-7, Smoke-Test nach Deploy, Release-Gate gleicher SHA. Staging-Deploy grün.
+- 2.3.8 live: dritter Satz nach 2:0 zählbar, kein Reset beim Mitnehmen der Handys (PR #47, 10.11.2026)
+- Architekturprüfung lokal ohne Cloud Agent (15.11.2026), ADR-001 bis ADR-004 (vorgeschlagen) in docs/adr
+- Repo-Variable `STAGING_API_URL` gesetzt (15.11.2026)
 - Sicherheitsprüfung Review 36 in SECURITY.md (höchstens Low)
+- AGENTS.md mit den Arbeitsregeln vom 15./16.11.2026 nachgeführt (dieser PR)
+
 ## In Arbeit
-- Branch `chore/regressionsnetze` lokal, nicht gepusht. Nächster Schritt: Patricks Ja zu Push und PR, vorher `vars.STAGING_API_URL` setzen
+- Nichts. Nächster Schritt nach Patricks Wahl (siehe unten).
+
+## Plan ab 27.11.2026
+- Majors (Dependabot) erst ab 27.11., je PR mit Sicherheitsprüfung und Stabschef-Prüfung.
+
+## Offene PRs (16.11.2026)
+- #40 pnpm/action-setup 4.2.0 → 6.1.1 (Dependabot, Major, CI grün) – wartet bis 27.11.
+- #5 actions/configure-pages 5 → 6, #4 actions/upload-pages-artifact 4 → 5, #3 actions/deploy-pages 4.0.5 → 5.0.1 (Dependabot, Majors) – warten bis 27.11.
+- dieser Docs-PR
+
 ## Offen / Entscheide nötig (wer?)
-- Repo-Variable `STAGING_API_URL` setzen, sonst bleibt das Prod-Gate zu – Patrick
-- PC-8 (ADR-001 umsetzen): macht die 3 it.fails-Tests grün – Patrick
-- ADR-001 bis ADR-004 annehmen? – wartet auf Patrick
-- Required Reviewer auf `production` wieder einschalten? – Patrick
-- Eigenes Secret für Einladungs-Siegel (S-02)? – Patrick
+- PC-8 (ADR-001 umsetzen): macht die `it.fails`-Tests grün – Patrick
+- ADR-001 bis ADR-004 annehmen? – Patrick
+- Required Reviewer auf dem Environment `production` wieder einschalten? Heute nur Branch-Regel. – Patrick
+- Eigenes Secret für das Einladungs-Siegel (S-02)? – Patrick
+
 ## Bekannte Probleme / Risiken
 - P-01: Ladefehler überschreibt lokale Daten (latent, relevant beim nächsten Schema-Bump oder Rollback)
-- P-02: Zwei Parser für dasselbe Log-Format
-- P-03: Prod-Gate und Smoke vorbereitet (PC-6/7), wirksam erst nach Merge und mit `vars.STAGING_API_URL`
-- deepmerge (low, nur Build) ohne Patch
+- P-02: zwei Parser für dasselbe Log-Format
+- `pnpm audit`: 1 niedriger Fund (deepmerge, nur Build) ohne Patch
+- Kein Ruleset auf `main` (keine Pflicht-Checks)
+
 ## Genutzte lokale Tools & vermiedene Cloud-Agent-Nutzung
-- codebase-memory-mcp: Aufrufer von matchReducer/replayScore/parsePersisted, geschätzt ~40k Token gespart
-- codegraph explore: Persistenzpfad inkl. Blast-Radius, dabei die Parser-Dopplung entdeckt
-- gitleaks, pnpm audit, vitest, Playwright lokal: geschätzt 1 Cloud-Agent-Lauf vermieden
+- 15.11.: codebase-memory-mcp (Aufrufer von matchReducer/replayScore/parsePersisted, geschätzt ~40k Token gespart), codegraph explore (Persistenzpfad, Parser-Dopplung entdeckt), gitleaks, pnpm audit, vitest, Playwright lokal (geschätzt 1 Cloud-Agent-Lauf vermieden)
+- 16.11. (dieser PR): gh (PRs, Variablen, Environments), `pnpm audit` lokal, rg. Kein Cloud Agent.
