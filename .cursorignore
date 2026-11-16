@@ -1,0 +1,47 @@
+# Basis-.cursorignore für Cursor Cloud Agents.
+# Terminal und MCP können ignorierte Dateien weiter lesen.
+# NICHT ignorieren: Quellcode (src/, packages/, apps/, adapters/),
+# Daten (data/, content/), Doku (AGENTS.md, ARCHITECTURE.md, STATUS.md, docs/),
+# Skripte (scripts/), package.json, Testdateien und Fixtures.
+
+# Abhängigkeiten und Lockfiles
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+bun.lock
+bun.lockb
+node_modules/
+
+# Build- und Test-Artefakte
+dist/
+dev-dist/
+.cache/
+.vite/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+.wrangler/
+.eslintcache
+
+# Audio, Modelle, grosse Binärdateien
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.flac
+*.onnx
+*.wasm
+
+# Lokale Index-Ordner, nie committen
+.codegraph/
+graphify-out/
+.serena/
+.codebase-memory/
+
+# Umgebung
+.env
+.env.*
+!.env.example
+.dev.vars
+*.local
