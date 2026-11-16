@@ -604,6 +604,16 @@ Scope: branch `chore/regressionsnetze` (PC-1 to PC-7): docs and ADR drafts, froz
 - P36-05, Info. `fast-check` 4.10.2 is now also a devDependency of `packages/core`. Same version as `apps/web`, no new package in the lockfile, test-only. `pnpm audit` still reports only GHSA-gcqx-w48m-w2h4 in `deepmerge` 4.3.1 (Low, build-time, see P34-04).
 - P36-06, Info. The fixtures contain invented team names and fixed UUIDs only, no personal data.
 
+
+## Review 37, 2026-11-16
+
+Scope: branch `chore/cloud-agent-setup`. Agent configuration only: `.cursor/environment.json`, `.cursor/install-dev-tools.sh`, `.cursorignore`, a new section in AGENTS.md, `.codebase-memory/` in `.gitignore` and `.cursorignore`, STATUS.md. No application version bump (2.3.9 stays). No change to the court, worker, Durable Object, storage keys, CSP, workflows, or dependencies.
+
+- P37-01, Info. The install script downloads ripgrep 14.1.1, ast-grep 0.51.2 and codebase-memory-mcp 0.12.1 from official GitHub Releases, verifies SHA-256, uses HTTPS only, and does not run `curl|bash` or `codebase-memory-mcp install`/`update`. Binaries go only to `~/.local/bin` (no `sudo`, no `/usr/local/bin`). PATH is updated in `~/.profile` and `~/.bashrc`. Node is not installed by the script; pnpm is activated via corepack at the pinned `packageManager` version (`pnpm@10.33.4`). `pnpm install --frozen-lockfile` uses `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`.
+- P37-02, Info. `.cursorignore` does not hide `packages/`, `apps/`, `adapters/`, fixtures, or AGENTS/ARCHITECTURE/STATUS. `.codebase-memory/` is ignored (optional in-repo CBM export).
+- P37-03, Info. No secrets, tokens, personal data, or local machine paths in the new files.
+- P37-04, Low, existing. `pnpm audit` still reports only GHSA-gcqx-w48m-w2h4 in `deepmerge` 4.3.1 (build-time, through `workbox-build`), as in P34-04. Not changed in this PR.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.
