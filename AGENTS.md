@@ -29,7 +29,7 @@ Pflicht-Checks und Regeln:
 - D1-Migrationen nur additiv (expand/contract).
 - Laufender Betrieb hat Vorrang: Gespeicherte Daten dürfen nie stillschweigend überschrieben werden (ADR-001).
 - Production-Deploy nur per `workflow_dispatch` nach grünem Staging (Release-Gate, gleicher SHA).
-- Altes Repo PadelCounter (v1) nicht anfassen.
+- PadelCounter V1 (altes Repo) nicht anfassen: gilt für Code und weitere Änderungen weiterhin. Die Doku-Ergänzung vom 16.11.2026 dort (AGENTS/ARCHITECTURE/STATUS) war eine einmalige, von Patrick angeordnete Ausnahme.
 - Sicherheit: SECURITY.md im Wurzelordner.
 
 ## Arbeitsregeln für Agents
