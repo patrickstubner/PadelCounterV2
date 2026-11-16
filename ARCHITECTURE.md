@@ -1,4 +1,4 @@
-# ARCHITECTURE.md – PadelCounterV2
+# ARCHITECTURE.md – PadelCounterV2 (Stand 16.11.2026, Commit bc78fc3, Version 2.3.9)
 
 ## Überblick
 ```
