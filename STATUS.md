@@ -1,48 +1,52 @@
-# STATUS.md – Stand 16.11.2026, Basis main 0b0d6e5 (2.3.9), Branch `chore/cloud-agent-setup`
+# STATUS.md – Stand 18.11.2026, Basis main aa0c48b (Version 2.3.9)
 
-## Nachtrag 16.11.2026: Cloud-Agent-Setup
-Branch `chore/cloud-agent-setup` (Draft-PR, nicht mergen bis Stabschef und Projektinhaber Ja sagen).
-- `.cursor/environment.json` und `.cursor/install-dev-tools.sh`: ripgrep 14.1.1, ast-grep 0.51.2, codebase-memory-mcp 0.12.1, Versionen und SHA-256 gepinnt. Bei `pnpm-lock.yaml`: `pnpm install --frozen-lockfile` über corepack mit `packageManager` `pnpm@10.33.4` (Node 22).
-- Binaries nur unter `~/.local/bin` (kein `sudo`); PATH setzt das Skript in `~/.profile` und `~/.bashrc`.
-- `.cursorignore` für Lockfiles, Build, Index-Ordner. `packages/`, `apps/`, `adapters/` und Fixtures bleiben im Kontext.
-- `.codebase-memory/` in `.gitignore` und `.cursorignore`.
-- Abschnitt «Cursor Cloud specific instructions» in AGENTS.md ergänzt.
+Production läuft auf Commit bc78fc3 (2.3.9, Deploy per `workflow_dispatch` am 15.11.2026). Seither ist nur Werkzeug, Doku und Abhängigkeiten geändert worden, kein Nutzer-Effekt. Production wurde am 18.11.2026 nicht deployt.
 
 ## Aktuelles Ziel
 Regressionsschutz: Updates dürfen laufende Matches, gespeicherte Daten und verbundene Handys nicht brechen. Ab 27.11.2026 nur kleine Anpassungen (Reserve-Kontingent).
 
 ## Erledigt
-- 2.3.9 auf `main` (PR #48, 15.11.2026): Regressionsnetze PC-1 bis PC-7, Smoke-Test nach Deploy, Release-Gate gleicher SHA. Staging-Deploy grün.
-- 2.3.8 live: dritter Satz nach 2:0 zählbar, kein Reset beim Mitnehmen der Handys (PR #47, 10.11.2026)
-- Architekturprüfung lokal ohne Cloud Agent (15.11.2026), ADR-001 bis ADR-004 (vorgeschlagen) in docs/adr
-- Repo-Variable `STAGING_API_URL` gesetzt (15.11.2026)
-- Sicherheitsprüfung Review 36 in SECURITY.md (höchstens Low)
-- AGENTS.md mit den Arbeitsregeln vom 15./16.11.2026 nachgeführt (PR #49 gemergt, live seit 16.11.2026)
+- 18.11.2026, gemergt in dieser Reihenfolge (jeweils Squash, Stabschef-Prüfung auf genau den Head-SHA):
+  - #53 `@cloudflare/workers-types` 5.20261107.1 → 5.20261114.1 → 504ca4e
+  - #56 befristete Audit-Ausnahme GHSA-fc5q-39xc-vjpf (picomatch, nur Entwicklung, kein Patch) → da6c6db. Gültig bis 27.11.2026, ab 28.11.2026 schlägt die CI fehl (siehe SECURITY.md).
+  - #55 `@rsbuild/core` 2.3.0 → 2.3.2 → 4e8805a
+  - #52 `@cloudflare/vitest-plugin` 1.6.0 → 1.8.2 → 9b976dc
+  - #54 `eslint` 10.14.0 → 10.15.0 → d8a2500
+  - #51 `wrangler` 4.153.0 → 4.162.0 → aa0c48b
+- Nach den Merges: Staging-Deploy und Smoke-Test grün (`/health` 200 mit `protocol=2`, WebSocket ohne Token 426/401). CI auf main grün inklusive Audit.
+- 16.11.2026: Cloud-Agent-Umgebung mit lokalen Index-Tools (PR #50, `.cursor/`, `.cursorignore`) und AGENTS.md/ARCHITECTURE.md/STATUS.md mit den Arbeitsregeln vom 15./16.11. (PR #49) gemergt.
+- 2.3.9 (PR #48, 15.11.2026): Regressionsnetze PC-1 bis PC-7, Smoke-Test nach Deploy, Release-Gate gleicher SHA. Live seit 15.11.2026.
+- Architekturprüfung lokal ohne Cloud Agent (15.11.2026), ADR-001 bis ADR-004 (vorgeschlagen) in `docs/adr`.
+- Repo-Variable `STAGING_API_URL` gesetzt (15.11.2026).
+- Sicherheitsprüfungen Review 36 und 37 in SECURITY.md (höchstens Low), Eintrag zur Audit-Ausnahme vom 18.11.2026.
 
 ## In Arbeit
-- dieser Draft-PR: Cloud-Agent-Setup (nicht mergen bis Stabschef und Projektinhaber Ja sagen).
+- Dieser Doku-PR (STATUS, AGENTS, ARCHITECTURE auf Stand aa0c48b, Branch `docs/status-2026-11-18`).
 
 ## Plan ab 27.11.2026
+- Audit-Fix am 27.11.2026: `ignoreGhsas` in `package.json` entfernen, sobald eine picomatch-Version mit Fix vorliegt. Eine Verlängerung der Ausnahme braucht eine neue ausdrückliche Freigabe des Projektinhabers.
+- Verbesserungen am Ablauf-Skript `.github/scripts/check-audit-exception.sh` (nicht blockierend, Hinweis von Stabschef):
+  - auch `pnpm-workspace.yaml` prüfen (pnpm 10 liest `auditConfig` dort ebenfalls, eine Ausnahme dort würde heute nicht erkannt)
+  - GHSA-IDs ohne Beachtung der Gross-/Kleinschreibung erkennen (`grep -i`)
 - Majors (Dependabot) erst ab 27.11., je PR mit Sicherheitsprüfung und Stabschef-Prüfung.
 
-## Offene PRs (16.11.2026)
-- #40 pnpm/action-setup 4.2.0 → 6.1.1 (Dependabot, Major, CI grün) – wartet bis 27.11.
-- #5 actions/configure-pages 5 → 6, #4 actions/upload-pages-artifact 4 → 5, #3 actions/deploy-pages 4.0.5 → 5.0.1 (Dependabot, Majors) – warten bis 27.11.
-- dieser Draft-PR: Cloud-Agent-Setup (`chore/cloud-agent-setup`)
+## Offene PRs (18.11.2026)
+- #40 `pnpm/action-setup` 4.2.0 → 6.1.1 (Dependabot, Major, GitHub Action) – wartet bis 27.11.
+- #5 `actions/configure-pages` 5 → 6, #4 `actions/upload-pages-artifact` 4 → 5, #3 `actions/deploy-pages` 4.0.5 → 5.0.1 (Dependabot, Majors, GitHub Actions) – warten bis 27.11.
 
 ## Offen / Entscheide nötig (wer?)
-- PC-8 (ADR-001 umsetzen): macht die `it.fails`-Tests grün – Patrick
-- ADR-001 bis ADR-004 annehmen? – Patrick
-- Required Reviewer auf dem Environment `production` wieder einschalten? Heute nur Branch-Regel. – Patrick
-- Eigenes Secret für das Einladungs-Siegel (S-02)? – Patrick
+- PC-8 (ADR-001 umsetzen): macht die `it.fails`-Tests grün (4 Stück in `apps/web/src/domain/compat.test.ts`) – Projektinhaber
+- ADR-001 bis ADR-004 annehmen? Alle stehen noch auf «vorgeschlagen». – Projektinhaber
+- Required Reviewer auf dem Environment `production` wieder einschalten? Heute nur Branch-Regel. – Projektinhaber
+- Eigenes Secret für das Einladungs-Siegel (S-02)? – Projektinhaber
 
 ## Bekannte Probleme / Risiken
 - P-01: Ladefehler überschreibt lokale Daten (latent, relevant beim nächsten Schema-Bump oder Rollback)
 - P-02: zwei Parser für dasselbe Log-Format
-- `pnpm audit`: 1 niedriger Fund (deepmerge, nur Build) ohne Patch
-- Kein Ruleset auf `main` (keine Pflicht-Checks)
+- `pnpm audit` (18.11.2026, lokal): kein offener Fund ausser der befristet ignorierten picomatch-Meldung GHSA-fc5q-39xc-vjpf (hoch, nur Entwicklungspfad `typescript-eslint` > `typescript-estree` > `tinyglobby` > `picomatch`, kein Patch). Der frühere Low-Fund in `deepmerge` taucht nicht mehr auf.
+- Kein aktives Ruleset auf `main` (Ruleset `ProtectedBranch` ist deaktiviert, keine Pflicht-Checks). Geprüft am 18.11.2026 mit `gh`.
 
 ## Genutzte lokale Tools & vermiedene Cloud-Agent-Nutzung
 - 15.11.: codebase-memory-mcp (Aufrufer von matchReducer/replayScore/parsePersisted, geschätzt ~40k Token gespart), codegraph explore (Persistenzpfad, Parser-Dopplung entdeckt), gitleaks, pnpm audit, vitest, Playwright lokal (geschätzt 1 Cloud-Agent-Lauf vermieden)
-- 16.11. (dieser PR): gh (PRs, Variablen, Environments), `pnpm audit` lokal, rg. Kein Cloud Agent.
-- 16.11. (Cloud-Agent-Setup): pnpm-fähiges Install-Skript, lokal lint/typecheck/Unit-Tests/Build, kein Cloud Agent.
+- 16.11.: gh (PRs, Variablen, Environments), `pnpm audit` lokal, rg. Cloud-Agent-Setup mit pnpm-fähigem Install-Skript, lokal lint/typecheck/Unit-Tests/Build. Kein Cloud Agent.
+- 18.11.: Dependabot-PRs und Audit-Ausnahme mit gh und `pnpm audit` lokal geprüft. Dieser Doku-PR: codebase-memory-mcp 0.12.1 und codegraph 1.6.2 für die Analyse in ARCHITECTURE.md (Basis aa0c48b), gitleaks, rg, git log. Kein Cloud Agent.
