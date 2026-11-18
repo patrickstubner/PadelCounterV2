@@ -1,4 +1,6 @@
 # AGENTS.md – PadelCounterV2
+Stand: Commit aa0c48b (18.11.2026)
+
 ## Projekt
 - Zweck: Padel-Zähler als Offline-PWA. Mehrere Handys können live dasselbe Match zählen (QR/Code).
 - Stack: pnpm-Monorepo. React 19/TS PWA (Rsbuild, Workbox), Cloudflare Worker + Durable Object + D1. Vitest, @cloudflare/vitest-plugin, Playwright.
@@ -29,8 +31,10 @@ Pflicht-Checks und Regeln:
 - D1-Migrationen nur additiv (expand/contract).
 - Laufender Betrieb hat Vorrang: Gespeicherte Daten dürfen nie stillschweigend überschrieben werden (ADR-001).
 - Production-Deploy nur per `workflow_dispatch` nach grünem Staging (Release-Gate, gleicher SHA).
-- PadelCounter V1 (altes Repo) nicht anfassen: gilt für Code und weitere Änderungen weiterhin. Die Doku-Ergänzung vom 16.11.2026 dort (AGENTS/ARCHITECTURE/STATUS) war eine einmalige, von Patrick angeordnete Ausnahme.
+- PadelCounter V1 (altes Repo) nicht anfassen: gilt für Code und weitere Änderungen weiterhin. Die Doku-Ergänzung vom 16.11.2026 dort (AGENTS/ARCHITECTURE/STATUS) war eine einmalige, vom Projektinhaber angeordnete Ausnahme.
 - Sicherheit: SECURITY.md im Wurzelordner.
+- Befristete Audit-Ausnahme (18.11.2026): `package.json` enthält unter `pnpm.auditConfig.ignoreGhsas` genau eine ID, GHSA-fc5q-39xc-vjpf (picomatch, nur Entwicklungspfad, kein Patch). Gültig bis einschliesslich 27.11.2026. `.github/scripts/check-audit-exception.sh` (CI-Schritt «Check audit exception expiry») schlägt fehl, wenn eine andere GHSA-ID eingetragen ist oder die Ausnahme ab 28.11.2026 noch drin steht. Keine weiteren Ausnahmen ohne ausdrückliches Ok des Projektinhabers und Prüfung durch Stabschef. Begründung und Plan: SECURITY.md.
+- Diese Datei, STATUS.md und ARCHITECTURE.md nach jedem Merge auf `main` mit dem neuen Commit nachführen.
 
 ## Arbeitsregeln für Agents
 
@@ -52,14 +56,14 @@ Pflicht-Checks und Regeln:
 
 ### Sicherheit (Dauerregel)
 - Nach jeder Code-Erstellung oder -Änderung eine detaillierte Sicherheitsprüfung: Eingabevalidierung, Injection, Geheimnisse und Zugangsdaten, Berechtigungen, Abhängigkeiten inklusive indirekter, CDN und GitHub Actions auf bekannte Schwachstellen, Fehlermeldungen mit sensiblen Daten, Angriffsflächen. Ergebnis mit Schweregrad und Fix-Vorschlag im PR.
-- Verwundbare Libraries auf die nächste sichere Version heben. Bei einem grossen oder brechenden Sprung (Major) vorher Patrick fragen.
+- Verwundbare Libraries auf die nächste sichere Version heben. Bei einem grossen oder brechenden Sprung (Major) vorher den Projektinhaber fragen.
 - Updates und offene Risiken in SECURITY.md nachführen.
 - Keine Geheimnisse und keine personenbezogenen Daten ins Repo (das Repo ist öffentlich).
 
 ### Prüfung und Merge
-- Jede Code-Änderung, jeder Merge und jedes Update (auch grüne Dependabot-PRs) wird von Stabschef unabhängig geprüft (Entscheid Patrick, 16.11.2026).
-- Vor jedem Merge oder Push auf `main` den Head-SHA an Stabschef geben und auf das Ok warten. Merge nur mit ausdrücklichem Ok von Patrick.
-- Keine bezahlten Dienste und kein On-Demand ohne Patricks Ja.
+- Jede Code-Änderung, jeder Merge und jedes Update (auch grüne Dependabot-PRs) wird von Stabschef unabhängig geprüft (Entscheid des Projektinhabers, 16.11.2026).
+- Vor jedem Merge oder Push auf `main` den Head-SHA an Stabschef geben und auf das Ok warten. Merge nur mit ausdrücklichem Ok des Projektinhabers.
+- Keine bezahlten Dienste und kein On-Demand ohne Ja des Projektinhabers.
 - Merge immer als Squash-Merge mit `--match-head-commit <SHA>`. Autor und Committer nur mit der GitHub-noreply-Adresse des Repo-Kontos.
 
 ## Cursor Cloud specific instructions
