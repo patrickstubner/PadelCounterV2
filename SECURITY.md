@@ -614,6 +614,19 @@ Scope: branch `chore/cloud-agent-setup`. Agent configuration only: `.cursor/envi
 - P37-03, Info. No secrets, tokens, personal data, or local machine paths in the new files.
 - P37-04, Low, existing. `pnpm audit` still reports only GHSA-gcqx-w48m-w2h4 in `deepmerge` 4.3.1 (build-time, through `workbox-build`), as in P34-04. Not changed in this PR.
 
+## Befristete Audit-Ausnahme picomatch (2026-11-18)
+
+Datum: 18.11.2026. Ablauf: 27.11.2026 (letzter Gültigkeitstag). Ab 28.11.2026 schlägt die CI fehl, solange die Ausnahme noch eingetragen ist.
+
+- Advisory: [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf), picomatch bis einschliesslich 4.0.7, ReDoS durch einbranchige, wiederholte Extglobs.
+- Schweregrad: hoch (high). Fehlerbehobene Version: keine verfügbar.
+- Betroffener Pfad (nur Entwicklung): `typescript-eslint` > `@typescript-eslint/typescript-estree` > `tinyglobby` > `picomatch`.
+- Begründung: Es gibt keinen Patch. Der Pfad betrifft nur Entwicklungswerkzeug (Lint). picomatch ist nicht im Produktions-Bundle und nicht im Worker. Eine Ausnutzung bräuchte ein bösartiges Glob-Muster in der Lint-Konfiguration, die im Repository liegt und im Review geprüft wird.
+- Umsetzung: `pnpm.auditConfig.ignoreGhsas` in `package.json` enthält ausschliesslich diese eine ID. `pnpm audit --audit-level=moderate` bleibt unverändert. Weder das Lockfile noch Abhängigkeiten wurden geändert.
+- Absicherung in der CI: `.github/scripts/check-audit-exception.sh` (Schritt «Check audit exception expiry») schlägt fehl, wenn eine andere GHSA-ID als die obige in `package.json` steht oder wenn die Ausnahme nach dem 27.11.2026 (Europe/Zurich) noch eingetragen ist.
+- Verantwortliche Prüfung: Stabschef (Review des PR und Kontrolle am Ablauftag). Freigabe der befristeten Ausnahme durch den Projektinhaber am 18.11.2026.
+- Plan: `ignoreGhsas` entfernen, sobald eine picomatch-Version mit Fix vorliegt, spätestens beim Audit-Fix am 27.11.2026. Eine Verlängerung braucht eine neue ausdrückliche Freigabe des Projektinhabers.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.
