@@ -627,6 +627,14 @@ Datum: 18.11.2026. Ablauf: 27.11.2026 (letzter Gültigkeitstag). Ab 28.11.2026 s
 - Verantwortliche Prüfung: Stabschef (Review des PR und Kontrolle am Ablauftag). Freigabe der befristeten Ausnahme durch den Projektinhaber am 18.11.2026.
 - Plan: `ignoreGhsas` entfernen, sobald eine picomatch-Version mit Fix vorliegt, spätestens beim Audit-Fix am 27.11.2026. Eine Verlängerung braucht eine neue ausdrückliche Freigabe des Projektinhabers.
 
+## Review 38, 2026-11-20
+
+Scope: branch `chore/mcp-allowlist`, based on main 95ce243. Agent configuration only: `.cursor/environment.json` (new `mcpServerAllowlist`), a new subsection in AGENTS.md, STATUS.md. No application code, no new dependencies.
+
+- P38-01, Info. The allowlist has one entry, the hosted Graphify MCP (`https://api.graphify.com/mcp`). All other user and team MCP servers are blocked for agents in this environment, so fewer tool descriptions per request and a smaller surface for foreign MCP tools. Cursor's built-in MCP servers are not restricted. The JSON passes https://cursor.com/schemas/environment.schema.json (a negative control with an unknown field is rejected).
+- P38-02, Info. The file only applies when the environment's "environment.json location" on cursor.com points at this repo; otherwise the dashboard setting decides. If the URL pattern does not match, Graphify is blocked and the agent falls back to `codebase-memory-mcp` (see AGENTS.md). Not tested in the cloud (no Cloud Agent was started).
+- P38-03, Info. No secrets, tokens, personal data, or local machine paths in the new lines. No critical, high, or medium findings.
+
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.
