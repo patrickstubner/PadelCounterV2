@@ -1,5 +1,11 @@
 # STATUS.md – Stand 18.11.2026, Basis main aa0c48b (Version 2.3.9)
 
+## Nachtrag 20.11.2026: MCP-Allowlist für Cloud-Agent-Umgebung
+Branch `chore/mcp-allowlist` (Draft-PR, Basis main 95ce243, nicht mergen bis Stabschef-Ok und Ja des Projektinhabers). Kein Versionsbump.
+- `.cursor/environment.json`: neu `mcpServerAllowlist` mit genau einem Eintrag, dem gehosteten Graphify-MCP (`https://api.graphify.com/mcp`). Alle anderen User- und Team-MCP-Server sind für Agents dieser Umgebung gesperrt, Cursor-eigene MCP-Server nicht. Feldnamen laut https://cursor.com/schemas/environment.schema.json; die Datei wurde gegen das Schema geprüft.
+- AGENTS.md (Cloud-Abschnitt): Regel «MCP-Liste schlank halten; Serena nur nach positivem lokalem Test, dann ersetzt es codebase-memory-mcp».
+- Die Datei wirkt nur, wenn «environment.json location» der Umgebung auf cursor.com auf dieses Repo zeigt. Sonst gleichen Eintrag im Dashboard von Hand setzen (Abschnitt «MCP servers» der Umgebung). Ungetestet: kein Cloud Agent gestartet (Kontingent bis 27.11.2026 erschöpft).
+
 Production läuft auf Commit bc78fc3 (2.3.9, Deploy per `workflow_dispatch` am 15.11.2026). Seither ist nur Werkzeug, Doku und Abhängigkeiten geändert worden, kein Nutzer-Effekt. Production wurde am 18.11.2026 nicht deployt.
 
 ## Aktuelles Ziel

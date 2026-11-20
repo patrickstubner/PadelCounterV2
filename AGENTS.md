@@ -99,3 +99,10 @@ Abhängigkeiten: das Skript erkennt `package-lock.json` (`npm ci --ignore-script
 Wenn unter cursor.com/agents ein HTTP-MCP namens `graphify` auf `https://api.graphify.com/mcp` eingerichtet und per OAuth angemeldet ist, den Graphen für Aufrufer, Impact und Tests nutzen (`list_repositories`, `graphify_find`, `graphify_callers`, `graphify_impact`). Der gehostete Graph zeigt den indexierten GitHub-Stand, keine uncommitteten lokalen Änderungen. Fehlt die Verbindung oder weicht der Stand ab: `codebase-memory-mcp` in dieser VM verwenden.
 
 Nicht `codebase-memory-mcp install` oder `update` ausführen (ändert Agent-Konfigurationen oder lädt Binaries). Index-Ordner `.codegraph/`, `graphify-out/`, `.serena/` und `.codebase-memory/` nicht committen (stehen in `.gitignore` und `.cursorignore`).
+
+### MCP-Liste schlank halten (seit 20.11.2026)
+Jeder geladene MCP-Server schickt seine Tool-Beschreibungen bei jeder Anfrage mit und kostet Tokens. Darum lässt `.cursor/environment.json` nur den gehosteten Graphify-MCP zu (`mcpServerAllowlist`, Schema: https://cursor.com/schemas/environment.schema.json). Alle anderen User- und Team-MCP-Server sind für Agents dieser Umgebung gesperrt. Cursor-eigene MCP-Server (z. B. Cursor Cloud MCP) bleiben unberührt.
+- `codebase-memory-mcp`, `rg` und `ast-grep` laufen als CLI aus dem Install-Skript und brauchen keinen MCP-Eintrag.
+- Einen weiteren MCP-Server nur nach einem Nutzen-Test und nur mit Ok des Projektinhabers in die Allowlist aufnehmen.
+- Serena nur nach positivem lokalem Test (Tokenmessung bei Travel Talk, ab 27.11.2026). Dann ersetzt es `codebase-memory-mcp`, es kommt nicht zusätzlich dazu.
+- Die Datei wirkt nur, wenn bei der Umgebung auf cursor.com «environment.json location» auf dieses Repo zeigt (https://cursor.com/docs/cloud-agent/setup.md#environment-resolution-order). Sonst denselben Eintrag im Abschnitt «MCP servers» der Umgebung von Hand setzen.

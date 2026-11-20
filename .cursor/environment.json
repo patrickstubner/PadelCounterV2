@@ -1,3 +1,9 @@
 {
-  "install": "bash .cursor/install-dev-tools.sh"
+  "install": "bash .cursor/install-dev-tools.sh",
+  "mcpServerAllowlist": [
+    {
+      "name": "graphify",
+      "serverUrl": "https://api.graphify.com/mcp"
+    }
+  ]
 }
