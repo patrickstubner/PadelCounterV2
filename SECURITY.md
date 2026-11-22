@@ -638,3 +638,7 @@ Scope: branch `chore/mcp-allowlist`, based on main 95ce243. Agent configuration 
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.
+
+## 2026-11-22: pnpm check
+
+Doc-only change on main 599e9dd. `pnpm audit` reports 0 known vulnerabilities (the GHSA-fc5q-39xc-vjpf exception stays until 2026-11-27). Install scripts run only for `pnpm.onlyBuiltDependencies` (esbuild, workerd). No dependency, workflow or code change. pnpm 11 and 12 exist (major), not adopted. The CI still uses pnpm/action-setup v4.2.0; a bump to v6.1.1 (73e46992e05b19abd31f2f3c20e0e7370d762115) is possible but not part of this change.

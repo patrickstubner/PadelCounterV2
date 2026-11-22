@@ -13,6 +13,7 @@ Stand: Commit aa0c48b (18.11.2026); Abschnitt «Zusammenarbeit mehrerer Agents»
 - Stand und Plan: STATUS.md
 
 ## Befehle (aus package.json und .github/workflows/ci.yml)
+- **Paketmanager: nur pnpm** (Version in `packageManager`, über `corepack enable`). Kein `npm`, kein `yarn`, kein `package-lock.json`. Fehlt ein Paket, wird es sauber in der `package.json` des betroffenen Pakets eingetragen, kein `shamefully-hoist`. Install-Skripte laufen nur für die Allowlist `pnpm.onlyBuiltDependencies` (esbuild, workerd); jede Erweiterung braucht ein Ja des Projektinhabers (Sicherheitshaltung CA-3).
 - `pnpm install --frozen-lockfile`
 - `pnpm lint`
 - `pnpm typecheck`
@@ -80,7 +81,7 @@ Nach jeder Code-Erstellung oder -Änderung, **bevor weitergebaut wird**, kurz pr
 - Eingabevalidierung und Injection (XSS, SQL/Command, Pfade, Prototype Pollution, Deserialisierung)
 - Geheimnisse und Zugangsdaten (Code, Konfiguration, Git-Historie, Logs)
 - Berechtigungen und Zugriffskontrolle
-- Abhängigkeiten und Versionen (direkt und indirekt, CDN, GitHub Actions): `npm audit` bzw. `pnpm audit`, verwundbare Libraries auf die nächste sichere Version heben; bei Major-Sprung vorher den Projektinhaber fragen
+- Abhängigkeiten und Versionen (direkt und indirekt, CDN, GitHub Actions): `pnpm audit`, verwundbare Libraries auf die nächste sichere Version heben; bei Major-Sprung vorher den Projektinhaber fragen
 - Fehlermeldungen und Logs mit sensiblen Daten
 - Neue Angriffsflächen (Endpunkte, Schnittstellen, Dateizugriff, Weiterleitungen, CSP/Header)
 
@@ -102,7 +103,7 @@ Schwachstellen mit **Schweregrad** (kritisch / hoch / mittel / niedrig) und Fix-
 - Antigravity: Konfiguration global in `~/.gemini/config/mcp_config.json` oder pro Workspace in `.agents/mcp_config.json` (nicht committen). Anleitung: https://antigravity.google/docs/mcp
 
 ### Lokaler Start
-Installation, Start und Tests stehen in `README.md` und im Abschnitt «Befehle» oben. Vor dem ersten Commit `npm test` bzw. die dort genannten Prüfungen ausführen.
+Installation, Start und Tests stehen in `README.md` und im Abschnitt «Befehle» oben. Vor dem ersten Commit `pnpm test` bzw. die dort genannten Prüfungen ausführen.
 
 ## Cursor Cloud specific instructions
 
@@ -122,7 +123,7 @@ Die Binaries liegen nur unter `~/.local/bin` (kein Kopieren nach `/usr/local/bin
 
 Weitere Tools können später im selben Skript ergänzt werden (Version und SHA-256 pinnen, kein `curl|bash`).
 
-Abhängigkeiten: das Skript erkennt `package-lock.json` (`npm ci --ignore-scripts`) oder `pnpm-lock.yaml` (`pnpm install --frozen-lockfile`, pnpm über corepack mit der in `packageManager` gepinnten Version). Node muss die `engines` in `package.json` erfüllen (typisch >= 22); das Skript installiert Node nicht.
+Abhängigkeiten: das Skript erkennt `pnpm-lock.yaml` (`pnpm install --frozen-lockfile`, pnpm über corepack mit der in `packageManager` gepinnten Version) oder `package-lock.json` (`npm ci --ignore-scripts`, nur für andere Repos). In diesem Repo gilt pnpm. Node muss die `engines` in `package.json` erfüllen (typisch >= 22); das Skript installiert Node nicht.
 
 ### Reihenfolge bei Struktur-Fragen
 1. STATUS.md und ARCHITECTURE.md.
