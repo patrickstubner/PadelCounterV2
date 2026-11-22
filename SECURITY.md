@@ -638,3 +638,9 @@ Scope: branch `chore/mcp-allowlist`, based on main 95ce243. Agent configuration 
 ## Out of scope
 
 OAuth client secrets, passkeys, admin user ids, and a production delete API were not added. No secret for those features should be committed when they are built. Put provider secrets in Wrangler and in GitHub environment secrets, not in `PUBLIC_*` build variables.
+
+## 2026-11-22: pnpm check
+
+Doc-only change on main 599e9dd. `pnpm audit` reports 0 known vulnerabilities (the GHSA-fc5q-39xc-vjpf exception stays until 2026-11-27). Install scripts run only for `pnpm.onlyBuiltDependencies` (esbuild, workerd). No dependency, workflow or code change. pnpm 11 and 12 exist (major), not adopted. The CI still uses pnpm/action-setup v4.2.0; a bump to v6.1.1 (73e46992e05b19abd31f2f3c20e0e7370d762115) is possible but not part of this change.
+
+Minimum release age (2026-11-22): `pnpm-workspace.yaml` sets `minimumReleaseAge: 5760` (4 days) as a guard against compromised releases. Checked: pnpm 10.33.4 refuses a version published the same day at resolve time. All 650 packages in `pnpm-lock.yaml` are older than 4 days (youngest: `@cloudflare/workers-types` 5.20261114.1, 8.6 days), no exception was needed. Future exceptions only for a vulnerability that cannot be fixed otherwise: add the package to `minimumReleaseAgeExclude` with a comment (CVE/GHSA, date) and remove it after 4 days. Dependabot has a 4-day `cooldown` (security updates are not affected).

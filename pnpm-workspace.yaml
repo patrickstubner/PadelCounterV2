@@ -1,3 +1,12 @@
+# Mindestalter neuer Paketversionen: 4 Tage = 5760 Minuten (Schutz vor kompromittierten Releases).
+# Nie senken oder entfernen. Ausnahme nur für eine Sicherheitslücke, die sich anders nicht beheben lässt:
+# das Paket gezielt unter minimumReleaseAgeExclude eintragen, mit Kommentar (CVE/GHSA, Datum),
+# im PR melden und nach 4 Tagen wieder entfernen. Beispiel:
+#   minimumReleaseAgeExclude:
+#     # GHSA-xxxx-xxxx-xxxx, 22.11.2026, nach 4 Tagen entfernen
+#     - paketname@1.2.3
+minimumReleaseAge: 5760
+
 packages:
   - apps/*
   - packages/*

@@ -54,7 +54,8 @@ There is no custom domain. The court and the earlier app share `https://patricks
 Requires Node 22 and pnpm 10.33.4 (`packageManager` in the root `package.json`).
 
 ```sh
-pnpm install
+corepack enable
+pnpm install --frozen-lockfile
 pnpm lint
 pnpm typecheck
 pnpm test
