@@ -20,3 +20,7 @@ blob-report/
 graphify-out/
 .serena/
 .codebase-memory/
+
+# Lokale Agent-Konfiguration mit möglichen Schlüsseln (Antigravity), nie committen
+.agents/mcp_config.json
+.agent/mcp_config.json

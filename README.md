@@ -90,3 +90,7 @@ Details are in `SECURITY.md`. The short version:
 - The Durable Object admits at most 4 player sockets, including the creator. Disconnecting frees a place.
 - `POST /auth/*` returns 501. Deleting a match in the app removes it from this device only. A later shared delete is limited to the creator and one admin. Other players will only be able to hide a match. That is not enforced here because the server has no delete route.
 - There is no undo control and no undo event. Minus removes one game, and the log keeps the earlier events.
+
+### Working with agents (Cursor, Google Antigravity)
+
+Read `AGENTS.md`, `ARCHITECTURE.md` and `STATUS.md` first; Antigravity loads `AGENTS.md` automatically. One branch per task and agent, changes only by pull request, a security check after every change, and `STATUS.md` updated with the commit at the end of each task. No secrets in the repo (`.dev.vars` and `.agents/mcp_config.json` stay local) and no paid services without the owner's yes.
