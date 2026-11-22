@@ -72,7 +72,7 @@ Gilt für alle Agents und Menschen, die an diesem Repo arbeiten. Google Antigrav
 
 ### Branches und PRs
 - **Ein Branch pro Aufgabe und Agent.** Zwei Agents arbeiten nie auf demselben Branch. Branch-Name nach Muster `<typ>/<kurzer-name>` (z. B. `feat/…`, `fix/…`, `docs/…`), Basis immer aktuelles `main`.
-- **Änderungen nur per Pull Request.** Kein direkter Push auf `main`, kein Force-Push auf fremde Branches. Merge nur mit ausdrücklichem Ok des Projektinhabers. Die unabhängige Prüfung durch den Bot Stabschef läuft über den Projektinhaber; Agents ohne Zugang (z. B. Antigravity) nennen nur den Head-SHA im PR (Details: «Prüfung und Merge»).
+- **Änderungen nur per Pull Request.** Kein direkter Push auf `main`, kein Force-Push auf fremde Branches. Vor dem Merge geht der Head-SHA an Stabschef; auf dessen Ok warten. Gemergt wird erst nach dem ausdrücklichen Ja des Projektinhabers. Agents ohne direkten Zugang zu Stabschef (z. B. Antigravity) nennen den Head-SHA im PR und mergen nicht (Details: «Prüfung und Merge»).
 - Im PR den Head-SHA nennen. Kleine PRs mit einem Thema; fremde Branches und PRs nicht anfassen.
 
 ### Sicherheitsprüfung nach jeder Codeänderung
