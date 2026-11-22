@@ -72,7 +72,7 @@ To point a local court at a local worker, start the worker and run the court wit
 
 Nothing here requires a paid Cloudflare plan or a credit card. Follow `docs/DEPLOY.md` in order. Until the Cloudflare secrets exist, the deploy workflow skips the worker and exits successfully. Pages does not run until the repository variable `DEPLOY_PAGES` is `true`.
 
-A WAF rate-limiting rule cannot be attached to `*.workers.dev`, because those rules belong to a zone and this project has no custom domain. Do not block a deploy on that rule. The Workers binding and the D1 join counters are what run on this host. Create, invite, carry, `/join`, and `/ws/*` also share an isolate limit of 20 requests per minute per address. If a zone is added later, the Free plan allows one rule with the three paths OR-ed together and a period of 10 seconds. The reason, with the Cloudflare doc links, is in `SECURITY.md`. Patrick accepted the remaining cost and availability risk of having no zone on 27 October 2026.
+A WAF rate-limiting rule cannot be attached to `*.workers.dev`, because those rules belong to a zone and this project has no custom domain. Do not block a deploy on that rule. The Workers binding and the D1 join counters are what run on this host. Create, invite, carry, `/join`, and `/ws/*` also share an isolate limit of 20 requests per minute per address. If a zone is added later, the Free plan allows one rule with the three paths OR-ed together and a period of 10 seconds. The reason, with the Cloudflare doc links, is in `SECURITY.md`. The project owner accepted the remaining cost and availability risk of having no zone on 27 October 2026.
 
 Staging deploys the worker on every push to `main` when the Cloudflare secret and account id are present. Production deploys only from Actions, “Deploy”, “Run workflow”, on `main`. The `production` environment has no required reviewer. Its deployment branch policy is custom and contains only `main`. Both skip cleanly when the secrets are absent. Pages runs in that same production run, after the worker, and only for that commit, when `DEPLOY_PAGES` is `true`.
 
@@ -90,3 +90,7 @@ Details are in `SECURITY.md`. The short version:
 - The Durable Object admits at most 4 player sockets, including the creator. Disconnecting frees a place.
 - `POST /auth/*` returns 501. Deleting a match in the app removes it from this device only. A later shared delete is limited to the creator and one admin. Other players will only be able to hide a match. That is not enforced here because the server has no delete route.
 - There is no undo control and no undo event. Minus removes one game, and the log keeps the earlier events.
+
+### Working with agents (Cursor, Google Antigravity)
+
+Read `AGENTS.md`, `ARCHITECTURE.md` and `STATUS.md` first; Antigravity loads `AGENTS.md` automatically. One branch per task and agent, changes only by pull request, a security check after every change, and `STATUS.md` updated with the commit at the end of each task. No secrets in the repo (`.dev.vars` and `.agents/mcp_config.json` stay local) and no paid services without the owner's yes.

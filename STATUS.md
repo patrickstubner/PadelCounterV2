@@ -1,4 +1,15 @@
-# STATUS.md – Stand 18.11.2026, Basis main aa0c48b (Version 2.3.9)
+# STATUS.md – Stand 22.11.2026, beruht auf Commit f07aa9b (Branch `docs/antigravity-setup`, Basis main 8f01bef)
+
+## Nachtrag 22.11.2026 (Abend): Korrekturen nach Stabschef-Prüfung
+Commit `f07aa9b`. Nur Doku, kein App-Code, kein Cloud Agent.
+- Abschnitt «Zusammenarbeit mehrerer Agents»: vor dem Merge geht der Head-SHA an Stabschef, auf dessen Ok warten, Merge erst nach dem Ja des Projektinhabers.
+- Vornamen in `AGENTS.md` und `README.md` durch «Projektinhaber» bzw. «project owner» ersetzt.
+
+## Nachtrag 22.11.2026: Vorbereitung für lokale Arbeit mit Google Antigravity
+Branch `docs/antigravity-setup` (PR offen, nicht mergen bis Stabschef-Ok und Ja des Projektinhabers). Nur Doku und `.gitignore`, kein App-Code, kein Cloud Agent. `.cursor/`, `.cursorignore` und `package.json` (inklusive der befristeten Audit-Ausnahme) unverändert.
+- `AGENTS.md`: neuer Abschnitt «Zusammenarbeit mehrerer Agents» (ein Branch pro Aufgabe und Agent, nur PRs, Sicherheitsprüfung nach jeder Änderung, STATUS.md mit Commit, keine Secrets, keine Kosten ohne Ja, empfohlene lokale MCP-Server). Antigravity liest `AGENTS.md` automatisch; keine zweite Regel-Datei. Der Abschnitt «Projektregeln» (Fixtures, Migrationen, Release-Gate) gilt unverändert auch für Antigravity.
+- `README.md` (englisch): kurzer Absatz «Working with agents». Der lokale Start (`pnpm install`, `pnpm dev`, `pnpm dev:worker` mit `.dev.vars`) stand schon dort. `.gitignore`: `.agents/mcp_config.json` (`.dev.vars` war schon ignoriert).
+- Stand `pnpm audit --audit-level=moderate` (22.11.2026): keine Funde. Die Ausnahme GHSA-fc5q-39xc-vjpf gilt bis 27.11.2026 und ist unverändert.
 
 ## Nachtrag 20.11.2026: MCP-Allowlist für Cloud-Agent-Umgebung
 Branch `chore/mcp-allowlist` (Draft-PR, Basis main 95ce243, nicht mergen bis Stabschef-Ok und Ja des Projektinhabers). Kein Versionsbump.
