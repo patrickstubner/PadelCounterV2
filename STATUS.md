@@ -6,6 +6,7 @@ Branch `chore/pnpm-audit-fix` (Draft-PR, Basis main 599e9dd, nicht mergen bis St
 - Geprüft lokal: `pnpm install --frozen-lockfile`, `pnpm audit` (0 Funde), Lint, Typecheck, Tests (core 95, adapters 91 und 79, web 392), Build grün.
 - `AGENTS.md`: Regel «nur pnpm» (kein npm/yarn, kein `shamefully-hoist`; Install-Skripte nur für `onlyBuiltDependencies`), Verweise auf `npm audit`/`npm test` korrigiert. `README.md`: `corepack enable` und `--frozen-lockfile` im Start.
 - Ausnahme `GHSA-fc5q-39xc-vjpf` in `pnpm.auditConfig` gilt weiter bis 27.11.2026 (Prüfskript `check-audit-exception.sh`).
+- Mindestalter neuer Paketversionen 4 Tage: `pnpm-workspace.yaml` mit `minimumReleaseAge: 5760`, Regel in `AGENTS.md` und Sicherheitsnotiz, Dependabot-`cooldown` (mindestens 4 Tage). Lockfile geprüft: alle Pakete älter als 4 Tage (jüngstes: @cloudflare/workers-types 5.20261114.1, 8,6 Tage). **Übergangsausnahmen in `minimumReleaseAgeExclude` (Kommentar «Übergang Einführung 4-Tage-Regel, entfernen ab 26.11.2026»): keine, weil kein bestehendes Paket jünger als 4 Tage ist.** Sicherheits-Ausnahmen: keine nötig.
 
 ## Nachtrag 22.11.2026 (Abend): Korrekturen nach Stabschef-Prüfung
 Commit `f07aa9b`. Nur Doku, kein App-Code, kein Cloud Agent.

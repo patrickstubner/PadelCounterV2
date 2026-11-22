@@ -14,6 +14,7 @@ Stand: Commit aa0c48b (18.11.2026); Abschnitt «Zusammenarbeit mehrerer Agents»
 
 ## Befehle (aus package.json und .github/workflows/ci.yml)
 - **Paketmanager: nur pnpm** (Version in `packageManager`, über `corepack enable`). Kein `npm`, kein `yarn`, kein `package-lock.json`. Fehlt ein Paket, wird es sauber in der `package.json` des betroffenen Pakets eingetragen, kein `shamefully-hoist`. Install-Skripte laufen nur für die Allowlist `pnpm.onlyBuiltDependencies` (esbuild, workerd); jede Erweiterung braucht ein Ja des Projektinhabers (Sicherheitshaltung CA-3).
+- **Mindestalter neuer Paketversionen: 4 Tage.** `pnpm-workspace.yaml` setzt `minimumReleaseAge: 5760` (Minuten): pnpm installiert keine Version, die jünger ist (Schutz vor kompromittierten Releases). Die Zeile nie senken oder entfernen. Ausnahme nur, wenn eine Sicherheitslücke sich anders nicht beheben lässt: das Paket gezielt unter `minimumReleaseAgeExclude` eintragen, mit Kommentar (CVE/GHSA, Datum), im PR melden und nach 4 Tagen wieder entfernen. Dependabot hat `cooldown` von mindestens 4 Tagen. Das gilt für alle Agents (Cursor, Antigravity, weitere).
 - `pnpm install --frozen-lockfile`
 - `pnpm lint`
 - `pnpm typecheck`
