@@ -1,5 +1,5 @@
 # AGENTS.md – PadelCounterV2
-Stand: Branch `chore/remove-picomatch-exception`, Basis main 124e5a2 (27.11.2026); Audit-Ausnahme entfernt (siehe STATUS.md)
+Status: branch `chore/remove-picomatch-exception`, based on main 124e5a2 (27.11.2026); audit exception removed (see STATUS.md)
 
 ## Projekt
 - Zweck: Padel-Zähler als Offline-PWA. Mehrere Handys können live dasselbe Match zählen (QR/Code).
@@ -35,7 +35,7 @@ Pflicht-Checks und Regeln:
 - Production-Deploy nur per `workflow_dispatch` nach grünem Staging (Release-Gate, gleicher SHA).
 - PadelCounter V1 (altes Repo) nicht anfassen: gilt für Code und weitere Änderungen weiterhin. Die Doku-Ergänzung vom 16.11.2026 dort (AGENTS/ARCHITECTURE/STATUS) war eine einmalige, vom Projektinhaber angeordnete Ausnahme.
 - Sicherheit: SECURITY.md im Wurzelordner.
-- Audit-Ausnahmen: Keine `pnpm.auditConfig.ignoreGhsas` (und keine entsprechende Ausnahme in `pnpm-workspace.yaml`) ohne ausdrückliches Ok des Projektinhabers und Prüfung durch Stabschef. Die befristete Ausnahme GHSA-fc5q-39xc-vjpf (picomatch) wurde am 27.11.2026 entfernt, weil GitHub das Advisory am 18.11.2026 zurückgezogen hat (`withdrawn_at` 2026-11-18T15:38:56Z). Details: SECURITY.md.
+- Audit exceptions: no `pnpm.auditConfig.ignoreGhsas` (and no equivalent exception in `pnpm-workspace.yaml`) without the project owner's explicit approval and a review by Stabschef. The temporary exception GHSA-fc5q-39xc-vjpf (picomatch) was removed on 27.11.2026 because GitHub withdrew the advisory on 18.11.2026 (`withdrawn_at` 2026-11-18T15:38:56Z). Details: SECURITY.md.
 - Diese Datei, STATUS.md und ARCHITECTURE.md nach jedem Merge auf `main` mit dem neuen Commit nachführen.
 
 ## Arbeitsregeln für Agents

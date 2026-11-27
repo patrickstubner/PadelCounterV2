@@ -31,7 +31,7 @@ adapters/cloudflare ─────┘     rules · reducer/replayScore · parse
 | D1 | Migrationen 0001–0008 | `adapters/cloudflare/migrations` | nur additiv, vor dem Worker-Deploy; `scripts/check-migrations.mjs` |
 
 ## Deploy
-- **PR/Push:** Die CI führt Lint, Typecheck, vitest, Playwright, Build/Dry-run und `pnpm audit --audit-level=moderate` aus.
+- **PR/Push:** CI runs lint, typecheck, vitest, Playwright, a build/dry-run, and `pnpm audit --audit-level=moderate`.
 - **Push main:** Staging (D1-Migrationen + Worker), danach der Smoke-Test `adapters/cloudflare/scripts/smoke.mjs` (ADR-002).
 - **workflow_dispatch:**
   - Release-Gate `scripts/check-release-gate.mjs`: CI und Staging-Smoke für denselben SHA grün.
