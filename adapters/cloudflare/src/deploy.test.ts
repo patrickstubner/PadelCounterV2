@@ -53,7 +53,7 @@ describe('production deploy gate', () => {
     expect(yaml).not.toContain('set -x');
     expect(yaml).not.toContain('echo "$QUOTA_HMAC_KEY"');
     expect(yaml).not.toContain('echo $QUOTA_HMAC_KEY');
-    expect(yaml).toContain('actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e');
+    expect(yaml).toContain('actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346');
     expect(yaml).toContain('needs: production');
     expect(yaml).toContain('check-deploy-env.mjs');
     expect(yaml).toContain('ENV_NAME=production');

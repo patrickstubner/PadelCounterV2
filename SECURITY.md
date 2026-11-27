@@ -644,3 +644,22 @@ OAuth client secrets, passkeys, admin user ids, and a production delete API were
 Doc-only change on main 599e9dd. `pnpm audit` reports 0 known vulnerabilities (the GHSA-fc5q-39xc-vjpf exception stays until 2026-11-27). Install scripts run only for `pnpm.onlyBuiltDependencies` (esbuild, workerd). No dependency, workflow or code change. pnpm 11 and 12 exist (major), not adopted. The CI still uses pnpm/action-setup v4.2.0; a bump to v6.1.1 (73e46992e05b19abd31f2f3c20e0e7370d762115) is possible but not part of this change.
 
 Minimum release age (2026-11-22): `pnpm-workspace.yaml` sets `minimumReleaseAge: 5760` (4 days) as a guard against compromised releases. Checked: pnpm 10.33.4 refuses a version published the same day at resolve time. All 650 packages in `pnpm-lock.yaml` are older than 4 days (youngest: `@cloudflare/workers-types` 5.20261114.1, 8.6 days), no exception was needed. Future exceptions only for a vulnerability that cannot be fixed otherwise: add the package to `minimumReleaseAgeExclude` with a comment (CVE/GHSA, date) and remove it after 4 days. Dependabot has a 4-day `cooldown` (security updates are not affected).
+
+## Review 39, 2026-11-27
+
+Scope: branch `chore/pages-actions-majors`, based on main 12ae3f8. Workflow pins in `.github/workflows/deploy.yml` and the expected SHA in `adapters/cloudflare/src/deploy.test.ts`. Replaces Dependabot #3, #4 and #5. No application code, lockfile, CSP, worker, or permission changes. Checks: `pnpm lint`, `pnpm typecheck`, unit tests (including `deploy.test.ts`), `pnpm build` with `verify-build`, `pnpm audit --audit-level=moderate` (0 findings), actionlint, gitleaks, and SHA verification of the release tags via `gh`. Playwright e2e was not run locally (port 4173 was already in use by another project); CI runs it.
+
+Pins, verified against the lightweight release tags (object type `commit`):
+
+- `actions/configure-pages` v5.0.0 (`983d7736d9b0ae728b81ab479565c72886d7745b`) → v6.0.0 (`45bfe0192ca1faeb007ade9deae92b16b8254a0d`), published 2026-03-25. No newer release.
+- `actions/upload-pages-artifact` v4.0.0 (`7b1f4a764d45c48632c6b24a0339c27f5614fb0b`) → v5.0.0 (`fc324d3547104276b827a68afc52ff2a11cc49c9`), published 2026-04-10. No newer release.
+- `actions/deploy-pages` v4.0.5 (`d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e`) → v5.0.1 (`368f82528645a54fb793d4d04e342629a3f51346`), published 2026-09-01. No newer release.
+- Transitive, inside `upload-pages-artifact` v5: `actions/upload-artifact` v7.0.0 (`bbbca2ddaa5d8feaa63e36b76fdaad77386f024f`), SHA matches tag `v7.0.0`.
+
+No published GitHub security advisories for these four action repositories.
+
+- P39-01, Info. `configure-pages` v6, `deploy-pages` v5 and the transitive `upload-artifact` v7 run on the Node 24 Actions runtime (`runs.using: node24`). This is supported on GitHub.com hosted runners (`ubuntu-latest`). The app build and tests stay on Node 22 (`actions/setup-node`). The repository is not on GitHub Enterprise Server; the `deploy-pages` compatibility table does not list v5 for GHES.
+- P39-02, Info. `upload-pages-artifact` v5 adds `include-hidden-files` (default `false`, unchanged here) and still creates a tar before calling `upload-artifact`, so the v7 "direct uploads" path is not used.
+- P39-03, Info. Job permissions are unchanged. Workflow default: `contents: read`. Pages job: `contents: read`, `pages: write`, `id-token: write` (required for the Pages API and the OIDC token). The Pages job still runs only on `workflow_dispatch` for `main`, after the production gate (`ship=true`) and `vars.DEPLOY_PAGES == 'true'`. CI does not exercise this job; a real Pages deploy is the first end-to-end check.
+- P39-04, Info. The temporary audit exception GHSA-fc5q-39xc-vjpf remains valid through 2026-11-27 (Europe/Zurich). From 2026-11-28 the CI expiry script fails until `ignoreGhsas` is removed or explicitly extended. That work is outside this change. `pnpm audit --audit-level=moderate` on this branch reports 0 known vulnerabilities.
+- No critical, high, or medium findings. No secrets, tokens, personal data, or local machine paths in the changed files.
