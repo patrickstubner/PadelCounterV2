@@ -1,4 +1,13 @@
-# STATUS.md – Stand 22.11.2026, Branch `chore/pnpm-audit-fix`, Basis main 599e9dd
+# STATUS.md – Stand 27.11.2026, Branch `chore/pages-actions-majors`, Basis main 12ae3f8
+
+## Nachtrag 27.11.2026: Pages-Actions-Majors
+Branch `chore/pages-actions-majors` (Basis main 12ae3f8, nicht mergen bis Stabschef-Ok für genau den Head und Ja des Projektinhabers). Ersetzt die Dependabot-PRs #3, #4 und #5; diese bleiben offen, bis der gebündelte PR gemergt ist. Kein App-Code, kein Versionsbump, kein Cloud Agent, kein Production-Deploy.
+- `actions/configure-pages` 5.0.0 → 6.0.0 (`45bfe0192ca1faeb007ade9deae92b16b8254a0d`), `actions/upload-pages-artifact` 4.0.0 → 5.0.0 (`fc324d3547104276b827a68afc52ff2a11cc49c9`), `actions/deploy-pages` 4.0.5 → 5.0.1 (`368f82528645a54fb793d4d04e342629a3f51346`). SHAs gegen die Release-Tags geprüft, keine neueren Versionen vorhanden. Pin in `adapters/cloudflare/src/deploy.test.ts` angepasst (das war der Grund, warum #3 in der CI rot war).
+- Breaking Changes: `configure-pages` v6 und `deploy-pages` v5 nutzen die Node-24-Action-Laufzeit; `upload-pages-artifact` v5 pinnt transitiv `actions/upload-artifact` v7.0.0 (`bbbca2ddaa5d8feaa63e36b76fdaad77386f024f`). Der App-Build bleibt auf Node 22. Rechte im Pages-Job unverändert (`contents: read`, `pages: write`, `id-token: write`). Der Pages-Deploy-Job läuft nur per `workflow_dispatch` auf `main` (nach Production-Gate und `DEPLOY_PAGES=true`); die CI führt ihn nicht aus.
+- Lokal (ohne Playwright-E2E, Port 4173 war durch ein anderes Projekt belegt): `pnpm lint`, `pnpm typecheck`, Unit-Tests (core 95, adapters 91 und 79, web 392 plus 3 erwartete Fehlschläge, `deploy.test.ts` 3/3), `pnpm build` und `pnpm audit --audit-level=moderate` (0 Funde) grün. Die befristete Ausnahme GHSA-fc5q-39xc-vjpf gilt noch bis einschliesslich 27.11.2026.
+
+Production läuft unverändert auf Commit bc78fc3 (2.3.9, Deploy per `workflow_dispatch` am 15.11.2026). Seitdem nur Werkzeug, Doku und Abhängigkeiten, kein Nutzer-Effekt.
+
 
 ## Nachtrag 22.11.2026 (Nachmittag): pnpm-Prüfung
 Branch `chore/pnpm-audit-fix` (Draft-PR, Basis main 599e9dd, nicht mergen bis Stabschef-Ok und Ja des Projektinhabers). Nur Doku, kein App-Code, kein Cloud Agent.
@@ -46,18 +55,18 @@ Regressionsschutz: Updates dürfen laufende Matches, gespeicherte Daten und verb
 - Sicherheitsprüfungen Review 36 und 37 in SECURITY.md (höchstens Low), Eintrag zur Audit-Ausnahme vom 18.11.2026.
 
 ## In Arbeit
-- Dieser Doku-PR (STATUS, AGENTS, ARCHITECTURE auf Stand aa0c48b, Branch `docs/status-2026-11-18`).
+- Pages-Actions-Majors, Branch `chore/pages-actions-majors` (ersetzt #3, #4, #5; nicht mergen bis Stabschef-Ok).
 
 ## Plan ab 27.11.2026
 - Audit-Fix am 27.11.2026: `ignoreGhsas` in `package.json` entfernen, sobald eine picomatch-Version mit Fix vorliegt. Eine Verlängerung der Ausnahme braucht eine neue ausdrückliche Freigabe des Projektinhabers.
 - Verbesserungen am Ablauf-Skript `.github/scripts/check-audit-exception.sh` (nicht blockierend, Hinweis von Stabschef):
   - auch `pnpm-workspace.yaml` prüfen (pnpm 10 liest `auditConfig` dort ebenfalls, eine Ausnahme dort würde heute nicht erkannt)
   - GHSA-IDs ohne Beachtung der Gross-/Kleinschreibung erkennen (`grep -i`)
-- Majors (Dependabot) erst ab 27.11., je PR mit Sicherheitsprüfung und Stabschef-Prüfung.
+- Majors (Dependabot) ab 27.11., je PR mit Sicherheitsprüfung und Stabschef-Prüfung. Pages-Actions sind im Branch `chore/pages-actions-majors` gebündelt.
 
-## Offene PRs (18.11.2026)
-- #40 `pnpm/action-setup` 4.2.0 → 6.1.1 (Dependabot, Major, GitHub Action) – wartet bis 27.11.
-- #5 `actions/configure-pages` 5 → 6, #4 `actions/upload-pages-artifact` 4 → 5, #3 `actions/deploy-pages` 4.0.5 → 5.0.1 (Dependabot, Majors, GitHub Actions) – warten bis 27.11.
+## Offene PRs (27.11.2026)
+- Branch `chore/pages-actions-majors`: bündelt `configure-pages` v6, `upload-pages-artifact` v5 und `deploy-pages` v5.0.1 (ersetzt #3, #4, #5). #3, #4 und #5 bleiben offen, bis dieser PR gemergt ist.
+- #3, #4, #5 (Dependabot, einzeln): durch den gebündelten Branch überholt, noch nicht schliessen.
 
 ## Offen / Entscheide nötig (wer?)
 - PC-8 (ADR-001 umsetzen): macht die `it.fails`-Tests grün (4 Stück in `apps/web/src/domain/compat.test.ts`) – Projektinhaber
@@ -75,3 +84,5 @@ Regressionsschutz: Updates dürfen laufende Matches, gespeicherte Daten und verb
 - 15.11.: codebase-memory-mcp (Aufrufer von matchReducer/replayScore/parsePersisted, geschätzt ~40k Token gespart), codegraph explore (Persistenzpfad, Parser-Dopplung entdeckt), gitleaks, pnpm audit, vitest, Playwright lokal (geschätzt 1 Cloud-Agent-Lauf vermieden)
 - 16.11.: gh (PRs, Variablen, Environments), `pnpm audit` lokal, rg. Cloud-Agent-Setup mit pnpm-fähigem Install-Skript, lokal lint/typecheck/Unit-Tests/Build. Kein Cloud Agent.
 - 18.11.: Dependabot-PRs und Audit-Ausnahme mit gh und `pnpm audit` lokal geprüft. Dieser Doku-PR: codebase-memory-mcp 0.12.1 und codegraph 1.6.2 für die Analyse in ARCHITECTURE.md (Basis aa0c48b), gitleaks, rg, git log. Kein Cloud Agent.
+- 25.11.: Dependabot-Minors/Patches #62, #61, #63–#70 und Major #40 (`pnpm/action-setup` 6.1.1) auf main gemergt (letzter Stand 12ae3f8).
+- 27.11.: Pages-Actions-Majors lokal mit gh (Release-Tags und SHAs), actionlint, `pnpm lint`/`typecheck`/`test`/`build`/`audit`, gitleaks, rg. Kein Cloud Agent.
