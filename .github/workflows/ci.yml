@@ -49,8 +49,5 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Check audit exception expiry
-        run: bash .github/scripts/check-audit-exception.sh
-
       - name: Audit dependencies
         run: pnpm audit --audit-level=moderate

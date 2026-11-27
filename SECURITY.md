@@ -616,16 +616,24 @@ Scope: branch `chore/cloud-agent-setup`. Agent configuration only: `.cursor/envi
 
 ## Befristete Audit-Ausnahme picomatch (2026-11-18)
 
-Datum: 18.11.2026. Ablauf: 27.11.2026 (letzter Gültigkeitstag). Ab 28.11.2026 schlägt die CI fehl, solange die Ausnahme noch eingetragen ist.
+Status: **done on 27.11.2026.** Exception date: 18.11.2026. Planned expiry: 27.11.2026 (last day of validity).
 
 - Advisory: [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf), picomatch bis einschliesslich 4.0.7, ReDoS durch einbranchige, wiederholte Extglobs.
-- Schweregrad: hoch (high). Fehlerbehobene Version: keine verfügbar.
+- Severity at the time: high. No patched version was needed, because the advisory was withdrawn.
 - Betroffener Pfad (nur Entwicklung): `typescript-eslint` > `@typescript-eslint/typescript-estree` > `tinyglobby` > `picomatch`.
-- Begründung: Es gibt keinen Patch. Der Pfad betrifft nur Entwicklungswerkzeug (Lint). picomatch ist nicht im Produktions-Bundle und nicht im Worker. Eine Ausnutzung bräuchte ein bösartiges Glob-Muster in der Lint-Konfiguration, die im Repository liegt und im Review geprüft wird.
-- Umsetzung: `pnpm.auditConfig.ignoreGhsas` in `package.json` enthält ausschliesslich diese eine ID. `pnpm audit --audit-level=moderate` bleibt unverändert. Weder das Lockfile noch Abhängigkeiten wurden geändert.
-- Absicherung in der CI: `.github/scripts/check-audit-exception.sh` (Schritt «Check audit exception expiry») schlägt fehl, wenn eine andere GHSA-ID als die obige in `package.json` steht oder wenn die Ausnahme nach dem 27.11.2026 (Europe/Zurich) noch eingetragen ist.
-- Verantwortliche Prüfung: Stabschef (Review des PR und Kontrolle am Ablauftag). Freigabe der befristeten Ausnahme durch den Projektinhaber am 18.11.2026.
-- Plan: `ignoreGhsas` entfernen, sobald eine picomatch-Version mit Fix vorliegt, spätestens beim Audit-Fix am 27.11.2026. Eine Verlängerung braucht eine neue ausdrückliche Freigabe des Projektinhabers.
+- Rationale for the original exception: there was no patch. The path only affected a development tool (lint). picomatch is not in the production bundle and not in the worker.
+- Implementation at the time: `pnpm.auditConfig.ignoreGhsas` in `package.json` contained only this one ID. CI enforcement was `.github/scripts/check-audit-exception.sh` (step "Check audit exception expiry").
+- Review at the time: Stabschef. The project owner approved the temporary exception on 18.11.2026.
+- **Removal on 27.11.2026:** The advisory was withdrawn on 18.11.2026 at 16:38 (Europe/Zurich). Source: GitHub Advisory API `GET /advisories/GHSA-fc5q-39xc-vjpf`, field `withdrawn_at` `2026-11-18T15:38:56Z`. `pnpm audit --audit-level=moderate` with no exception: 0 findings. Therefore, on 27.11.2026, `pnpm.auditConfig.ignoreGhsas` was removed from `package.json` (the whole block), along with `.github/scripts/check-audit-exception.sh` and the CI step "Check audit exception expiry". No dependency and no lockfile change. Branch `chore/remove-picomatch-exception`, based on main 124e5a2.
+
+### Security review 27.11.2026 (removal of the exception)
+
+Scope: branch `chore/remove-picomatch-exception`, based on main 124e5a2 (#71 already merged). Configuration, CI script, and docs only. No application code, no lockfile, no dependency change, no production deploy.
+
+- Sources: `pnpm audit --audit-level=moderate` (0 findings, without `ignoreGhsas`), `gitleaks detect`, `actionlint` for `.github/workflows/ci.yml`, advisory check via `gh api /advisories/GHSA-fc5q-39xc-vjpf`.
+- Additional local checks: lint, typecheck, unit tests, and build were green. Playwright e2e was not completed locally because port 4173 was already in use by another project; CI runs the e2e tests.
+- No secrets, tokens, personal data, or local machine paths in the changed files.
+- No critical, high, or medium findings. picomatch 4.0.7 remains a transitive dev dependency, but it is no longer on a valid advisory list.
 
 ## Review 38, 2026-11-20
 

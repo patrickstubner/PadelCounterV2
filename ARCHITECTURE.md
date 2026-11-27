@@ -31,7 +31,7 @@ adapters/cloudflare ─────┘     rules · reducer/replayScore · parse
 | D1 | Migrationen 0001–0008 | `adapters/cloudflare/migrations` | nur additiv, vor dem Worker-Deploy; `scripts/check-migrations.mjs` |
 
 ## Deploy
-- **PR/Push:** Die CI führt Lint, Typecheck, vitest, Playwright, Build/Dry-run, die Prüfung der befristeten Audit-Ausnahme (`.github/scripts/check-audit-exception.sh`, ab 28.11.2026 rot, solange die Ausnahme steht) und `pnpm audit --audit-level=moderate` aus.
+- **PR/Push:** CI runs lint, typecheck, vitest, Playwright, a build/dry-run, and `pnpm audit --audit-level=moderate`.
 - **Push main:** Staging (D1-Migrationen + Worker), danach der Smoke-Test `adapters/cloudflare/scripts/smoke.mjs` (ADR-002).
 - **workflow_dispatch:**
   - Release-Gate `scripts/check-release-gate.mjs`: CI und Staging-Smoke für denselben SHA grün.
@@ -84,4 +84,3 @@ Methode: codebase-memory-mcp 0.12.1 (`cbm index`, `get_architecture` mit hotspot
 **Risiken:**
 - Live-Sync (`useLive.ts`, `protocol.ts`, `match-room.ts`) ist zugleich gross und häufig geändert. Änderungen nur mit den Live-Tests und dem Smoke-Test.
 - Zwei Parser für dasselbe Log-Format (P-02, ADR-004) und überschreibender Ladefehler (P-01, ADR-001) bleiben offen, siehe STATUS.md.
-- Dev-Abhängigkeit picomatch mit befristeter Audit-Ausnahme bis 27.11.2026 (SECURITY.md).
