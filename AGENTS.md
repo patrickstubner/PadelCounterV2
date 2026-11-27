@@ -80,13 +80,15 @@ Gilt für alle Agents und Menschen, die an diesem Repo arbeiten. Google Antigrav
 ### Branch hygiene (27 November 2026)
 Merged or unused branches are deleted. Only `main`, heads of open pull requests, and branches that are actively being worked on remain. Delete pull-request branches immediately after merge (`delete_branch_on_merge` is enabled). Unmerged work that may still have value is first preserved as a tag `archive/<name>`.
 
+`main` is protected. Changes reach `main` only through a pull request with green CI, reviewed by Stabschef and merged via squash on the exact reviewed head. No direct commits, no direct push, no force-push, and never delete `main`. This is the working rule for every agent; do not assume GitHub already enforces it in every repository.
+
 New working rules from the project owner are always added to `AGENTS.md` in every repository and in the `agent-skills` repository.
 
 ### GitHub issues (27 November 2026)
 New GitHub issues are always written in English, even when communication with the project owner is in German. Existing issues are left unchanged.
 
 ### Language on GitHub (27 November 2026)
-Everything committed to GitHub is in English: new issues, all docs (README, STATUS, ARCHITECTURE, AGENTS, CHANGELOG, NOTICE, SECURITY, ...), code comments and identifiers, even when the project owner communicates in German. Existing German docs and code are not translated or renamed ad hoc; that is coordinated separately per repo.
+Everything committed to this repository is in English: code, identifiers and variable names, code comments, commit messages, PR titles and descriptions, issues, templates and all docs (README, AGENTS, ARCHITECTURE, STATUS, CHANGELOG, NOTICE, SECURITY, and others). This applies even when the owner speaks German. Chat with the owner stays German. Existing German docs and code are not translated or renamed ad hoc; that is coordinated separately per repo.
 
 ### Sicherheitsprüfung nach jeder Codeänderung
 Nach jeder Code-Erstellung oder -Änderung, **bevor weitergebaut wird**, kurz prüfen und im PR (Abschnitt «Sicherheit») bzw. in der `SECURITY`-Notiz des Repos festhalten:
