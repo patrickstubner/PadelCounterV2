@@ -616,16 +616,24 @@ Scope: branch `chore/cloud-agent-setup`. Agent configuration only: `.cursor/envi
 
 ## Befristete Audit-Ausnahme picomatch (2026-11-18)
 
-Datum: 18.11.2026. Ablauf: 27.11.2026 (letzter Gültigkeitstag). Ab 28.11.2026 schlägt die CI fehl, solange die Ausnahme noch eingetragen ist.
+Status: **erledigt am 27.11.2026.** Datum der Ausnahme: 18.11.2026. Geplanter Ablauf: 27.11.2026 (letzter Gültigkeitstag).
 
 - Advisory: [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf), picomatch bis einschliesslich 4.0.7, ReDoS durch einbranchige, wiederholte Extglobs.
-- Schweregrad: hoch (high). Fehlerbehobene Version: keine verfügbar.
+- Schweregrad damals: hoch (high). Fehlerbehobene Version: keine nötig, weil das Advisory zurückgezogen wurde.
 - Betroffener Pfad (nur Entwicklung): `typescript-eslint` > `@typescript-eslint/typescript-estree` > `tinyglobby` > `picomatch`.
-- Begründung: Es gibt keinen Patch. Der Pfad betrifft nur Entwicklungswerkzeug (Lint). picomatch ist nicht im Produktions-Bundle und nicht im Worker. Eine Ausnutzung bräuchte ein bösartiges Glob-Muster in der Lint-Konfiguration, die im Repository liegt und im Review geprüft wird.
-- Umsetzung: `pnpm.auditConfig.ignoreGhsas` in `package.json` enthält ausschliesslich diese eine ID. `pnpm audit --audit-level=moderate` bleibt unverändert. Weder das Lockfile noch Abhängigkeiten wurden geändert.
-- Absicherung in der CI: `.github/scripts/check-audit-exception.sh` (Schritt «Check audit exception expiry») schlägt fehl, wenn eine andere GHSA-ID als die obige in `package.json` steht oder wenn die Ausnahme nach dem 27.11.2026 (Europe/Zurich) noch eingetragen ist.
-- Verantwortliche Prüfung: Stabschef (Review des PR und Kontrolle am Ablauftag). Freigabe der befristeten Ausnahme durch den Projektinhaber am 18.11.2026.
-- Plan: `ignoreGhsas` entfernen, sobald eine picomatch-Version mit Fix vorliegt, spätestens beim Audit-Fix am 27.11.2026. Eine Verlängerung braucht eine neue ausdrückliche Freigabe des Projektinhabers.
+- Begründung der damaligen Ausnahme: Es gab keinen Patch. Der Pfad betraf nur Entwicklungswerkzeug (Lint). picomatch ist nicht im Produktions-Bundle und nicht im Worker.
+- Umsetzung damals: `pnpm.auditConfig.ignoreGhsas` in `package.json` enthielt ausschliesslich diese eine ID. Absicherung in der CI über `.github/scripts/check-audit-exception.sh` (Schritt «Check audit exception expiry»).
+- Verantwortliche Prüfung damals: Stabschef. Freigabe der befristeten Ausnahme durch den Projektinhaber am 18.11.2026.
+- **Aufhebung 27.11.2026:** Das Advisory wurde am 18.11.2026, 16:38 Uhr (Europe/Zurich) zurückgezogen. Quelle: GitHub Advisory API `GET /advisories/GHSA-fc5q-39xc-vjpf`, Feld `withdrawn_at` `2026-11-18T15:38:56Z`. `pnpm audit --audit-level=moderate` ohne Ausnahme: 0 Funde. Deshalb wurden am 27.11.2026 `pnpm.auditConfig.ignoreGhsas` in `package.json` (Block vollständig entfernt), `.github/scripts/check-audit-exception.sh` und der CI-Schritt «Check audit exception expiry» entfernt. Keine Abhängigkeit und kein Lockfile geändert. Branch `chore/remove-picomatch-exception`, Basis main 124e5a2.
+
+### Sicherheitsprüfung 27.11.2026 (Entfernung der Ausnahme)
+
+Scope: branch `chore/remove-picomatch-exception`, Basis main 124e5a2 (#71 bereits gemergt). Nur Konfiguration, CI-Skript und Doku. Kein App-Code, kein Lockfile, keine Abhängigkeitsänderung, kein Production-Deploy.
+
+- Quelle: `pnpm audit --audit-level=moderate` (0 Funde, ohne `ignoreGhsas`), `gitleaks detect`, `actionlint` für `.github/workflows/ci.yml`, Abgleich des Advisories per `gh api /advisories/GHSA-fc5q-39xc-vjpf`.
+- Lokal zusätzlich: lint, typecheck, Unit-Tests und Build grün. Playwright-E2E lokal nicht vollständig, weil Port 4173 durch ein anderes Projekt belegt war; die CI führt die E2E-Tests aus.
+- Keine Geheimnisse, Tokens, personenbezogenen Daten oder lokalen Maschinenpfade in den geänderten Dateien.
+- Keine kritischen, hohen oder mittleren Funde. picomatch 4.0.7 bleibt transitive Dev-Abhängigkeit, steht aber nicht mehr auf einer gültigen Advisory-Liste.
 
 ## Review 38, 2026-11-20
 

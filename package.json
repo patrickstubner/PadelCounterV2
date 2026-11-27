@@ -23,9 +23,6 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild", "workerd"],
-    "auditConfig": {
-      "ignoreGhsas": ["GHSA-fc5q-39xc-vjpf"]
-    },
     "overrides": {
       "glob": "14.0.3",
       "minimatch": "11.0.3"
